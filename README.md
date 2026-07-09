@@ -1718,11 +1718,7 @@ HARNESS_AUTO_MODE=max
 HARNESS_STATIC_LLM=1
 ```
 
-`auto_watch.py` là daemon polling riêng để đạt mức tự động cao hơn: nó không chờ model chính gọi MCP tool, mà tự thấy file trong workspace đổi rồi gọi thẳng `tools.auto.auto_trigger(mode="max")`.
-
-```powershell
-python auto_watch.py
-```
+`auto_watch.py` là daemon polling riêng để đạt mức tự động cao hơn: nó tự thấy file trong workspace đổi rồi gọi thẳng `tools.auto.auto_trigger(mode="max")`. Người dùng bình thường không cần mở CMD riêng; khi `HARNESS_AUTO_WATCH=1`, MCP server tự spawn watcher nền đúng project bằng `pythonw`/no-window ở lần gọi tool đầu tiên.
 
 Config nhanh:
 
@@ -1732,7 +1728,25 @@ HARNESS_AUTO_WATCH_INTERVAL=3
 HARNESS_AUTO_WATCH_DEBOUNCE=2
 ```
 
-Giới hạn cần nhớ: MCP server không được tự ý chạy ngầm sau mọi edit nếu MCP client không dispatch tool. Muốn tự động tuyệt đối hơn thì phải giữ một process watcher đang chạy. Watcher bỏ qua `.git`, cache, venv, node_modules; gom thay đổi bằng debounce; dùng lock atomic `.harness_auto_watch.lock` để chống chạy chồng; log vào `.harness_auto_watch.log` với redaction và rotation.
+Setup tự động:
+
+```powershell
+# 1. Bật trong .env cạnh mcp_server.py
+HARNESS_AUTO_WATCH=1
+
+# 2. Restart agent/MCP client nếu đang mở
+
+# 3. Prompt agent làm coding task; khi harness tool đầu tiên chạy,
+#    mcp_server.py tự spawn watcher nền cho project hiện tại.
+```
+
+Debug thủ công khi cần:
+
+```powershell
+python auto_watch.py
+```
+
+Watcher bỏ qua `.git`, cache, venv, node_modules; gom thay đổi bằng debounce; dùng lock atomic `.harness_auto_watch.lock` để chống chạy chồng; ghi PID vào `.harness_auto_watch.pid`; log vào `.harness_auto_watch.log` với redaction và rotation. `install.ps1` không tạo Windows Scheduled Task nữa và sẽ xoá task cũ `AgentHarnessAutoWatch` nếu còn tồn tại.
 
 #### 50 tools static analysis (không tốn token LLM)
 
