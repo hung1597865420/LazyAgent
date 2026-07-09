@@ -1,0 +1,3155 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Harness — 10-Agent Coding Pipeline</title>
+  <meta name="description" content="10-Agent AI coding pipeline powered by Azure AI Foundry. Parallel agents: Analyzer, Code A/B, Reviewer, Tester, Security, Debugger, Synthesizer." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & tokens ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #050810;
+      --bg2:         #0c1120;
+      --bg3:         #111827;
+      --surface:     rgba(255,255,255,0.04);
+      --surface2:    rgba(255,255,255,0.07);
+      --border:      rgba(255,255,255,0.08);
+      --border2:     rgba(255,255,255,0.14);
+
+      --accent:      #6366f1;
+      --accent2:     #818cf8;
+      --accent-glow: rgba(99,102,241,0.35);
+      --cyan:        #22d3ee;
+      --cyan-dim:    rgba(34,211,238,0.15);
+      --green:       #34d399;
+      --green-dim:   rgba(52,211,153,0.15);
+      --orange:      #fb923c;
+      --orange-dim:  rgba(251,146,60,0.15);
+      --red:         #f87171;
+      --red-dim:     rgba(248,113,113,0.15);
+      --purple:      #a78bfa;
+      --yellow:      #fbbf24;
+
+      --text:        #f1f5f9;
+      --text2:       #94a3b8;
+      --text3:       #64748b;
+
+      --radius:      14px;
+      --radius-sm:   8px;
+      --radius-lg:   20px;
+      --shadow:      0 8px 32px rgba(0,0,0,0.6);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Ambient background ─────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% 0%, rgba(99,102,241,0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(34,211,238,0.08) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 60% at 50% 50%, rgba(167,139,250,0.04) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    /* ── Layout ────────────────────────────────────────────────────── */
+    .app {
+      position: relative; z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px 80px;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────── */
+    header {
+      padding: 40px 0 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 40px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .logo-icon {
+      width: 44px; height: 44px;
+      background: linear-gradient(135deg, var(--accent), var(--purple));
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 0 24px var(--accent-glow);
+    }
+
+    .logo-text h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, var(--text) 40%, var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    .logo-text p {
+      font-size: 0.75rem;
+      color: var(--text3);
+      margin-top: 1px;
+    }
+
+    .header-badges {
+      display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+    }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px;
+      border-radius: 100px;
+      font-size: 0.7rem;
+      font-weight: 500;
+      border: 1px solid var(--border2);
+      background: var(--surface);
+      color: var(--text2);
+    }
+
+    .badge.accent { border-color: rgba(99,102,241,0.3); background: rgba(99,102,241,0.1); color: var(--accent2); }
+    .badge.green  { border-color: rgba(52,211,153,0.3); background: var(--green-dim); color: var(--green); }
+
+    /* ── Pipeline diagram ───────────────────────────────────────────── */
+    .pipeline-strip {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      overflow-x: auto;
+      padding: 20px 0;
+      margin-bottom: 40px;
+      scrollbar-width: none;
+    }
+    .pipeline-strip::-webkit-scrollbar { display: none; }
+
+    .pipe-stage {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      flex-shrink: 0;
+    }
+
+    .pipe-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      cursor: default;
+      transition: all 0.25s;
+      min-width: 90px;
+      position: relative;
+    }
+
+    .pipe-node:hover { border-color: var(--border2); background: var(--surface2); transform: translateY(-2px); }
+
+    .pipe-node .node-icon { font-size: 18px; }
+    .pipe-node .node-label { font-size: 0.65rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+    .pipe-node .node-model { font-size: 0.6rem; color: var(--text3); font-family: 'JetBrains Mono', monospace; white-space: nowrap; max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
+
+    .pipe-node.active  { border-color: var(--accent); background: rgba(99,102,241,0.12); box-shadow: 0 0 16px var(--accent-glow); }
+    .pipe-node.done    { border-color: rgba(52,211,153,0.4); background: var(--green-dim); }
+    .pipe-node.error   { border-color: rgba(248,113,113,0.4); background: var(--red-dim); }
+
+    .pipe-arrow {
+      color: var(--text3);
+      padding: 0 4px;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .pipe-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      position: relative;
+    }
+
+    .pipe-group::before {
+      content: '∥';
+      position: absolute;
+      top: 50%; left: -16px;
+      transform: translateY(-50%);
+      color: var(--text3);
+      font-size: 12px;
+    }
+
+    /* ── Main grid ──────────────────────────────────────────────────── */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 24px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ── Input card ─────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      backdrop-filter: blur(12px);
+    }
+
+    .card-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-title span { color: var(--text3); font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+    textarea#task-input {
+      width: 100%;
+      min-height: 140px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      padding: 14px 16px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    textarea#task-input::placeholder { color: var(--text3); }
+
+    textarea#task-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    /* Quick prompts */
+    .quick-prompts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .quick-btn {
+      padding: 5px 12px;
+      border-radius: 100px;
+      border: 1px solid var(--border2);
+      background: var(--surface2);
+      color: var(--text2);
+      font-size: 0.72rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+
+    .quick-btn:hover { border-color: var(--accent); color: var(--accent2); background: rgba(99,102,241,0.1); }
+
+    /* Run button */
+    .btn-run {
+      width: 100%;
+      margin-top: 16px;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--accent), #4f46e5);
+      border: none;
+      border-radius: var(--radius);
+      color: #fff;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      letter-spacing: 0.01em;
+      box-shadow: 0 4px 20px rgba(99,102,241,0.4);
+    }
+
+    .btn-run:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(99,102,241,0.55);
+    }
+
+    .btn-run:active:not(:disabled) { transform: translateY(0); }
+
+    .btn-run:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-run .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Live log ───────────────────────────────────────────────────── */
+    .live-log {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      height: 200px;
+      overflow-y: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      line-height: 1.7;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border2) transparent;
+    }
+
+    .live-log::-webkit-scrollbar { width: 4px; }
+    .live-log::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+    .log-entry {
+      display: flex;
+      gap: 10px;
+      animation: fadeSlide 0.2s ease;
+    }
+
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .log-entry .log-ts  { color: var(--text3); flex-shrink: 0; }
+    .log-entry .log-msg { color: var(--text2); }
+    .log-entry.start    .log-msg { color: var(--cyan); }
+    .log-entry.done     .log-msg { color: var(--green); }
+    .log-entry.error    .log-msg { color: var(--red); }
+    .log-entry.stage    .log-msg { color: var(--yellow); }
+    .log-entry.agent_done .log-msg { color: var(--text); }
+
+    /* ── Side panel ─────────────────────────────────────────────────── */
+    .side-panel { display: flex; flex-direction: column; gap: 16px; }
+
+    /* Agent status grid */
+    .agent-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .agent-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      transition: all 0.25s;
+    }
+
+    .agent-row.active {
+      border-color: rgba(99,102,241,0.4);
+      background: rgba(99,102,241,0.08);
+    }
+    .agent-row.done {
+      border-color: rgba(52,211,153,0.3);
+      background: var(--green-dim);
+    }
+    .agent-row.error {
+      border-color: rgba(248,113,113,0.3);
+      background: var(--red-dim);
+    }
+
+    .agent-row .agent-icon { font-size: 16px; flex-shrink: 0; }
+    .agent-row .agent-info { flex: 1; min-width: 0; }
+    .agent-row .agent-name { font-size: 0.8rem; font-weight: 600; }
+    .agent-row .agent-model { font-size: 0.65rem; color: var(--text3); font-family: 'JetBrains Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .agent-row .agent-status { font-size: 0.7rem; color: var(--text3); flex-shrink: 0; }
+    .agent-row.active .agent-status { color: var(--accent2); }
+    .agent-row.done   .agent-status { color: var(--green); }
+    .agent-row.error  .agent-status { color: var(--red); }
+
+    .agent-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--border2);
+      flex-shrink: 0;
+      transition: all 0.25s;
+    }
+    .agent-row.active .agent-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse-dot 1s infinite; }
+    .agent-row.done   .agent-dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .agent-row.error  .agent-dot { background: var(--red); }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.5; transform: scale(0.7); }
+    }
+
+    /* Stats row */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .stat-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      text-align: center;
+    }
+
+    .stat-box .stat-val { font-size: 1.4rem; font-weight: 700; background: linear-gradient(135deg, var(--accent2), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .stat-box .stat-lbl { font-size: 0.65rem; color: var(--text3); margin-top: 2px; }
+
+    /* ── Result section ─────────────────────────────────────────────── */
+    #result-section {
+      margin-top: 32px;
+      display: none;
+    }
+
+    #result-section.visible { display: block; }
+
+    .result-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .result-title {
+      font-size: 1rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .result-meta {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-copy {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border2);
+      background: var(--surface2);
+      color: var(--text2);
+      font-size: 0.78rem;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-copy:hover { border-color: var(--accent); color: var(--accent2); }
+    .btn-copy.copied { border-color: rgba(52,211,153,0.4); color: var(--green); }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      background: rgba(0,0,0,0.3);
+      border-radius: var(--radius-sm);
+      padding: 3px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border);
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 7px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text3);
+      font-size: 0.78rem;
+      font-family: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn.active { background: var(--surface2); color: var(--text); border: 1px solid var(--border2); }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Markdown output */
+    .output-box {
+      background: rgba(0,0,0,0.35);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      line-height: 1.75;
+      overflow-x: auto;
+    }
+
+    .output-box h2 { font-size: 1rem; color: var(--accent2); margin: 24px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .output-box h2:first-child { margin-top: 0; }
+    .output-box h3 { font-size: 0.9rem; color: var(--text); margin: 16px 0 8px; }
+    .output-box p  { color: var(--text2); font-size: 0.9rem; margin-bottom: 10px; }
+    .output-box ul, .output-box ol { padding-left: 20px; color: var(--text2); font-size: 0.9rem; margin-bottom: 10px; }
+    .output-box li { margin-bottom: 4px; }
+    .output-box code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      background: rgba(99,102,241,0.12);
+      border: 1px solid rgba(99,102,241,0.2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      color: var(--accent2);
+    }
+    .output-box pre {
+      background: rgba(0,0,0,0.5);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      overflow-x: auto;
+      margin: 12px 0;
+    }
+    .output-box pre code {
+      background: none; border: none; padding: 0;
+      color: var(--text);
+      font-size: 0.82rem;
+    }
+    .output-box hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+    .output-box strong { color: var(--text); }
+    .output-box blockquote {
+      border-left: 3px solid var(--accent);
+      padding-left: 14px;
+      color: var(--text2);
+      font-style: italic;
+    }
+
+    /* Agent results list */
+    .agent-result-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .agent-result-item {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .agent-result-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: var(--surface2);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .agent-result-header:hover { background: rgba(255,255,255,0.08); }
+
+    .result-role { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+    .result-role.manager     { color: var(--purple); }
+    .result-role.synthesizer { color: var(--cyan); }
+    .result-role.analyzer    { color: var(--yellow); }
+    .result-role.code_a,
+    .result-role.code_b      { color: var(--green); }
+    .result-role.reviewer    { color: var(--orange); }
+    .result-role.tester      { color: #60a5fa; }
+    .result-role.security    { color: var(--red); }
+    .result-role.debugger    { color: var(--accent2); }
+    .result-role.worker      { color: var(--text2); }
+
+    .result-model { font-size: 0.68rem; color: var(--text3); font-family: 'JetBrains Mono', monospace; flex: 1; }
+    .result-dur   { font-size: 0.7rem; color: var(--text3); }
+    .result-chevron { font-size: 10px; color: var(--text3); transition: transform 0.2s; }
+    .agent-result-item.open .result-chevron { transform: rotate(180deg); }
+
+    .agent-result-body {
+      display: none;
+      padding: 14px;
+      background: rgba(0,0,0,0.3);
+      font-size: 0.82rem;
+      color: var(--text2);
+      line-height: 1.7;
+      font-family: 'JetBrains Mono', monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border-top: 1px solid var(--border);
+      max-height: 500px;
+      overflow-y: auto;
+    }
+
+    .agent-result-item.open .agent-result-body { display: block; }
+
+    /* empty state */
+    .empty-state {
+      text-align: center;
+      padding: 60px 24px;
+      color: var(--text3);
+    }
+    .empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; }
+    .empty-state p { font-size: 0.875rem; }
+
+    /* ── Toast ──────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      background: var(--bg3);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius);
+      padding: 12px 18px;
+      font-size: 0.85rem;
+      color: var(--text);
+      transform: translateY(80px);
+      opacity: 0;
+      transition: all 0.3s;
+      z-index: 100;
+      box-shadow: var(--shadow);
+      max-width: 320px;
+    }
+    #toast.show { transform: translateY(0); opacity: 1; }
+
+    /* ── Scrollbar ──────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    /* ── Wiki Explorer ──────────────────────────────────────────────── */
+    .wiki-page-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .wiki-page-row:last-child { border-bottom: none; }
+    .wiki-page-row:hover { background: var(--surface2); }
+    .wiki-type-badge {
+      font-size: 0.62rem; font-weight: 700; padding: 2px 7px;
+      border-radius: 100px; text-transform: uppercase; letter-spacing: 0.06em;
+      flex-shrink: 0;
+    }
+    .wiki-type-badge.concept { background: rgba(99,102,241,0.15); color: var(--accent2); border: 1px solid rgba(99,102,241,0.3); }
+    .wiki-type-badge.entity  { background: rgba(34,211,238,0.12); color: var(--cyan);    border: 1px solid rgba(34,211,238,0.3); }
+    .wiki-page-name { font-size: 0.85rem; font-weight: 600; color: var(--text); }
+    .wiki-page-preview { font-size: 0.75rem; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+    /* ── Security result cards ──────────────────────────────────────── */
+    .sec-finding {
+      padding: 12px 16px; border-radius: var(--radius-sm);
+      border: 1px solid; margin-bottom: 8px; font-size: 0.82rem;
+    }
+    .sec-finding.fixed   { background: rgba(52,211,153,0.07); border-color: rgba(52,211,153,0.25); }
+    .sec-finding.failed  { background: rgba(248,113,113,0.07); border-color: rgba(248,113,113,0.25); }
+    .sec-finding.clean   { background: rgba(52,211,153,0.05); border-color: rgba(52,211,153,0.2); }
+
+    /* ── Spin animation ─────────────────────────────────────────────── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Sub-tool Selector styles ───────────────────────────────────── */
+    .sub-tool-btn {
+      padding: 6px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      color: var(--text2);
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .sub-tool-btn:hover {
+      border-color: var(--border2);
+      color: var(--text);
+    }
+    .sub-tool-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+    .sub-tool-content {
+      display: none;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+    .sub-tool-content.active {
+      display: block;
+    }
+    /* ── Language Switcher ─────────────────────────────────────────── */
+    .lang-switcher {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-right: 8px;
+    }
+    .lang-btn {
+      padding: 4px 10px;
+      border-radius: 100px;
+      font-size: 0.7rem;
+      font-weight: 500;
+      border: 1px solid var(--border2);
+      background: var(--surface);
+      color: var(--text2);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .lang-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent2);
+    }
+    .lang-btn.active {
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.18);
+      color: var(--accent2);
+      font-weight: 600;
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🤖</div>
+      <div class="logo-text">
+        <h1>Agent Harness</h1>
+        <p data-i18n="header-subtitle">10-Agent Coding Pipeline · Azure AI Foundry</p>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div class="lang-switcher" id="lang-switcher">
+        <button class="lang-btn active" onclick="setLang('vi')" id="lb-vi" title="Tiếng Việt">VI</button>
+        <button class="lang-btn" onclick="setLang('en')" id="lb-en" title="English">EN</button>
+        <button class="lang-btn" onclick="setLang('ru')" id="lb-ru" title="Русский">RU</button>
+        <button class="lang-btn" onclick="setLang('zh-TW')" id="lb-zh" title="繁體中文">繁</button>
+      </div>
+      <div class="header-badges">
+        <span class="badge accent" data-i18n="badge-parallel">⚡ Parallel Execution</span>
+        <span class="badge green" id="status-badge" data-i18n="badge-idle">● Idle</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Pipeline Strip -->
+  <div class="pipeline-strip" id="pipeline-strip">
+    <!-- Rendered by JS -->
+  </div>
+
+  <!-- Main grid -->
+  <div class="main-grid">
+
+    <!-- Left: Input + Log -->
+    <div>
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-title">🎯 <span data-i18n="card-task-input">Task Input</span> <span style="font-size:0.75rem;color:var(--text3);font-weight:normal;" data-i18n="card-task-input-sub">· gửi cho Manager Agent</span></div>
+        <textarea id="task-input" data-i18n-ph="placeholder-task-input" placeholder="Mô tả coding task... (VN/EN đều được)&#10;&#10;VD: Viết một REST API bằng FastAPI có CRUD cho Users, với authentication JWT và rate limiting." spellcheck="false"></textarea>
+ 
+        <div class="quick-prompts">
+          <button class="quick-btn" onclick="setPrompt('Implement a FastAPI REST API with JWT auth, CRUD for users and posts, SQLAlchemy ORM, Alembic migrations, Redis caching, rate limiting.')">FastAPI + JWT</button>
+          <button class="quick-btn" onclick="setPrompt('Build a Python async web scraper using httpx + BeautifulSoup, with retry logic, rate limiting, proxy rotation, and export to CSV/JSON.')">Async Scraper</button>
+          <button class="quick-btn" onclick="setPrompt('Create a TypeScript CLI tool that reads a folder of markdown files and generates a static HTML website with navigation, search, and dark mode.')">Markdown → Site</button>
+          <button class="quick-btn" onclick="setPrompt('Implement a Python LRU cache with TTL expiration, thread-safe operations, async support, stats tracking, and Redis fallback.')">LRU Cache</button>
+          <button class="quick-btn" onclick="setPrompt('Write a WebSocket-based real-time chat server in Python with rooms, private messages, message history, user presence, and typing indicators.')">WS Chat Server</button>
+        </div>
+ 
+        <button class="btn-run" id="run-btn" onclick="runPipeline()">
+          <span id="btn-icon">🚀</span>
+          <span id="btn-text" data-i18n="btn-run-pipeline">Run 10-Agent Pipeline</span>
+        </button>
+      </div>
+ 
+      <!-- Live log -->
+      <div class="card">
+        <div class="card-title">📡 <span data-i18n="card-live-log">Live Progress Log</span> <span id="log-count"></span></div>
+        <div class="live-log" id="live-log">
+          <div class="log-entry">
+            <span class="log-ts">--:--:--</span>
+            <span class="log-msg" style="color:var(--text3)" data-i18n="log-waiting">Waiting for task...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+ 
+    <!-- Right: Agent status + Stats -->
+    <div class="side-panel">
+      <div class="card">
+        <div class="card-title">👥 <span data-i18n="card-agent-status">Agent Status</span></div>
+        <div class="agent-grid" id="agent-grid">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+ 
+      <div class="card">
+        <div class="card-title">📊 <span data-i18n="card-run-stats">Run Stats</span></div>
+        <div class="stats-row">
+          <div class="stat-box">
+            <div class="stat-val" id="stat-calls">0</div>
+            <div class="stat-lbl" data-i18n="stat-calls">Agent Calls</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-val" id="stat-time">0s</div>
+            <div class="stat-lbl" data-i18n="stat-time">Total Time</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-val" id="stat-stages">0</div>
+            <div class="stat-lbl" data-i18n="stat-stages">Stages</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Models info -->
+      <div class="card" id="models-card" style="margin-bottom:20px">
+        <div class="card-title">🧩 <span data-i18n="card-models-config">Models Config</span></div>
+        <div id="models-list" style="display:flex;flex-direction:column;gap:5px;">
+          <div style="color:var(--text3);font-size:0.78rem;" data-i18n="loading">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Recent runs history -->
+      <div class="card" id="history-card">
+        <div class="card-title">📜 <span data-i18n="card-recent-runs">Recent Runs</span></div>
+        <div id="history-list" style="display:flex;flex-direction:column;gap:8px;max-height:220px;overflow-y:auto;padding-right:4px;">
+          <div style="color:var(--text3);font-size:0.78rem;" data-i18n="loading-history">Loading history...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Result section -->
+  <div id="result-section">
+    <div class="result-header">
+      <div class="result-title">
+        <span>✨</span>
+        <span data-i18n="result-title">Pipeline Output</span>
+        <span id="result-run-id" style="font-size:0.7rem;color:var(--text3);font-weight:400;font-family:'JetBrains Mono',monospace;"></span>
+      </div>
+      <div class="result-meta">
+        <button class="btn-copy" id="copy-btn" onclick="copyResult()">📋 <span data-i18n="btn-copy">Copy</span></button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" id="tab-final"   onclick="switchTab('final')">📦 <span data-i18n="tab-final">Final Output</span></button>
+      <button class="tab-btn"        id="tab-agents"  onclick="switchTab('agents')">👥 <span data-i18n="tab-agents">Per-Agent</span></button>
+      <button class="tab-btn"        id="tab-raw"     onclick="switchTab('raw')">🔩 <span data-i18n="tab-raw">Raw JSON</span></button>
+    </div>
+
+    <div class="tab-panel active" id="panel-final">
+      <div class="output-box" id="final-output"></div>
+    </div>
+    <div class="tab-panel" id="panel-agents">
+      <div class="agent-result-list" id="agents-output"></div>
+    </div>
+    <div class="tab-panel" id="panel-raw">
+      <div class="output-box" style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;">
+        <pre id="raw-output" style="margin:0;background:none;border:none;padding:0;"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Wiki Explorer ───────────────────────────────────────────────── -->
+  <section id="wiki-section" style="margin-top:48px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+      <div style="width:36px;height:36px;background:linear-gradient(135deg,#22d3ee,#6366f1);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px rgba(34,211,238,0.3);">📚</div>
+      <div>
+        <h2 style="font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,#f1f5f9 40%,#22d3ee);-webkit-background-clip:text;-webkit-text-fill-color:transparent;" data-i18n="wiki-title">Wiki Explorer</h2>
+        <p style="font-size:0.72rem;color:var(--text3);margin-top:2px;" data-i18n="wiki-subtitle">Khám phá kiến thức tự học của Harness — concepts &amp; lessons learned</p>
+      </div>
+      <button id="wiki-refresh-btn" onclick="loadWikiPages()" style="margin-left:auto;padding:6px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text2);font-size:0.75rem;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--cyan)';this.style.color='var(--cyan)'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--text2)'">↻ <span data-i18n="btn-refresh">Refresh</span></button>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden;">
+      <!-- Search bar -->
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;background:rgba(0,0,0,0.15);">
+        <span style="color:var(--text3);font-size:14px;">🔍</span>
+        <input id="wiki-search-input" type="text" data-i18n-ph="placeholder-wiki-search" placeholder="Tìm kiếm wiki..." oninput="onWikiSearch(this.value)"
+          style="flex:1;background:transparent;border:none;outline:none;color:var(--text);font-size:0.88rem;font-family:'Inter',sans-serif;" />
+        <span id="wiki-count-badge" style="font-size:0.7rem;color:var(--text3);white-space:nowrap;"></span>
+      </div>
+      <!-- Pages list -->
+      <div id="wiki-pages-container" style="min-height:180px;max-height:400px;overflow-y:auto;padding:8px 0;">
+        <div style="padding:40px;text-align:center;color:var(--text3);font-size:0.82rem;">Đang tải wiki...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Security Scanner ─────────────────────────────────────────────── -->
+  <section id="security-section" style="margin-top:40px;margin-bottom:60px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+      <div style="width:36px;height:36px;background:linear-gradient(135deg,#f87171,#fb923c);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px rgba(248,113,113,0.3);">🔐</div>
+      <div>
+        <h2 style="font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,#f1f5f9 40%,#f87171);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Security Autofix</h2>
+        <p style="font-size:0.72rem;color:var(--text3);margin-top:2px;">Quét + tự động vá lỗi bảo mật Critical/High — 100% tự động, không cần can thiệp</p>
+      </div>
+    </div>
+
+    <div class="card" style="background:rgba(248,113,113,0.03);border-color:rgba(248,113,113,0.15);">
+      <div style="display:flex;gap:10px;align-items:flex-start;">
+        <div style="flex:1;">
+          <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.06em;">Files cần quét <span style="font-weight:400;text-transform:none;color:var(--text3)">(mỗi dòng một path tương đối)</span></label>
+          <textarea id="sec-files-input" placeholder="support_tools.py&#10;server.py&#10;agents.py" rows="4"
+            style="width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(248,113,113,0.2);border-radius:var(--radius-sm);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:0.82rem;padding:10px 12px;outline:none;resize:vertical;transition:border-color 0.2s;"
+            onfocus="this.style.borderColor='rgba(248,113,113,0.5)'" onblur="this.style.borderColor='rgba(248,113,113,0.2)'"></textarea>
+        </div>
+        <button id="sec-scan-btn" onclick="runSecurityScan()"
+          style="margin-top:24px;padding:10px 20px;background:linear-gradient(135deg,rgba(248,113,113,0.2),rgba(251,146,60,0.2));border:1px solid rgba(248,113,113,0.4);border-radius:var(--radius-sm);color:#fca5a5;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all 0.25s;white-space:nowrap;"
+          onmouseover="this.style.background='linear-gradient(135deg,rgba(248,113,113,0.35),rgba(251,146,60,0.35))';this.style.boxShadow='0 0 20px rgba(248,113,113,0.25)'"
+          onmouseout="this.style.background='linear-gradient(135deg,rgba(248,113,113,0.2),rgba(251,146,60,0.2))';this.style.boxShadow='none'">
+          🔍 Scan &amp; Fix
+        </button>
+      </div>
+
+      <!-- Status bar -->
+      <div id="sec-status" style="display:none;margin-top:16px;padding:10px 14px;background:rgba(0,0,0,0.2);border-radius:var(--radius-sm);border:1px solid var(--border);font-size:0.8rem;color:var(--text2);display:flex;align-items:center;gap:8px;">
+        <span id="sec-spinner" style="animation:spin 1s linear infinite;display:inline-block;">⟳</span>
+        <span id="sec-status-text">Đang khởi động quét bảo mật...</span>
+      </div>
+
+      <!-- Results -->
+      <div id="sec-results" style="display:none;margin-top:16px;"></div>
+    </div>
+  </section>
+
+  <!-- ── Harness Super Tools ─────────────────────────────────────────── -->
+  <section id="super-tools-section" style="margin-top:40px;margin-bottom:60px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+      <div style="width:36px;height:36px;background:linear-gradient(135deg,#a78bfa,#ec4899);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px rgba(167,139,250,0.3);">🚀</div>
+      <div>
+        <h2 style="font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,#f1f5f9 40%,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Harness Super Tools</h2>
+        <p style="font-size:0.72rem;color:var(--text3);margin-top:2px;">Dàn siêu tính năng tự động hóa kiểm thử, tối ưu hóa hiệu năng, cập nhật dependency và tài liệu dự án</p>
+      </div>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden;">
+      <!-- Sub-tabs header -->
+      <div style="display:flex;background:rgba(0,0,0,0.2);border-bottom:1px solid var(--border);overflow-x:auto;">
+        <button class="st-tab-btn active" onclick="switchSTTab('st-testing')" style="padding:12px 18px;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--text);font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:all 0.2s;">🧪 UI/UX &amp; Testing</button>
+        <button class="st-tab-btn" onclick="switchSTTab('st-devops')" style="padding:12px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text3);font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:all 0.2s;">🚧 DevOps Pipeline</button>
+        <button class="st-tab-btn" onclick="switchSTTab('st-analysis')" style="padding:12px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text3);font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:all 0.2s;">📐 Codebase Analysis</button>
+        <button class="st-tab-btn" onclick="switchSTTab('st-intel')" style="padding:12px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text3);font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:all 0.2s;">📚 System Intel</button>
+        <button class="st-tab-btn" onclick="switchSTTab('st-security')" style="padding:12px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text3);font-size:0.8rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:all 0.2s;">🛡️ Security Audit</button>
+      </div>
+
+      <!-- Tab Contents -->
+      <div style="padding:20px;">
+        
+        <!-- 1. UI/UX & Testing -->
+        <div id="st-testing" class="st-tab-content" style="display:block;">
+          <div style="display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:10px;">
+            <button class="sub-tool-btn active" onclick="switchSubTool('testing', 'st-auto-tester')">🧪 Auto-Tester</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('testing', 'st-visual-reviewer')">👁️ Visual Reviewer</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('testing', 'st-benchmarker')">⏱️ Benchmarker</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('testing', 'st-coverage-analyzer')">📊 Coverage Analyzer</button>
+          </div>
+
+          <!-- Sub-tool Auto-Tester -->
+          <div id="st-auto-tester" class="sub-tool-content active">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Files cần sinh test</label>
+                <input id="st-tester-files" type="text" placeholder="support_tools.py" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Findings / Bugs cần test (dạng JSON)</label>
+                <textarea id="st-tester-findings" placeholder="[ {&quot;issue&quot;: &quot;Lỗi logic check path&quot;, &quot;line&quot;: 112} ]" rows="3" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <button onclick="runAutoTester()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Auto-Tester</button>
+              <div id="st-tester-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Visual Reviewer -->
+          <div id="st-visual-reviewer" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">URL chính cần audit</label>
+                <input id="st-visual-url" type="text" placeholder="http://localhost:8000" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Baseline URL để so sánh (Tùy chọn)</label>
+                <input id="st-visual-baseline" type="text" placeholder="http://localhost:8000?baseline=1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <button onclick="runVisualReviewer()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Visual Reviewer</button>
+              <div id="st-visual-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Benchmarker -->
+          <div id="st-benchmarker" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Code A (Python snippet)</label>
+                <textarea id="st-bench-codea" placeholder="def run():&#10;    return [i for i in range(1000)]" rows="4" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Code B (Python snippet)</label>
+                <textarea id="st-bench-codeb" placeholder="def run():&#10;    return list(range(1000))" rows="4" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Số lần chạy kiểm thử (Iterations)</label>
+                <input id="st-bench-iterations" type="number" value="5" min="1" max="20" style="width:80px;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:6px 10px;outline:none;" />
+              </div>
+              <button onclick="runBenchmarker()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Benchmarker</button>
+              <div id="st-bench-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Coverage Analyzer -->
+          <div id="st-coverage-analyzer" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <p style="font-size:0.8rem;color:var(--text2);">Chạy phân tích độ bao phủ kiểm thử (Test Coverage) dựa trên pytest và coverage.py (hoặc AST heuristic fallback).</p>
+              <button onclick="runCoverageAnalyzer()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Coverage Analysis</button>
+              <div id="st-coverage-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. DevOps Pipeline -->
+        <div id="st-devops" class="st-tab-content" style="display:none;">
+          <div style="display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:10px;">
+            <button class="sub-tool-btn active" onclick="switchSubTool('devops', 'st-devops-gate')">🚧 DevOps Gate</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('devops', 'st-dep-upgrade')">📦 Dep-Upgrade</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('devops', 'st-incident-responder')">🚨 Incident Responder</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('devops', 'st-api-contract-tester')">🔌 API Contract Tester</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('devops', 'st-chaos-tester')">💥 Chaos Tester</button>
+          </div>
+
+          <!-- Sub-tool DevOps Gate -->
+          <div id="st-devops-gate" class="sub-tool-content active">
+            <div style="display:flex;flex-direction:column;gap:16px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:20px;">
+                <button onclick="runDevOpsPipeline()" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;display:flex;align-items:center;gap:8px;">
+                  <span id="devops-btn-icon">🚧</span> <span id="devops-btn-text">Run DevOps Gate</span>
+                </button>
+                <div id="devops-tools-used" style="font-size:0.75rem;color:var(--text3);"></div>
+              </div>
+              <div id="devops-results-wrapper" style="display:none;grid-template-columns: 180px 1fr; gap:24px; align-items:start; border-top:1px solid var(--border); padding-top:20px;">
+                <div style="display:flex; flex-direction:column; align-items:center; gap:10px;">
+                  <div style="position:relative; width:120px; height:120px;">
+                    <svg width="120" height="120" viewBox="0 0 120 120" style="transform: rotate(-90deg);">
+                      <circle cx="60" cy="60" r="50" fill="transparent" stroke="var(--border)" stroke-width="10"/>
+                      <circle id="devops-score-circle" cx="60" cy="60" r="50" fill="transparent" stroke="var(--green)" stroke-width="10" stroke-dasharray="314.16" stroke-dashoffset="0" style="transition: stroke-dashoffset 0.6s ease-in-out, stroke 0.3s;"/>
+                    </svg>
+                    <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+                      <span id="devops-score-num" style="font-size:2rem; font-weight:700; color:#fff;">100</span>
+                      <span style="font-size:0.65rem; color:var(--text3); text-transform:uppercase;">Score</span>
+                    </div>
+                  </div>
+                  <div id="devops-verdict-badge" style="padding:4px 10px; border-radius:100px; font-size:0.7rem; font-weight:600; text-transform:uppercase;"></div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:12px; min-width:0;">
+                  <h4 style="font-size:0.85rem; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:0.05em;">Chi tiết lỗi phát hiện</h4>
+                  <div style="display:flex; gap:12px; font-size:0.75rem; margin-bottom:4px;">
+                    <span style="color:var(--text3);">Lint: <strong id="devops-count-lint" style="color:var(--text);">0</strong></span>
+                    <span style="color:var(--text3);">Format: <strong id="devops-count-format" style="color:var(--text);">0</strong></span>
+                    <span style="color:var(--text3);">Type Check: <strong id="devops-count-type" style="color:var(--text);">0</strong></span>
+                  </div>
+                  <div id="devops-findings-list" style="display:flex; flex-direction:column; gap:8px; max-height:300px; overflow-y:auto; padding-right:4px;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Dep-Upgrade -->
+          <div id="st-dep-upgrade" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <input type="checkbox" id="st-dep-dryrun" checked style="cursor:pointer;" />
+                <label for="st-dep-dryrun" style="font-size:0.82rem;color:var(--text2);cursor:pointer;">Chỉ quét đề xuất (Dry Run), không nâng cấp và chạy test thật</label>
+              </div>
+              <button onclick="runDepUpgrade()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Check &amp; Upgrade Dependencies</button>
+              <div id="st-dep-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Incident Responder -->
+          <div id="st-incident-responder" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Nội dung log lỗi hoặc Crash Dump</label>
+                <textarea id="st-incident-log" placeholder="Paste crash dump or logs here..." rows="5" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <button onclick="runIncidentResponder()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Incident Responder</button>
+              <div id="st-incident-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool API Contract Tester -->
+          <div id="st-api-contract-tester" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Endpoints List (JSON)</label>
+                <textarea id="st-contract-endpoints" placeholder='[{"path": "/api/models", "method": "GET"}]' rows="4" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <button onclick="runApiContractTester()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Contract Tester</button>
+              <div id="st-contract-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Chaos Tester -->
+          <div id="st-chaos-tester" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Lệnh chạy ứng dụng thử nghiệm (App Run Command)</label>
+                <input id="st-chaos-command" type="text" placeholder="python server.py" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Thời gian chạy fault injection (giây)</label>
+                <input id="st-chaos-duration" type="number" value="5" min="1" max="60" style="width:80px;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:6px 10px;outline:none;" />
+              </div>
+              <button onclick="runChaosTester()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Chaos Tester</button>
+              <div id="st-chaos-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Codebase Analysis -->
+        <div id="st-analysis" class="st-tab-content" style="display:none;">
+          <div style="display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:10px;">
+            <button class="sub-tool-btn active" onclick="switchSubTool('analysis', 'st-schema-drift')">📐 Schema Drift</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('analysis', 'st-telemetry')">🐛 Telemetry Debugger</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('analysis', 'st-semantic-search')">🔍 Semantic Search</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('analysis', 'st-dead-code-scanner')">💀 Dead Code Scanner</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('analysis', 'st-profiler')">⏱️ Profiler</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('analysis', 'st-sandbox')">💻 Sandbox Run</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('analysis', 'st-swarm-debug')">🐝 Swarm Debugger</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('analysis', 'st-doc-sync')">📝 Doc Sync</button>
+          </div>
+
+          <!-- Sub-tool Schema Drift -->
+          <div id="st-schema-drift" class="sub-tool-content active">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Baseline Schema JSON (Tùy chọn, để trống sẽ dùng baseline file tự lưu)</label>
+                <textarea id="st-schema-baseline" placeholder="{}" rows="3" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <button onclick="runSchemaDrift()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Scan Schema Drift</button>
+              <div id="st-schema-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Telemetry Debugger -->
+          <div id="st-telemetry" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Log lỗi crash / Stack trace từ production</label>
+                <textarea id="st-telemetry-log" placeholder="Traceback (most recent call last):&#10;  File &quot;server.py&quot;, line 230, in security_scan&#10;    result = await st.security_autofix(files=req.files)&#10;KeyError: 'files'" rows="4" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <button onclick="runTelemetryDebugger()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Diagnose Telemetry Error</button>
+              <div id="st-telemetry-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Semantic Search -->
+          <div id="st-semantic-search" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Câu hỏi hoặc Từ khóa tìm kiếm</label>
+                <input id="st-search-query" type="text" placeholder="Tìm các hàm liên quan đến việc vá lỗi bảo mật hoặc git diff" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <button onclick="runSemanticSearch()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Search Codebase</button>
+              <div id="st-search-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:400px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Dead Code Scanner -->
+          <div id="st-dead-code-scanner" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <p style="font-size:0.8rem;color:var(--text2);">Quét codebase Python để phát hiện mã nguồn chết (Dead Code): các hàm, class hoặc biến chưa bao giờ được gọi.</p>
+              <button onclick="runDeadCodeScanner()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Dead Code Scan</button>
+              <div id="st-dead-code-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Profiler -->
+          <div id="st-profiler" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Mã nguồn Python cần chạy profile</label>
+                <textarea id="st-profiler-code" placeholder="def run():&#10;    return sum(i * i for i in range(10000))&#10;run()" rows="6" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Số vòng lặp chạy test (Iterations)</label>
+                <input id="st-profiler-iterations" type="number" value="1" min="1" max="100" style="width:80px;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:6px 10px;outline:none;" />
+              </div>
+              <button onclick="runProfiler()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Profiler</button>
+              <div id="st-profiler-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Sandbox Run -->
+          <div id="st-sandbox" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Mã nguồn Python cần chạy</label>
+                <textarea id="st-sandbox-code" placeholder="print('Hello from Harness Sandbox!')&#10;import math&#10;print(f'PI value is {math.pi}')" rows="8" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Timeout (Giây)</label>
+                <input id="st-sandbox-timeout" type="number" value="5.0" step="0.5" min="0.5" max="30" style="width:80px;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:6px 10px;outline:none;" />
+              </div>
+              <button onclick="runSandbox()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Code</button>
+              <div id="st-sandbox-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Swarm Debugger -->
+          <div id="st-swarm-debug" class="sub-tool-content">
+            <div id="swarm-setup-container" style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Log lỗi crash / Stack trace</label>
+                <textarea id="st-swarm-log" placeholder="Traceback (most recent call last):&#10;  File &quot;server.py&quot;, line 230, in security_scan&#10;    result = await st.security_autofix(files=req.files)&#10;KeyError: 'files'" rows="4" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Files liên quan (Tùy chọn, phân tách bằng dấu phẩy)</label>
+                <input id="st-swarm-files" type="text" placeholder="server.py, support_tools.py" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <button onclick="startInteractiveSwarm()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;display:flex;align-items:center;gap:8px;">
+                <span>🐝</span> Start Interactive Swarm Debugger
+              </button>
+            </div>
+            <div id="swarm-stepper-container" style="display:none; flex-direction:column; gap:16px; border-top:1px solid var(--border); padding-top:20px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <span style="font-size:0.78rem; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:0.05em;">Swarm Session: <span id="swarm-session-id" style="font-family:monospace; color:var(--accent2);">N/A</span></span>
+                <button onclick="cancelSwarmSession()" style="padding:6px 12px; background:rgba(248,113,113,0.15); border:1px solid rgba(248,113,113,0.3); border-radius:var(--radius-sm); color:var(--red); font-size:0.75rem; cursor:pointer; font-weight:600;">
+                  Rollback &amp; Hủy bỏ
+                </button>
+              </div>
+              <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-bottom:10px;">
+                <div id="step-node-1" style="padding:10px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; align-items:center; text-align:center; transition: all 0.25s;">
+                  <span style="font-size:1.1rem; margin-bottom:4px;">📐</span>
+                  <span style="font-size:0.75rem; font-weight:700; color:var(--text);">1. Architect</span>
+                  <span id="step-status-1" style="font-size:0.6rem; color:var(--text3); text-transform:uppercase; margin-top:2px;">Pending</span>
+                </div>
+                <div id="step-node-2" style="padding:10px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; align-items:center; text-align:center; transition: all 0.25s;">
+                  <span style="font-size:1.1rem; margin-bottom:4px;">🧪</span>
+                  <span style="font-size:0.75rem; font-weight:700; color:var(--text);">2. Tester</span>
+                  <span id="step-status-2" style="font-size:0.6rem; color:var(--text3); text-transform:uppercase; margin-top:2px;">Pending</span>
+                </div>
+                <div id="step-node-3" style="padding:10px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; align-items:center; text-align:center; transition: all 0.25s;">
+                  <span style="font-size:1.1rem; margin-bottom:4px;">💻</span>
+                  <span style="font-size:0.75rem; font-weight:700; color:var(--text);">3. Coder</span>
+                  <span id="step-status-3" style="font-size:0.6rem; color:var(--text3); text-transform:uppercase; margin-top:2px;">Pending</span>
+                </div>
+                <div id="step-node-4" style="padding:10px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; align-items:center; text-align:center; transition: all 0.25s;">
+                  <span style="font-size:1.1rem; margin-bottom:4px;">👀</span>
+                  <span style="font-size:0.75rem; font-weight:700; color:var(--text);">4. Reviewer</span>
+                  <span id="step-status-4" style="font-size:0.6rem; color:var(--text3); text-transform:uppercase; margin-top:2px;">Pending</span>
+                </div>
+              </div>
+              <div style="border:1px solid var(--border); border-radius:var(--radius); background:rgba(0,0,0,0.15); padding:16px; display:flex; flex-direction:column; gap:12px;">
+                <h3 id="step-panel-title" style="font-size:0.9rem; color:var(--accent2); font-weight:700;">Đang xử lý...</h3>
+                <div id="step-input-architect" style="display:none; flex-direction:column; gap:8px;">
+                  <div style="padding:10px; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--border); font-size:0.82rem; line-height:1.5; margin-bottom:8px;">
+                    <strong>Nguyên nhân gốc rễ:</strong> <span id="arch-root-cause"></span><br>
+                    <strong>Cách xử lý đề xuất:</strong> <span id="arch-suggested-approach"></span>
+                  </div>
+                  <div>
+                    <label style="display:block; font-size:0.75rem; font-weight:600; color:var(--text2); margin-bottom:6px;">Files cần chỉnh sửa (ngăn cách bằng dấu phẩy)</label>
+                    <input id="swarm-editable-files" type="text" style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--border2); border-radius:var(--radius-sm); color:var(--text); padding:8px 12px; outline:none;" />
+                  </div>
+                </div>
+                <div id="step-input-tester" style="display:none; flex-direction:column; gap:8px;">
+                  <p style="font-size:0.8rem; color:var(--text2);">Tester Agent đã sinh mã tái hiện lỗi (reproducer test). Bạn có thể sửa đổi trước khi chạy thử.</p>
+                  <div>
+                    <label style="display:block; font-size:0.75rem; font-weight:600; color:var(--text2); margin-bottom:6px;">Reproducer Code (Python)</label>
+                    <textarea id="swarm-editable-reproducer" rows="8" style="width:100%; background:rgba(0,0,0,0.4); border:1px solid var(--border2); border-radius:var(--radius-sm); color:var(--text); font-family:'JetBrains Mono',monospace; font-size:0.8rem; padding:10px 12px; outline:none; resize:vertical;"></textarea>
+                  </div>
+                  <div id="tester-sandbox-output-box" style="display:none; padding:10px; background:rgba(248,113,113,0.06); border-radius:var(--radius-sm); border:1px solid rgba(248,113,113,0.15); font-family:monospace; font-size:0.75rem; max-height:150px; overflow-y:auto; white-space:pre-wrap;">
+                    <strong>Kết quả chạy reproducer:</strong><br><span id="tester-sandbox-output"></span>
+                  </div>
+                </div>
+                <div id="step-input-coder" style="display:none; flex-direction:column; gap:8px;">
+                  <p style="font-size:0.8rem; color:var(--text2);">Coder Agent đã thiết kế bản vá (Unified Diff). Bạn có thể tùy chỉnh trực tiếp bản vá này.</p>
+                  <div>
+                    <label style="display:block; font-size:0.75rem; font-weight:600; color:var(--text2); margin-bottom:6px;">Bản vá Unified Diff</label>
+                    <textarea id="swarm-editable-patch" rows="8" style="width:100%; background:rgba(0,0,0,0.4); border:1px solid var(--border2); border-radius:var(--radius-sm); color:var(--text); font-family:'JetBrains Mono',monospace; font-size:0.8rem; padding:10px 12px; outline:none; resize:vertical;"></textarea>
+                  </div>
+                </div>
+                <div id="step-input-reviewer" style="display:none; flex-direction:column; gap:8px;">
+                  <p style="font-size:0.8rem; color:var(--text2);">Bản vá đã được áp dụng và vượt qua kiểm thử. Reviewer Agent đang tổng hợp đánh giá.</p>
+                  <div id="reviewer-verdict-box" style="padding:12px; background:rgba(52,211,153,0.06); border-radius:var(--radius-sm); border:1px solid rgba(52,211,153,0.15); line-height:1.5; font-size:0.85rem;">
+                    <strong>Reviewer Verdict:</strong> <span id="reviewer-verdict-text" style="font-weight:700;"></span><br>
+                    <strong>Summary:</strong> <span id="reviewer-summary-text"></span>
+                  </div>
+                </div>
+                <div id="step-status-completed" style="display:none; flex-direction:column; gap:8px;">
+                  <div style="padding:12px; background:var(--green-dim); border-radius:var(--radius-sm); border:1px solid rgba(52,211,153,0.3); font-size:0.85rem; text-align:center;">
+                    🎉 <strong>Swarm Debugger hoàn thành nhiệm vụ!</strong> Bản vá đã được approve và lưu chính thức.
+                  </div>
+                  <button onclick="resetSwarmDebuggerUI()" style="align-self:center; padding:8px 16px; background:var(--surface2); border:1px solid var(--border2); border-radius:var(--radius-sm); color:var(--text); cursor:pointer;">Quay lại</button>
+                </div>
+                <div id="step-status-failed" style="display:none; flex-direction:column; gap:8px;">
+                  <div style="padding:12px; background:var(--red-dim); border-radius:var(--radius-sm); border:1px solid rgba(248,113,113,0.3); font-size:0.85rem; text-align:center;">
+                    ❌ <strong>Quy trình Swarm thất bại hoặc bị hủy.</strong> Các thay đổi đã được rollback.
+                  </div>
+                  <button onclick="resetSwarmDebuggerUI()" style="align-self:center; padding:8px 16px; background:var(--surface2); border:1px solid var(--border2); border-radius:var(--radius-sm); color:var(--text); cursor:pointer;">Quay lại</button>
+                </div>
+                <button id="swarm-proceed-btn" onclick="proceedSwarmSession()" style="align-self:flex-start; padding:10px 20px; background:var(--accent); color:#fff; border:none; border-radius:var(--radius-sm); cursor:pointer; font-weight:600; display:flex; align-items:center; gap:8px;">
+                  <span id="swarm-proceed-icon">⏭️</span> <span id="swarm-proceed-text">Tiếp tục bước tiếp theo</span>
+                </button>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:6px;">
+                <label style="font-size:0.75rem; font-weight:600; color:var(--text2); text-transform:uppercase;">Logs Quy trình Swarm</label>
+                <div id="swarm-stepper-logs" style="background:rgba(0,0,0,0.5); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px 14px; max-height:200px; overflow-y:auto; font-family:'JetBrains Mono',monospace; font-size:0.72rem; line-height:1.6; color:var(--text2);"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Doc Sync -->
+          <div id="st-doc-sync" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <p style="font-size:0.8rem;color:var(--text2);">Nhấn nút dưới để tự động phát hiện các hàm public mới viết và đồng bộ vào tài liệu dự án README.md.</p>
+              <button onclick="runDocSync()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Sync Documentation</button>
+              <div id="st-doc-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. System Intel -->
+        <div id="st-intel" class="st-tab-content" style="display:none;">
+          <div style="display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:10px;">
+            <button class="sub-tool-btn active" onclick="switchSubTool('intel', 'st-pr-generator')">📝 PR Generator</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('intel', 'st-license-scanner')">📄 License Scanner</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('intel', 'st-sbom-generator')">📦 SBOM Generator</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('intel', 'st-a11y-auditor')">♿ A11y Auditor</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('intel', 'st-i18n-auditor')">🌐 i18n Auditor</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('intel', 'st-polyglot-reviewer')">🗣️ Polyglot Reviewer</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('intel', 'st-git-archaeologist')">🔍 Git Archaeologist</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('intel', 'st-ff-auditor')">🚩 Feature Flag Auditor</button>
+          </div>
+
+          <!-- Sub-tool PR Generator -->
+          <div id="st-pr-generator" class="sub-tool-content active">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Git Diff (Tùy chọn, để trống sẽ tự lấy diff hiện tại)</label>
+                <textarea id="st-pr-diff" placeholder="Paste git diff here..." rows="4" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Nhánh / Commit (Branch / Commit - Tùy chọn)</label>
+                <input id="st-pr-branch" type="text" placeholder="main" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <button onclick="runPrGenerator()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Generate PR Description</button>
+              <div id="st-pr-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool License Scanner -->
+          <div id="st-license-scanner" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <p style="font-size:0.8rem;color:var(--text2);">Quét toàn bộ codebase để phát hiện giấy phép bản quyền của các dependencies và tệp tin mã nguồn.</p>
+              <button onclick="runLicenseScanner()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Scan Licenses</button>
+              <div id="st-license-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool SBOM Generator -->
+          <div id="st-sbom-generator" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <p style="font-size:0.8rem;color:var(--text2);">Tạo Software Bill of Materials (SBOM) chuẩn SPDX JSON dựa trên các thư viện đang sử dụng.</p>
+              <button onclick="runSbomGenerator()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Generate SBOM</button>
+              <div id="st-sbom-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool A11y Auditor -->
+          <div id="st-a11y-auditor" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Danh sách file HTML/CSS/JSX (Ngăn cách bằng dấu phẩy, để trống để tự tìm)</label>
+                <input id="st-a11y-files" type="text" placeholder="index.html" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <button onclick="runA11yAuditor()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run A11y Audit</button>
+              <div id="st-a11y-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool i18n Auditor -->
+          <div id="st-i18n-auditor" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Danh sách file cần quét hardcoded string (Ngăn cách bằng dấu phẩy)</label>
+                <input id="st-i18n-files" type="text" placeholder="index.html" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <button onclick="runI18nAuditor()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run i18n Audit</button>
+              <div id="st-i18n-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Polyglot Reviewer -->
+          <div id="st-polyglot-reviewer" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Danh sách file cần review ngôn ngữ (Ngăn cách bằng dấu phẩy)</label>
+                <input id="st-poly-files" type="text" placeholder="server.py, index.html" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <button onclick="runPolyglotReviewer()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Run Polyglot Review</button>
+              <div id="st-poly-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Git Archaeologist -->
+          <div id="st-git-archaeologist" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">File path cần blame lịch sử git (Bắt buộc)</label>
+                <input id="st-archaeo-file" type="text" placeholder="server.py" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;outline:none;" />
+              </div>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;">Dòng cần khảo cổ (Line Number - Tùy chọn)</label>
+                <input id="st-archaeo-line" type="number" placeholder="50" style="width:100px;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:6px 10px;outline:none;" />
+              </div>
+              <button onclick="runGitArchaeologist()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Blame &amp; Trace History</button>
+              <div id="st-archaeo-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Feature Flag Auditor -->
+          <div id="st-ff-auditor" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <p style="font-size:0.8rem;color:var(--text2);">Quét codebase để phát hiện cấu trúc feature flags, các flag không sử dụng hoặc quá hạn.</p>
+              <button onclick="runFeatureFlagAuditor()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Scan Feature Flags</button>
+              <div id="st-ff-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Security Audit -->
+        <div id="st-security" class="st-tab-content" style="display:none;">
+          <div style="display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:10px;">
+            <button class="sub-tool-btn active" onclick="switchSubTool('security', 'st-config-audit')">🛡️ Config Audit</button>
+            <button class="sub-tool-btn" onclick="switchSubTool('security', 'st-security-autofix')">⚡ Security Autofix</button>
+          </div>
+
+          <!-- Sub-tool Config Audit -->
+          <div id="st-config-audit" class="sub-tool-content active">
+            <div style="display:flex;flex-direction:column;gap:16px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:20px;">
+                <button onclick="runConfigAudit()" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;display:flex;align-items:center;gap:8px;">
+                  <span id="config-btn-icon">🛡️</span> <span id="config-btn-text">Run Config Audit</span>
+                </button>
+              </div>
+              <div id="config-results-wrapper" style="display:none; flex-direction:column; gap:20px; border-top:1px solid var(--border); padding-top:20px;">
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                  <h4 style="font-size:0.8rem; font-weight:600; color:var(--red); text-transform:uppercase; letter-spacing:0.05em; display:flex; align-items:center; gap:6px;">
+                    <span>🔑</span> Exposed Secrets &amp; Credentials
+                  </h4>
+                  <div id="config-secrets-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                  <h4 style="font-size:0.8rem; font-weight:600; color:var(--orange); text-transform:uppercase; letter-spacing:0.05em; display:flex; align-items:center; gap:6px;">
+                    <span>📐</span> Configuration Drift (.env vs .env.example)
+                  </h4>
+                  <div id="config-drift-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                  <h4 style="font-size:0.8rem; font-weight:600; color:var(--cyan); text-transform:uppercase; letter-spacing:0.05em; display:flex; align-items:center; gap:6px;">
+                    <span>🔒</span> Security &amp; General Audits
+                  </h4>
+                  <div id="config-general-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sub-tool Security Autofix -->
+          <div id="st-security-autofix" class="sub-tool-content">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <p style="font-size:0.8rem;color:var(--text2);">Quét + tự động vá lỗi bảo mật Critical/High — 100% tự động, không cần can thiệp</p>
+              <div>
+                <label style="display:block;font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.06em;">Files cần quét &amp; vá (phân tách dòng)</label>
+                <textarea id="st-sec-autofix-files" placeholder="support_tools.py&#10;server.py" rows="3" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:monospace;padding:8px 12px;outline:none;resize:vertical;"></textarea>
+              </div>
+              <button id="st-sec-autofix-btn" onclick="runSecurityAutofixSubTool()" style="align-self:flex-start;padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;">Scan &amp; Auto-Fix Security</button>
+              <div id="st-sec-autofix-result" style="display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ── FinOps Dashboard ─────────────────────────────────────────────── -->
+  <section id="finops-section" style="margin-top:40px;margin-bottom:60px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+      <div style="width:36px;height:36px;background:linear-gradient(135deg,#10b981,#3b82f6);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px rgba(16,185,129,0.3);">💳</div>
+      <div>
+        <h2 style="font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,#f1f5f9 40%,#10b981);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">FinOps Dashboard</h2>
+        <p style="font-size:0.72rem;color:var(--text3);margin-top:2px;">Thống kê thời gian thực về chi phí gọi LLM, số lượng token tiêu thụ và độ trễ hệ thống</p>
+      </div>
+      <button id="finops-refresh-btn" onclick="loadFinOpsStats()" style="margin-left:auto;padding:6px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text2);font-size:0.75rem;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--green)';this.style.color='var(--green)'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--text2)'">↻ Refresh</button>
+    </div>
+
+    <div class="card" style="margin-bottom:20px;padding:24px;">
+      <!-- Stats summary -->
+      <div class="stats-row" style="margin-bottom:24px;display:grid;grid-template-columns:repeat(4, 1fr);gap:16px;">
+        <div class="stat-box" style="border-color:rgba(16,185,129,0.25);padding:16px;text-align:center;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);">
+          <div class="stat-val" id="fin-total-cost" style="color:var(--green);font-size:1.3rem;font-weight:700;">$0.000000</div>
+          <div class="stat-lbl" style="font-size:0.7rem;color:var(--text3);margin-top:4px;">Tổng chi phí (USD)</div>
+        </div>
+        <div class="stat-box" style="padding:16px;text-align:center;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);">
+          <div class="stat-val" id="fin-total-tokens" style="font-size:1.3rem;font-weight:700;color:var(--text);">0</div>
+          <div class="stat-lbl" style="font-size:0.7rem;color:var(--text3);margin-top:4px;">Tổng Tokens</div>
+        </div>
+        <div class="stat-box" style="padding:16px;text-align:center;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);">
+          <div class="stat-val" id="fin-cache-hits" style="font-size:1.3rem;font-weight:700;color:var(--text);">0</div>
+          <div class="stat-lbl" style="font-size:0.7rem;color:var(--text3);margin-top:4px;">Cache Hits</div>
+        </div>
+        <div class="stat-box" style="padding:16px;text-align:center;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);">
+          <div class="stat-val" id="fin-avg-latency" style="font-size:1.3rem;font-weight:700;color:var(--text);">0.0s</div>
+          <div class="stat-lbl" style="font-size:0.7rem;color:var(--text3);margin-top:4px;">Thời gian phản hồi TB</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+        <!-- Left: Model details -->
+        <div style="border-right:1px solid var(--border);padding-right:20px;">
+          <h3 style="font-size:0.8rem;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.05em;">Thống kê theo Model</h3>
+          <div id="fin-model-stats" style="display:flex;flex-direction:column;gap:8px;">
+            <div style="color:var(--text3);font-size:0.78rem;">Chưa có dữ liệu thống kê...</div>
+          </div>
+        </div>
+        <!-- Right: Recent runs -->
+        <div>
+          <h3 style="font-size:0.8rem;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.05em;">Lịch sử Runs FinOps</h3>
+          <div id="fin-runs-stats" style="display:flex;flex-direction:column;gap:8px;">
+            <div style="color:var(--text3);font-size:0.78rem;">Chưa có lịch sử chạy...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+const API = '';  // same origin
+
+// ── Agents definition ───────────────────────────────────────────────────────
+const AGENTS = [
+  { role: 'manager',     icon: '🧠', label: 'Manager',     layer: 'Orchestration' },
+  { role: 'analyzer',    icon: '🔍', label: 'Analyzer',    layer: 'Analysis' },
+  { role: 'code_a',      icon: '⚡', label: 'Code A',      layer: 'Code' },
+  { role: 'code_b',      icon: '🔷', label: 'Code B',      layer: 'Code' },
+  { role: 'reviewer',    icon: '👀', label: 'Reviewer',    layer: 'Review' },
+  { role: 'tester',      icon: '🧪', label: 'Tester',      layer: 'Review' },
+  { role: 'security',    icon: '🔐', label: 'Security',    layer: 'Review' },
+  { role: 'debugger',    icon: '🐛', label: 'Debugger',    layer: 'Fix' },
+  { role: 'worker',      icon: '⚙️', label: 'Worker',      layer: 'Worker' },
+  { role: 'synthesizer', icon: '🔗', label: 'Synthesizer', layer: 'Orchestration' },
+];
+
+let agentModels = {};
+let lastResult = null;
+let idleTimeoutId = null;
+
+// ── Init ────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  renderPipelineStrip();
+  renderAgentGrid();
+  loadModels();
+  loadHistory();
+  loadWikiPages();
+  loadFinOpsStats();
+});
+
+async function loadModels() {
+  try {
+    const r = await fetch(`${API}/api/models`);
+    if (!r.ok) return;
+    const d = await r.json();
+    // map keys
+    agentModels = {
+      manager:     d.manager     || '',
+      synthesizer: d.synthesizer || '',
+      analyzer:    d.reasoning   || '',
+      code_a:      d.code        || '',
+      code_b:      d.code        || '',
+      reviewer:    d.research    || '',
+      tester:      d.research    || '',
+      security:    d.research    || '',
+      debugger:    d.code        || '',
+      worker:      d.worker      || '',
+    };
+    renderAgentGrid();
+    renderModelsCard(d);
+  } catch {}
+}
+
+function renderModelsCard(d) {
+  const el = document.getElementById('models-list');
+  if (!d || typeof d !== 'object' || Array.isArray(d)) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:0.78rem;">Không có thông tin cấu hình</div>';
+    return;
+  }
+  const rows = Object.entries(d).map(([k,v]) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:0.75rem;color:var(--text2);text-transform:capitalize">${escHtml(k)}</span>
+      <span style="font-size:0.68rem;font-family:'JetBrains Mono',monospace;color:var(--accent2)">${escHtml(v)}</span>
+    </div>
+  `).join('');
+  el.innerHTML = rows;
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch(`${API}/api/history`);
+    if (!r.ok) return;
+    const d = await r.json();
+    renderHistoryList(d);
+  } catch {}
+}
+
+function renderHistoryList(runs) {
+  const el = document.getElementById('history-list');
+  const safeRuns = Array.isArray(runs) ? runs : [];
+  if (!safeRuns.length) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:0.78rem;text-align:center;padding:20px 0;">Chưa có lượt chạy nào</div>';
+    return;
+  }
+  // show last 5 runs, reverse order (newest first)
+  const list = [...safeRuns].reverse().slice(0, 5);
+  el.innerHTML = list.map(run => {
+    const isSuccess = run.status === 'success';
+    const statusColor = isSuccess ? 'var(--green)' : 'var(--red)';
+    const statusText = isSuccess ? '✓' : '✗';
+    const dur = run.total_duration_ms ? `${(run.total_duration_ms/1000).toFixed(1)}s` : '';
+    const task = typeof run.task === 'string' ? run.task : '';
+    if (!task) return '';
+    return `
+      <div style="padding:10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:rgba(255,255,255,0.01); display:flex; flex-direction:column; gap:6px; cursor:pointer; transition: all 0.2s;" 
+           onmouseover="this.style.borderColor='var(--border2)'; this.style.background='rgba(255,255,255,0.03)'"
+           onmouseout="this.style.borderColor='var(--border)'; this.style.background='rgba(255,255,255,0.01)'"
+           data-task="${escHtml(task)}"
+           onclick="setPrompt(this.getAttribute('data-task'))">
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.7rem;">
+          <span style="font-weight:600; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:130px;">#${run.run_id}</span>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span style="color:${statusColor}; font-weight:bold;">${statusText}</span>
+            <span style="color:var(--text3);">${dur}</span>
+          </div>
+        </div>
+        <div style="font-size:0.75rem; color:var(--text3); overflow:hidden; text-overflow:ellipsis; display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical; line-height:1.3; max-height:2.6em;">
+          ${escHtml(task)}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ── Pipeline strip ──────────────────────────────────────────────────────────
+function renderPipelineStrip() {
+  const strip = document.getElementById('pipeline-strip');
+  const stages = [
+    { nodes: [{ role:'manager', icon:'🧠', label:'Manager' }] },
+    { nodes: [{ role:'analyzer', icon:'🔍', label:'Analyzer' }] },
+    { nodes: [{ role:'code_a', icon:'⚡', label:'Code A' }, { role:'code_b', icon:'🔷', label:'Code B' }], parallel: true },
+    { nodes: [{ role:'reviewer', icon:'👀', label:'Reviewer' }, { role:'tester', icon:'🧪', label:'Tester' }, { role:'security', icon:'🔐', label:'Security' }], parallel: true },
+    { nodes: [{ role:'debugger', icon:'🐛', label:'Debugger' }] },
+    { nodes: [{ role:'synthesizer', icon:'🔗', label:'Synth' }] },
+  ];
+
+  let html = '';
+  stages.forEach((stage, i) => {
+    if (i > 0) html += `<div class="pipe-arrow">→</div>`;
+    if (stage.parallel) {
+      html += `<div class="pipe-group">`;
+      stage.nodes.forEach(n => {
+        const model = agentModels[n.role] || '';
+        html += `
+          <div class="pipe-node" id="pnode-${n.role}" title="${n.label}">
+            <span class="node-icon">${n.icon}</span>
+            <span class="node-label">${n.label}</span>
+            ${model ? `<span class="node-model">${model}</span>` : ''}
+          </div>`;
+      });
+      html += `</div>`;
+    } else {
+      const n = stage.nodes[0];
+      const model = agentModels[n.role] || '';
+      html += `
+        <div class="pipe-node" id="pnode-${n.role}" title="${n.label}">
+          <span class="node-icon">${n.icon}</span>
+          <span class="node-label">${n.label}</span>
+          ${model ? `<span class="node-model">${model}</span>` : ''}
+        </div>`;
+    }
+  });
+  strip.innerHTML = html;
+}
+
+// ── Agent grid ──────────────────────────────────────────────────────────────
+function renderAgentGrid() {
+  const grid = document.getElementById('agent-grid');
+  grid.innerHTML = AGENTS.map(a => `
+    <div class="agent-row" id="arow-${a.role}">
+      <span class="agent-icon">${a.icon}</span>
+      <div class="agent-info">
+        <div class="agent-name">${a.label}</div>
+        <div class="agent-model">${agentModels[a.role] || a.layer}</div>
+      </div>
+      <span class="agent-status" id="astatus-${a.role}">idle</span>
+      <div class="agent-dot" id="adot-${a.role}"></div>
+    </div>
+  `).join('');
+}
+
+function setAgentState(role, state, duration) {
+  const row = document.getElementById(`arow-${role}`);
+  const status = document.getElementById(`astatus-${role}`);
+  const pnode = document.getElementById(`pnode-${role}`);
+  if (!row) return;
+  row.className = `agent-row ${state}`;
+  if (pnode) pnode.className = `pipe-node ${state}`;
+  if (status) {
+    status.textContent = state === 'active' ? '⟳ running'
+                        : state === 'done'   ? '✓ done'
+                        : state === 'error'  ? '✗ error'
+                        : 'idle';
+    if (duration && state === 'done') status.textContent += ` ${(duration/1000).toFixed(1)}s`;
+  }
+}
+
+function resetAgentStates() {
+  AGENTS.forEach(a => setAgentState(a.role, ''));
+}
+
+// ── Log ──────────────────────────────────────────────────────────────────────
+let logCount = 0;
+
+function getLogEl() {
+  return document.getElementById('live-log');
+}
+
+function addLog(event, message) {
+  const el = getLogEl();
+  if (!el) return;
+  const now = new Date();
+  const ts = now.toTimeString().slice(0, 8);
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${event}`;
+  entry.innerHTML = `<span class="log-ts">${ts}</span><span class="log-msg">${escHtml(message)}</span>`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+  logCount++;
+  document.getElementById('log-count').textContent = `· ${logCount} events`;
+}
+
+function clearLog() {
+  const el = getLogEl();
+  if (el) el.innerHTML = '';
+  logCount = 0;
+  document.getElementById('log-count').textContent = '';
+}
+
+// ── Run pipeline ─────────────────────────────────────────────────────────────
+let running = false;
+
+async function runPipeline() {
+  if (running) return;
+  const task = document.getElementById('task-input').value.trim();
+  if (!task) { showToast('⚠️ Nhập task trước đã!'); return; }
+
+  if (idleTimeoutId) {
+    clearTimeout(idleTimeoutId);
+    idleTimeoutId = null;
+  }
+  running = true;
+  clearLog();
+  resetAgentStates();
+  lastResult = null;
+
+  // Reset stats
+  document.getElementById('stat-calls').textContent   = '0';
+  document.getElementById('stat-time').textContent    = '0s';
+  document.getElementById('stat-stages').textContent  = '0';
+
+  // Hide result
+  document.getElementById('result-section').classList.remove('visible');
+
+  // Button state
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  document.getElementById('btn-icon').innerHTML = '<div class="spinner"></div>';
+  document.getElementById('btn-text').textContent = 'Running Pipeline...';
+  document.getElementById('status-badge').textContent = '⟳ Running';
+  document.getElementById('status-badge').style.color = 'var(--cyan)';
+
+  addLog('start', '🚀 Starting pipeline...');
+
+  try {
+    const resp = await fetch(`${API}/api/run/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      addLog('error', `❌ Server error: ${err}`);
+      doneState(false);
+      return;
+    }
+
+    if (!resp.body) {
+      addLog('error', '❌ Response body is empty or stream unavailable');
+      doneState(false);
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    let ended = false;
+
+    while (!ended) {
+      const { done, value } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop();
+
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          const lines = block.split('\n');
+          let dataContent = '';
+          for (const line of lines) {
+            if (line.startsWith('data:')) {
+              dataContent += line.slice(line.indexOf(':') + 1).trim() + ' ';
+            }
+          }
+          const raw = dataContent.trim();
+          if (!raw) continue;
+          try {
+            const msg = JSON.parse(raw);
+            handleSSE(msg);
+            if (msg.event === 'end') { 
+              try { await reader.cancel(); } catch(_) {}
+              ended = true;
+              break; 
+            }
+          } catch {}
+        }
+      }
+      if (done) break;
+    }
+
+    // Process remaining buffer if not ended
+    if (!ended && buffer && buffer.trim()) {
+      const lines = buffer.split('\n');
+      let dataContent = '';
+      for (const line of lines) {
+        if (line.startsWith('data:')) {
+          dataContent += line.slice(line.indexOf(':') + 1).trim() + ' ';
+        }
+      }
+      const raw = dataContent.trim();
+      if (raw) {
+        try {
+          const msg = JSON.parse(raw);
+          handleSSE(msg);
+        } catch {}
+      }
+    }
+  } catch (e) {
+    addLog('error', `❌ Connection error: ${e.message}`);
+    doneState(false);
+  }
+}
+
+function handleSSE(msg) {
+  const { event, message, data } = msg;
+
+  switch (event) {
+    case 'start':
+      addLog('start', message); break;
+
+    case 'planning':
+      addLog('planning', message);
+      setAgentState('manager', 'active'); break;
+
+    case 'plan_ready':
+      addLog('done', message);
+      setAgentState('manager', 'done');
+      // parse stage count
+      const stageM = message.match(/(\d+) stage/);
+      if (stageM) document.getElementById('stat-stages').textContent = stageM[1];
+      break;
+
+    case 'stage':
+      addLog('stage', message);
+      // Try to mark agents as active based on stage message
+      const rolesInMsg = message.match(/\[([\w, ]+)\]/);
+      if (rolesInMsg) {
+        rolesInMsg[1].split(',').map(r => r.trim()).forEach(r => setAgentState(r, 'active'));
+      }
+      break;
+
+    case 'synthesizing':
+      addLog('stage', message);
+      setAgentState('synthesizer', 'active'); break;
+
+    case 'agent_done':
+      addLog('agent_done', message);
+      // Parse role from message: [role_name]
+      const roleM = message.match(/\[([^\]]+)\]/);
+      if (roleM) {
+        const r = roleM[1].toLowerCase().replace(' ', '_');
+        const durM = message.match(/(\d+)ms/);
+        setAgentState(r, 'done', durM ? parseInt(durM[1]) : null);
+      }
+      break;
+
+    case 'done':
+      addLog('done', message);
+      setAgentState('synthesizer', 'done');
+      // Parse call count
+      const callsM = message.match(/(\d+) agent calls/);
+      if (callsM) document.getElementById('stat-calls').textContent = callsM[1];
+      const msM = message.match(/(\d+)ms total/);
+      if (msM) document.getElementById('stat-time').textContent = `${(parseInt(msM[1])/1000).toFixed(1)}s`;
+      break;
+
+    case 'timeout':
+      addLog('error', message);
+      doneState(false); break;
+
+    case 'error':
+      addLog('error', message || '❌ Stream error occurred');
+      doneState(false); break;
+
+    case 'result':
+      if (data) {
+        lastResult = data;
+        showResult(data);
+        doneState(true);
+      }
+      break;
+
+    case 'end':
+      if (!lastResult) {
+        addLog('error', '❌ Pipeline ended prematurely without producing results.');
+        doneState(false);
+      }
+      break;
+  }
+}
+
+function doneState(success) {
+  running = false;
+  const btn = document.getElementById('run-btn');
+  btn.disabled = false;
+  document.getElementById('btn-icon').textContent = success ? '🚀' : '⚠️';
+  document.getElementById('btn-text').textContent = 'Run 10-Agent Pipeline';
+  const badge = document.getElementById('status-badge');
+  badge.textContent = success ? '● Done' : '● Error';
+  badge.style.color = success ? 'var(--green)' : 'var(--red)';
+  
+  if (idleTimeoutId) {
+    clearTimeout(idleTimeoutId);
+  }
+  idleTimeoutId = setTimeout(() => { 
+    badge.textContent = '● Idle'; 
+    badge.style.color = ''; 
+    idleTimeoutId = null;
+  }, 5000);
+  
+  loadHistory();
+}
+
+// ── Result rendering ─────────────────────────────────────────────────────────
+function showResult(data) {
+  const section = document.getElementById('result-section');
+  section.classList.add('visible');
+  document.getElementById('result-run-id').textContent = `#${data.run_id}`;
+
+  // Final output
+  document.getElementById('final-output').innerHTML = renderMarkdown(data.final_summary || '');
+
+  // Per-agent
+  const VALID_ROLES = ['manager', 'synthesizer', 'analyzer', 'code_a', 'code_b', 'reviewer', 'tester', 'security', 'debugger', 'worker'];
+  const agentsEl = document.getElementById('agents-output');
+  const agentResults = Array.isArray(data.agent_results) ? data.agent_results : [];
+  if (agentResults.length) {
+    agentsEl.innerHTML = agentResults.map((r, i) => {
+      const roleClass = VALID_ROLES.includes(r.agent_role) ? r.agent_role : 'unknown';
+      const roleText = (r.agent_role || 'unknown').toUpperCase();
+      return `
+        <div class="agent-result-item" id="ari-${i}">
+          <div class="agent-result-header" onclick="toggleAgentResult(${i})">
+            <span class="result-role ${roleClass}">${roleText}</span>
+            <span class="result-model">${escHtml(r.model_used || 'unknown')}</span>
+            <span class="result-dur">${r.duration_ms ? (r.duration_ms/1000).toFixed(1)+'s' : ''}</span>
+            <span class="result-status" style="font-size:0.75rem;color:${r.status==='success'?'var(--green)':'var(--red)'}">${r.status==='success'?'✓':'✗'}</span>
+            <span class="result-chevron">▼</span>
+          </div>
+          <div class="agent-result-body">${escHtml(r.result || r.error || '(empty)')}</div>
+        </div>
+      `;
+    }).join('');
+  } else {
+    agentsEl.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><p>No agent results</p></div>';
+  }
+
+  // Raw JSON
+  document.getElementById('raw-output').textContent = JSON.stringify(data, null, 2);
+
+  // Scroll to result
+  section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function toggleAgentResult(i) {
+  const el = document.getElementById(`ari-${i}`);
+  if (el) el.classList.toggle('open');
+}
+
+function switchTab(tab) {
+  ['final','agents','raw'].forEach(t => {
+    document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+    document.getElementById(`panel-${t}`).classList.toggle('active', t === tab);
+  });
+}
+
+// ── Markdown renderer (lightweight) ─────────────────────────────────────────
+function renderMarkdown(md) {
+  if (!md) return '<em style="color:var(--text3)">No output</em>';
+  let html = escHtml(md);
+  const salt = Math.random().toString(36).substring(2, 10);
+
+  // Code blocks (multiline)
+  html = html.replace(/```([\w]*)\n([\s\S]*?)```/g, (_, lang, c) => {
+    if (lang === 'diff' || lang === 'patch' || c.includes('--- ') || c.includes('+++ ') || c.includes('@@ ')) {
+      const lines = c.split('\n').map(line => {
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+          return `<span style="color:var(--green); background:rgba(52,211,153,0.06); display:block; padding:0 4px;">${line}</span>`;
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+          return `<span style="color:var(--red); background:rgba(248,113,113,0.06); display:block; padding:0 4px;">${line}</span>`;
+        } else if (line.startsWith('@@')) {
+          return `<span style="color:var(--cyan); font-weight:bold; display:block; padding:0 4px;">${line}</span>`;
+        }
+        return `<span>${line}</span>`;
+      }).join('\n');
+      return `<pre class="diff-block" style="background:rgba(0,0,0,0.3); border-left:4px solid var(--accent); padding:12px; font-family:'JetBrains Mono',monospace; overflow-x:auto; margin:10px 0; border-radius:var(--radius-sm);"><code>${lines}</code></pre>`;
+    }
+    return `<pre><code>${c}</code></pre>`;
+  });
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  // Bold/italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // HR
+  html = html.replace(/^---$/gm, '<hr>');
+
+  // Bullet lists
+  html = html.replace(/^[*\-]\s+(.+)$/gm, '<li-b>$1</li-b>');
+  html = html.replace(/(<li-b>.*<\/li-b>\n?)+/g, '<ul>$&</ul>');
+  html = html.replaceAll('<li-b>', '<li>').replaceAll('</li-b>', '</li>');
+
+  // Numbered lists
+  html = html.replace(/^\d+\.\s+(.+)$/gm, '<li-o>$1</li-o>');
+  html = html.replace(/(<li-o>.*<\/li-o>\n?)+/g, '<ol>$&</ol>');
+  html = html.replaceAll('<li-o>', '<li>').replaceAll('</li-o>', '</li>');
+
+  // Paragraphs (double newlines)
+  html = html.replace(/\n\n(?!<)/g, '</p><p>');
+
+  // Mask block elements to prevent single newline replacement inside or around them
+  const blockElements = [];
+  html = html.replace(/<(pre|ul|ol|h[123])[\s\S]*?<\/\1>|<hr>/g, (match) => {
+    blockElements.push(match);
+    return `__BLOCK_EL_${salt}_${blockElements.length - 1}__`;
+  });
+
+  // Replace single newlines with <br>
+  html = html.replace(/\n/g, '<br>');
+
+  // Restore block elements
+  const regexRestore = new RegExp(`__BLOCK_EL_${salt}_(\\d+)__`, 'g');
+  html = html.replace(regexRestore, (_, idx) => blockElements[parseInt(idx)]);
+
+  html = `<p>${html}</p>`;
+  
+  // Clean up p tags around block elements (including ol and hr)
+  html = html.replace(/<p>(<h[123]>|<pre>|<ul>|<ol>|<hr>)/g, '$1');
+  html = html.replace(/(<\/h[123]>|<\/pre>|<\/ul>|<\/ol>|<hr>)<\/p>/g, '$1');
+
+  // Remove empty paragraphs or double brs created during wrapping
+  html = html.replace(/<p>\s*<\/p>/g, '');
+  html = html.replace(/(<br>\s*)+/g, '<br>');
+
+  // Safe DOM-based HTML Sanitizer (DOMPurify-like defense-in-depth)
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Remove dangerous tags
+    doc.querySelectorAll('script, style, iframe, object, embed, link, meta').forEach(el => el.remove());
+    // Strip inline event attributes and javascript: URIs
+    doc.querySelectorAll('*').forEach(el => {
+      for (const attr of [...el.attributes]) {
+        if (attr.name.startsWith('on') || attr.value.trim().toLowerCase().startsWith('javascript:')) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    });
+    return doc.body.innerHTML;
+  } catch (e) {
+    return html;
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function setPrompt(text) {
+  document.getElementById('task-input').value = text;
+  document.getElementById('task-input').focus();
+}
+
+async function copyResult() {
+  const text = lastResult?.final_summary || '';
+  if (!text) { showToast('Nothing to copy yet'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = document.getElementById('copy-btn');
+    btn.classList.add('copied');
+    btn.textContent = '✓ Copied!';
+    setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '📋 Copy'; }, 2000);
+  } catch { showToast('❌ Copy failed'); }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ── Wiki Explorer ────────────────────────────────────────────────────────────
+let allWikiPages = [];
+
+async function loadWikiPages() {
+  const container = document.getElementById('wiki-pages-container');
+  const badge = document.getElementById('wiki-count-badge');
+  container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3);font-size:0.82rem;">⟳ Đang tải...</div>';
+  try {
+    const r = await fetch(`${API}/api/wiki/pages`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    allWikiPages = d.pages || [];
+    badge.textContent = `${allWikiPages.length} pages`;
+    renderWikiPages(allWikiPages);
+  } catch(e) {
+    container.innerHTML = `<div style="padding:40px;text-align:center;color:var(--red);font-size:0.82rem;">❌ Không tải được wiki: ${escHtml(e.message)}</div>`;
+  }
+}
+
+let wikiSearchTimer = null;
+function onWikiSearch(q) {
+  clearTimeout(wikiSearchTimer);
+  if (!q.trim()) { renderWikiPages(allWikiPages); return; }
+  wikiSearchTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(`${API}/api/wiki/search?q=${encodeURIComponent(q)}`);
+      const d = await r.json();
+      renderWikiPages(d.results || [], true);
+      document.getElementById('wiki-count-badge').textContent = `${(d.results||[]).length} kết quả`;
+    } catch { renderWikiPages(allWikiPages); }
+  }, 300);
+}
+
+function renderWikiPages(pages, isSearch = false) {
+  const container = document.getElementById('wiki-pages-container');
+  if (!pages.length) {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3);font-size:0.82rem;">📭 Chưa có trang wiki nào. Hãy chạy <code style="color:var(--accent2)">wiki_ingest</code> để khởi tạo.</div>';
+    return;
+  }
+  container.innerHTML = pages.map(p => `
+    <div class="wiki-page-row" title="${escHtml(p.snippet || p.preview || '')}">
+      <span class="wiki-type-badge ${p.type === 'concepts' ? 'concept' : 'entity'}">${p.type === 'concepts' ? 'concept' : 'entity'}</span>
+      <span class="wiki-page-name">${escHtml(p.name)}</span>
+      <span class="wiki-page-preview">${escHtml(p.snippet || p.preview || '')}</span>
+      ${isSearch && p.score ? `<span style="font-size:0.65rem;color:var(--text3);flex-shrink:0;">score ${p.score}</span>` : ''}
+    </div>
+  `).join('');
+}
+
+// ── Security Autofix ─────────────────────────────────────────────────────────
+async function runSecurityScan() {
+  const input = document.getElementById('sec-files-input').value.trim();
+  if (!input) { showToast('⚠️ Nhập ít nhất một file path để quét'); return; }
+
+  const files = input.split('\n').map(s => s.trim()).filter(Boolean);
+  const btn = document.getElementById('sec-scan-btn');
+  const statusEl = document.getElementById('sec-status');
+  const statusText = document.getElementById('sec-status-text');
+  const resultsEl = document.getElementById('sec-results');
+
+  btn.disabled = true; btn.style.opacity = '0.5'; btn.style.cursor = 'not-allowed';
+  statusEl.style.display = 'flex';
+  resultsEl.style.display = 'none';
+  statusText.textContent = `Đang quét ${files.length} file(s) — panel_review chạy song song...`;
+
+  try {
+    const r = await fetch(`${API}/api/security/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+
+    statusEl.style.display = 'none';
+    resultsEl.style.display = 'block';
+    renderSecurityResults(d);
+  } catch(e) {
+    statusText.textContent = `❌ Lỗi: ${e.message}`;
+    document.getElementById('sec-spinner').style.display = 'none';
+  } finally {
+    btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer';
+  }
+}
+
+function renderSecurityResults(d) {
+  const el = document.getElementById('sec-results');
+  if (d.error) {
+    el.innerHTML = `<div class="sec-finding failed"><b>❌ Lỗi:</b> ${escHtml(d.error)}</div>`;
+    return;
+  }
+  const fixed  = d.fixed  || [];
+  const failed = d.failed || [];
+  const count  = d.findings_count || 0;
+
+  let html = `<div style="margin-bottom:12px;font-size:0.85rem;font-weight:600;color:var(--text2);">${escHtml(d.message || '')}</div>`;
+
+  if (count === 0) {
+    html += `<div class="sec-finding clean"><span style="color:var(--green);">✅ </span>${escHtml(d.message || 'Code của bạn sạch bóng!')}</div>`;
+  }
+
+  if (fixed.length) {
+    html += `<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--green);margin:12px 0 6px;">✅ Đã vá thành công (${fixed.length})</div>`;
+    html += fixed.map(f => `
+      <div class="sec-finding fixed">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <b style="color:var(--green);">${escHtml(f.file || 'N/A')}</b>
+          ${f.line ? `<span style="font-family:'JetBrains Mono',monospace;color:var(--text3);font-size:0.75rem;">:${f.line}</span>` : ''}
+        </div>
+        <div style="color:var(--text2);">${escHtml(f.issue || '')}</div>
+        ${f.message ? `<div style="color:var(--text3);font-size:0.75rem;margin-top:4px;">${escHtml(f.message)}</div>` : ''}
+      </div>
+    `).join('');
+  }
+
+  if (failed.length) {
+    html += `<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--red);margin:12px 0 6px;">❌ Vá thất bại (${failed.length})</div>`;
+    html += failed.map(f => `
+      <div class="sec-finding failed">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <b style="color:var(--red);">${escHtml(f.file || 'N/A')}</b>
+          ${f.line ? `<span style="font-family:'JetBrains Mono',monospace;color:var(--text3);font-size:0.75rem;">:${f.line}</span>` : ''}
+        </div>
+        <div style="color:var(--text2);">${escHtml(f.issue || '')}</div>
+        <div style="color:var(--red);font-size:0.75rem;margin-top:4px;">${escHtml(f.error || '')}</div>
+      </div>
+    `).join('');
+  }
+
+  el.innerHTML = html;
+}
+
+// ── Harness Super Tools Javascript Logic ─────────────────────────────────────
+function switchSTTab(tabId) {
+  document.querySelectorAll('.st-tab-content').forEach(el => el.style.display = 'none');
+  document.querySelectorAll('.st-tab-btn').forEach(btn => {
+    btn.style.borderBottomColor = 'transparent';
+    btn.style.color = 'var(--text3)';
+    btn.classList.remove('active');
+  });
+  
+  document.getElementById(tabId).style.display = 'block';
+  
+  const clickedBtn = Array.from(document.querySelectorAll('.st-tab-btn')).find(btn => btn.getAttribute('onclick').includes(tabId));
+  if (clickedBtn) {
+    clickedBtn.style.borderBottomColor = 'var(--accent)';
+    clickedBtn.style.color = 'var(--text)';
+    clickedBtn.classList.add('active');
+  }
+}
+
+function switchSubTool(category, subToolId) {
+  const container = document.getElementById(`st-${category}`);
+  container.querySelectorAll('.sub-tool-content').forEach(el => el.style.display = 'none');
+  
+  const activeContent = document.getElementById(subToolId);
+  if (activeContent) activeContent.style.display = 'block';
+  
+  container.querySelectorAll('.sub-tool-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  
+  const clickedBtn = Array.from(container.querySelectorAll('.sub-tool-btn')).find(btn => btn.getAttribute('onclick').includes(subToolId));
+  if (clickedBtn) {
+    clickedBtn.classList.add('active');
+  }
+}
+
+async function runCoverageAnalyzer() {
+  const outputEl = document.getElementById('st-coverage-result');
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang chạy phân tích test coverage...';
+  const result = await callSTApi('/api/features/coverage-analyzer', {});
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runIncidentResponder() {
+  const log_content = document.getElementById('st-incident-log').value.trim();
+  const outputEl = document.getElementById('st-incident-result');
+  if (!log_content) { showToast('⚠️ Cần điền log lỗi hoặc crash dump'); return; }
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang phân tích nguyên nhân và đề xuất phương án ứng cứu...';
+  const result = await callSTApi('/api/features/incident-responder', { log_content });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runApiContractTester() {
+  const endpointsStr = document.getElementById('st-contract-endpoints').value.trim();
+  const outputEl = document.getElementById('st-contract-result');
+  if (!endpointsStr) { showToast('⚠️ Cần nhập danh sách endpoints JSON'); return; }
+  let endpoints = [];
+  try {
+    endpoints = JSON.parse(endpointsStr);
+  } catch(e) {
+    showToast('❌ Định dạng JSON của endpoints không hợp lệ');
+    return;
+  }
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang sinh kiểm thử contract API...';
+  const result = await callSTApi('/api/features/api-contract-tester', { endpoints });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runChaosTester() {
+  const app_run_command = document.getElementById('st-chaos-command').value.trim();
+  const duration = parseInt(document.getElementById('st-chaos-duration').value) || 5;
+  const outputEl = document.getElementById('st-chaos-result');
+  if (!app_run_command) { showToast('⚠️ Cần điền lệnh chạy ứng dụng'); return; }
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang thực hiện fault injection mô phỏng chaos testing...';
+  const result = await callSTApi('/api/features/chaos-tester', { app_run_command, duration });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runDeadCodeScanner() {
+  const outputEl = document.getElementById('st-dead-code-result');
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang quét mã nguồn chết...';
+  const result = await callSTApi('/api/features/dead-code-scanner', {});
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runProfiler() {
+  const code = document.getElementById('st-profiler-code').value.trim();
+  const iterations = parseInt(document.getElementById('st-profiler-iterations').value) || 1;
+  const outputEl = document.getElementById('st-profiler-result');
+  if (!code) { showToast('⚠️ Cần điền mã nguồn Python cần profile'); return; }
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang chạy phân tích hiệu năng và memory profile...';
+  const result = await callSTApi('/api/features/profiler', { code, iterations });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runPrGenerator() {
+  const diff = document.getElementById('st-pr-diff').value.trim();
+  const branch = document.getElementById('st-pr-branch').value.trim();
+  const outputEl = document.getElementById('st-pr-result');
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang phân tích thay đổi và sinh mô tả PR...';
+  const result = await callSTApi('/api/features/pr-generator', { diff: diff || null, branch: branch || null });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runLicenseScanner() {
+  const outputEl = document.getElementById('st-license-result');
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang quét giấy phép bản quyền...';
+  const result = await callSTApi('/api/features/license-scanner', {});
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runSbomGenerator() {
+  const outputEl = document.getElementById('st-sbom-result');
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang sinh tài liệu SBOM...';
+  const result = await callSTApi('/api/features/sbom-generator', {});
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runA11yAuditor() {
+  const filesInput = document.getElementById('st-a11y-files').value.trim();
+  const outputEl = document.getElementById('st-a11y-result');
+  const files = filesInput ? filesInput.split(',').map(f => f.trim()).filter(Boolean) : null;
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang audit lỗi accessibility (A11y)...';
+  const result = await callSTApi('/api/features/a11y-auditor', { files });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runI18nAuditor() {
+  const filesInput = document.getElementById('st-i18n-files').value.trim();
+  const outputEl = document.getElementById('st-i18n-result');
+  const files = filesInput ? filesInput.split(',').map(f => f.trim()).filter(Boolean) : null;
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang tìm kiếm chuỗi văn bản cứng cần quốc tế hóa...';
+  const result = await callSTApi('/api/features/i18n-auditor', { files });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runPolyglotReviewer() {
+  const filesInput = document.getElementById('st-poly-files').value.trim();
+  const outputEl = document.getElementById('st-poly-result');
+  if (!filesInput) { showToast('⚠️ Cần nhập danh sách files để review'); return; }
+  const files = filesInput.split(',').map(f => f.trim()).filter(Boolean);
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang thực hiện code review đa ngôn ngữ chuyên sâu...';
+  const result = await callSTApi('/api/features/polyglot-reviewer', { files });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runGitArchaeologist() {
+  const file_path = document.getElementById('st-archaeo-file').value.trim();
+  const lineInput = document.getElementById('st-archaeo-line').value.trim();
+  const outputEl = document.getElementById('st-archaeo-result');
+  if (!file_path) { showToast('⚠️ Cần điền đường dẫn file'); return; }
+  const line_no = lineInput ? parseInt(lineInput) : null;
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang dò tìm vết lịch sử git blame...';
+  const result = await callSTApi('/api/features/git-archaeologist', { file_path, line_no });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runFeatureFlagAuditor() {
+  const outputEl = document.getElementById('st-ff-result');
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang kiểm tra trạng thái các feature flags...';
+  const result = await callSTApi('/api/features/feature-flag-auditor', {});
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runSecurityAutofixSubTool() {
+  const filesInput = document.getElementById('st-sec-autofix-files').value.trim();
+  const outputEl = document.getElementById('st-sec-autofix-result');
+  if (!filesInput) { showToast('⚠️ Cần nhập ít nhất một file path'); return; }
+  const files = filesInput.split('\n').map(f => f.trim()).filter(Boolean);
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang tiến hành quét và tự động vá lỗi bảo mật...';
+  const result = await callSTApi('/api/security/scan', { files });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function callSTApi(endpoint, body) {
+  try {
+    const res = await fetch(`${API}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function runAutoTester() {
+  const filesInput = document.getElementById('st-tester-files').value.trim();
+  const findingsInput = document.getElementById('st-tester-findings').value.trim();
+  const outputEl = document.getElementById('st-tester-result');
+  
+  if (!filesInput) {
+    showToast('⚠️ Cần điền tên file cần test');
+    return;
+  }
+  
+  let findings = [];
+  if (findingsInput) {
+    try {
+      findings = JSON.parse(findingsInput);
+    } catch(e) {
+      showToast('❌ Findings không đúng định dạng JSON');
+      return;
+    }
+  }
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang chạy sinh test tự động và kiểm thử...';
+  
+  const files = filesInput.split(',').map(f => f.trim()).filter(Boolean);
+  const result = await callSTApi('/api/features/auto-tester', { files, findings });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runVisualReviewer() {
+  const url = document.getElementById('st-visual-url').value.trim();
+  const baseline = document.getElementById('st-visual-baseline').value.trim();
+  const outputEl = document.getElementById('st-visual-result');
+  
+  if (!url) {
+    showToast('⚠️ Cần điền URL cần audit');
+    return;
+  }
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang phân tích giao diện và mỹ thuật...';
+  
+  const result = await callSTApi('/api/features/visual-reviewer', { url, baseline_url: baseline || null });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runBenchmarker() {
+  const code_a = document.getElementById('st-bench-codea').value.trim();
+  const code_b = document.getElementById('st-bench-codeb').value.trim();
+  const iterations = parseInt(document.getElementById('st-bench-iterations').value) || 5;
+  const outputEl = document.getElementById('st-bench-result');
+  
+  if (!code_a || !code_b) {
+    showToast('⚠️ Cần điền đầy đủ Code A và Code B');
+    return;
+  }
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang đo hiệu năng và tài nguyên CPU/Memory...';
+  
+  const result = await callSTApi('/api/features/benchmarker', { code_a, code_b, iterations });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runDepUpgrade() {
+  const dry_run = document.getElementById('st-dep-dryrun').checked;
+  const outputEl = document.getElementById('st-dep-result');
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang quét requirements.txt...';
+  
+  const result = await callSTApi('/api/features/dependency-upgrader', { dry_run });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runSchemaDrift() {
+  const baseline = document.getElementById('st-schema-baseline').value.trim();
+  const outputEl = document.getElementById('st-schema-result');
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang phân tích schema và đối chiếu...';
+  
+  const body = {};
+  if (baseline) {
+    body.baseline_schema = baseline;
+  }
+  
+  const result = await callSTApi('/api/features/schema-drift', body);
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runDocSync() {
+  const outputEl = document.getElementById('st-doc-result');
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang cập nhật README.md...';
+  
+  const result = await callSTApi('/api/features/doc-sync', {});
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runTelemetryDebugger() {
+  const log_content = document.getElementById('st-telemetry-log').value.trim();
+  const outputEl = document.getElementById('st-telemetry-result');
+  
+  if (!log_content) {
+    showToast('⚠️ Cần cung cấp log lỗi');
+    return;
+  }
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang phân tích log và định vị lỗi...';
+  
+  const result = await callSTApi('/api/features/telemetry-debugger', { log_content });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runSandbox() {
+  const code = document.getElementById('st-sandbox-code').value.trim();
+  const timeout = parseFloat(document.getElementById('st-sandbox-timeout').value) || 5.0;
+  const outputEl = document.getElementById('st-sandbox-result');
+  
+  if (!code) {
+    showToast('⚠️ Cần cung cấp mã nguồn Python');
+    return;
+  }
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang chạy code trong sandbox cô lập...';
+  
+  const result = await callSTApi('/api/features/sandbox-run', { code, timeout });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+async function runSemanticSearch() {
+  const query = document.getElementById('st-search-query').value.trim();
+  const outputEl = document.getElementById('st-search-result');
+  
+  if (!query) {
+    showToast('⚠️ Cần điền nội dung tìm kiếm');
+    return;
+  }
+  
+  outputEl.style.display = 'block';
+  outputEl.textContent = '🤖 Đang tìm kiếm ngữ nghĩa và xây dựng Call Graph...';
+  
+  const result = await callSTApi('/api/features/semantic-search', { query });
+  outputEl.textContent = JSON.stringify(result, null, 2);
+}
+
+let currentSwarmId = null;
+let currentSwarmState = null;
+
+function resetSwarmDebuggerUI() {
+  document.getElementById('swarm-setup-container').style.display = 'flex';
+  document.getElementById('swarm-stepper-container').style.display = 'none';
+  currentSwarmId = null;
+  currentSwarmState = null;
+}
+
+async function startInteractiveSwarm() {
+  const error_log = document.getElementById('st-swarm-log').value.trim();
+  const filesInput = document.getElementById('st-swarm-files').value.trim();
+  
+  if (!error_log) {
+    showToast('⚠️ Cần điền log lỗi crash');
+    return;
+  }
+  
+  const files = filesInput ? filesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
+  const btn = document.querySelector('#swarm-setup-container button');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Đang khởi tạo (Architect)...';
+  
+  try {
+    const res = await fetch(`${API}/api/swarm/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error_log, files })
+    });
+    
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    
+    if (data.error) {
+      showToast(`❌ Lỗi: ${data.error}`);
+      return;
+    }
+    
+    currentSwarmId = data.swarm_id;
+    document.getElementById('swarm-session-id').textContent = currentSwarmId;
+    document.getElementById('swarm-setup-container').style.display = 'none';
+    document.getElementById('swarm-stepper-container').style.display = 'flex';
+    
+    document.getElementById('arch-root-cause').textContent = data.root_cause || '';
+    document.getElementById('arch-suggested-approach').textContent = data.suggested_approach || '';
+    document.getElementById('swarm-editable-files').value = (data.target_files || []).join(', ');
+    
+    updateSwarmUIState(data);
+    showToast('🚀 Khởi tạo Swarm thành công');
+  } catch (e) {
+    showToast(`❌ Lỗi: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>🐝</span> Start Interactive Swarm Debugger';
+  }
+}
+
+function updateSwarmUIState(data) {
+  currentSwarmState = data.state;
+  
+  document.getElementById('step-input-architect').style.display = 'none';
+  document.getElementById('step-input-tester').style.display = 'none';
+  document.getElementById('step-input-coder').style.display = 'none';
+  document.getElementById('step-input-reviewer').style.display = 'none';
+  document.getElementById('step-status-completed').style.display = 'none';
+  document.getElementById('step-status-failed').style.display = 'none';
+  
+  for (let i = 1; i <= 4; i++) {
+    const node = document.getElementById(`step-node-${i}`);
+    const status = document.getElementById(`step-status-${i}`);
+    node.style.borderColor = 'var(--border)';
+    node.style.background = 'var(--surface)';
+    node.style.boxShadow = 'none';
+    status.textContent = 'Pending';
+    status.style.color = 'var(--text3)';
+  }
+  
+  const logsEl = document.getElementById('swarm-stepper-logs');
+  if (data.logs && data.logs.length) {
+    logsEl.innerHTML = data.logs.map(l => {
+      const roleColors = {
+        architect: 'var(--yellow)',
+        tester: '#60a5fa',
+        coder: 'var(--green)',
+        reviewer: 'var(--orange)',
+        coordinator: 'var(--purple)'
+      };
+      const color = roleColors[l.role] || 'var(--text2)';
+      const roleText = l.role.toUpperCase();
+      return `<div><span style="color:${color};font-weight:bold;">[${roleText}]</span> ${escHtml(l.message)}</div>`;
+    }).join('');
+    logsEl.scrollTop = logsEl.scrollHeight;
+  } else {
+    logsEl.innerHTML = '<div style="color:var(--text3)">Chưa có log...</div>';
+  }
+  
+  const proceedBtn = document.getElementById('swarm-proceed-btn');
+  proceedBtn.style.display = 'flex';
+  
+  if (currentSwarmState === 'pending_tester') {
+    markStepNode(1, 'completed');
+    markStepNode(2, 'active');
+    document.getElementById('step-input-architect').style.display = 'flex';
+    document.getElementById('step-panel-title').textContent = 'Bước 1 (Architect Done): Xác nhận danh sách files và sinh test.';
+    document.getElementById('swarm-proceed-text').textContent = 'Sinh Test Tái Hiện';
+  } else if (currentSwarmState === 'pending_coder') {
+    markStepNode(1, 'completed');
+    markStepNode(2, 'completed');
+    markStepNode(3, 'active');
+    document.getElementById('step-input-tester').style.display = 'flex';
+    document.getElementById('swarm-editable-reproducer').value = data.reproducer_code || '';
+    const outputBox = document.getElementById('tester-sandbox-output-box');
+    if (data.sandbox_output) {
+      outputBox.style.display = 'block';
+      document.getElementById('tester-sandbox-output').textContent = data.sandbox_output;
+    } else {
+      outputBox.style.display = 'none';
+    }
+    document.getElementById('step-panel-title').textContent = 'Bước 2 (Tester Done): Tái hiện lỗi thành công. Hãy chỉnh sửa reproducer nếu cần.';
+    document.getElementById('swarm-proceed-text').textContent = 'Sinh Bản Vá';
+  } else if (currentSwarmState === 'pending_apply') {
+    markStepNode(1, 'completed');
+    markStepNode(2, 'completed');
+    markStepNode(3, 'active');
+    document.getElementById('step-input-coder').style.display = 'flex';
+    document.getElementById('swarm-editable-patch').value = data.patch || data.suggested_patch || '';
+    document.getElementById('step-panel-title').textContent = 'Bước 3 (Coder Done): Bản vá đề xuất đã sẵn sàng. Chỉnh sửa patch trước khi apply.';
+    document.getElementById('swarm-proceed-text').textContent = 'Apply & Chạy Thử Test';
+  } else if (currentSwarmState === 'pending_review') {
+    markStepNode(1, 'completed');
+    markStepNode(2, 'completed');
+    markStepNode(3, 'completed');
+    markStepNode(4, 'active');
+    document.getElementById('step-input-reviewer').style.display = 'flex';
+    // If reviewer result is already in final_result
+    const resObj = data.final_result || {};
+    if (resObj.verdict) {
+      document.getElementById('reviewer-verdict-text').textContent = resObj.verdict;
+      document.getElementById('reviewer-summary-text').textContent = resObj.summary;
+    } else {
+      document.getElementById('reviewer-verdict-text').textContent = 'Đang chờ thẩm định...';
+      document.getElementById('reviewer-summary-text').textContent = '';
+    }
+    document.getElementById('step-panel-title').textContent = 'Bước 4 (Reviewer): Kiểm thử thành công. Thẩm định bản vá.';
+    document.getElementById('swarm-proceed-text').textContent = 'Thẩm Định Bản Vá';
+  } else if (currentSwarmState === 'completed') {
+    markStepNode(1, 'completed');
+    markStepNode(2, 'completed');
+    markStepNode(3, 'completed');
+    markStepNode(4, 'completed');
+    document.getElementById('step-status-completed').style.display = 'flex';
+    document.getElementById('step-panel-title').textContent = 'Hoàn thành!';
+    proceedBtn.style.display = 'none';
+  } else {
+    markStepNode(1, 'failed');
+    markStepNode(2, 'failed');
+    markStepNode(3, 'failed');
+    markStepNode(4, 'failed');
+    document.getElementById('step-status-failed').style.display = 'flex';
+    document.getElementById('step-panel-title').textContent = `Thất bại / Hủy (State: ${currentSwarmState})`;
+    proceedBtn.style.display = 'none';
+  }
+}
+
+function markStepNode(stepNum, statusType) {
+  const node = document.getElementById(`step-node-${stepNum}`);
+  const status = document.getElementById(`step-status-${stepNum}`);
+  if (statusType === 'completed') {
+    node.style.borderColor = 'rgba(52,211,153,0.4)';
+    node.style.background = 'var(--green-dim)';
+    node.style.color = 'var(--green)';
+    status.textContent = 'Completed';
+    status.style.color = 'var(--green)';
+  } else if (statusType === 'active') {
+    node.style.borderColor = 'var(--accent)';
+    node.style.background = 'rgba(99,102,241,0.1)';
+    node.style.color = 'var(--accent2)';
+    node.style.boxShadow = '0 0 10px var(--accent-glow)';
+    status.textContent = 'Active';
+    status.style.color = 'var(--accent2)';
+  } else if (statusType === 'failed') {
+    node.style.borderColor = 'rgba(248,113,113,0.4)';
+    node.style.background = 'var(--red-dim)';
+    node.style.color = 'var(--red)';
+    status.textContent = 'Failed';
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function proceedSwarmSession() {
+  if (!currentSwarmId) return;
+  const proceedBtn = document.getElementById('swarm-proceed-btn');
+  const proceedIcon = document.getElementById('swarm-proceed-icon');
+  const proceedText = document.getElementById('swarm-proceed-text');
+  
+  proceedBtn.disabled = true;
+  proceedIcon.innerHTML = '<div class="spinner"></div>';
+  proceedText.textContent = 'Đang chạy agent...';
+  
+  const payload = {};
+  if (currentSwarmState === 'pending_tester') {
+    const filesVal = document.getElementById('swarm-editable-files').value.trim();
+    payload.target_files = filesVal ? filesVal.split(',').map(f => f.trim()).filter(Boolean) : [];
+  } else if (currentSwarmState === 'pending_coder') {
+    payload.reproducer_code = document.getElementById('swarm-editable-reproducer').value;
+  } else if (currentSwarmState === 'pending_apply') {
+    payload.patch = document.getElementById('swarm-editable-patch').value;
+  }
+  
+  try {
+    const res = await fetch(`${API}/api/swarm/proceed/${currentSwarmId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    
+    if (data.error) {
+      showToast(`❌ Lỗi: ${data.error}`);
+    }
+    
+    const sessRes = await fetch(`${API}/api/swarm/session/${currentSwarmId}`);
+    if (sessRes.ok) {
+      const fullSession = await sessRes.json();
+      updateSwarmUIState(fullSession);
+    }
+    showToast('⏭️ Đã chuyển bước thành công');
+    loadFinOpsStats();
+  } catch (e) {
+    showToast(`❌ Lỗi: ${e.message}`);
+  } finally {
+    proceedBtn.disabled = false;
+    proceedIcon.textContent = '⏭️';
+    proceedText.textContent = 'Tiếp tục bước tiếp theo';
+  }
+}
+
+async function cancelSwarmSession() {
+  if (!currentSwarmId) return;
+  if (!confirm('Bạn có chắc chắn muốn hủy bỏ session này và rollback mọi thay đổi?')) return;
+  
+  try {
+    const res = await fetch(`${API}/api/swarm/cancel/${currentSwarmId}`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    
+    const sessRes = await fetch(`${API}/api/swarm/session/${currentSwarmId}`);
+    if (sessRes.ok) {
+      const fullSession = await sessRes.json();
+      updateSwarmUIState(fullSession);
+    }
+    showToast('🛑 Swarm Session đã được hủy bỏ và rollback thành công.');
+  } catch (e) {
+    showToast(`❌ Lỗi: ${e.message}`);
+  }
+}
+
+async function runDevOpsPipeline() {
+  const btn = document.querySelector('#st-devops-gate button');
+  const btnIcon = document.getElementById('devops-btn-icon');
+  const btnText = document.getElementById('devops-btn-text');
+  const wrapper = document.getElementById('devops-results-wrapper');
+  
+  btn.disabled = true;
+  btnIcon.innerHTML = '<div class="spinner"></div>';
+  btnText.textContent = 'Analyzing...';
+  wrapper.style.display = 'none';
+  
+  try {
+    const res = await fetch(`${API}/api/features/devops-pipeline`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    
+    wrapper.style.display = 'grid';
+    
+    const score = data.score !== undefined ? data.score : 100;
+    document.getElementById('devops-score-num').textContent = score;
+    
+    const circle = document.getElementById('devops-score-circle');
+    const offset = 314.16 - (score / 100) * 314.16;
+    circle.setAttribute('stroke-dashoffset', offset);
+    
+    let color = 'var(--green)';
+    let verdict = 'Excellent';
+    if (score <= 50) {
+      color = 'var(--red)';
+      verdict = 'Failed';
+    } else if (score <= 80) {
+      color = 'var(--orange)';
+      verdict = 'Warning';
+    }
+    circle.setAttribute('stroke', color);
+    
+    const verdictBadge = document.getElementById('devops-verdict-badge');
+    verdictBadge.textContent = verdict;
+    verdictBadge.style.background = score <= 50 ? 'var(--red-dim)' : (score <= 80 ? 'var(--orange-dim)' : 'var(--green-dim)');
+    verdictBadge.style.color = color;
+    verdictBadge.style.border = `1px solid ${color}`;
+    
+    document.getElementById('devops-tools-used').textContent = `Tools: ${(data.tools_used || []).join(', ')}`;
+    
+    let lints = 0, formats = 0, types = 0;
+    const findings = data.findings || [];
+    findings.forEach(f => {
+      if (f.type === 'lint') lints++;
+      else if (f.type === 'format') formats++;
+      else if (f.type === 'type_check') types++;
+    });
+    
+    document.getElementById('devops-count-lint').textContent = lints;
+    document.getElementById('devops-count-format').textContent = formats;
+    document.getElementById('devops-count-type').textContent = types;
+    
+    const listEl = document.getElementById('devops-findings-list');
+    if (findings.length) {
+      listEl.innerHTML = findings.map(f => {
+        const typeLabels = { lint: 'LINT', format: 'FORMAT', type_check: 'TYPE' };
+        const sevColors = { critical: 'var(--red)', high: 'var(--red)', medium: 'var(--orange)', low: 'var(--text3)' };
+        const sevColor = sevColors[f.severity] || 'var(--text2)';
+        
+        return `
+          <div style="padding:10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:rgba(255,255,255,0.01); display:flex; flex-direction:column; gap:4px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.7rem;">
+              <span style="font-weight:700; color:var(--accent2);">${typeLabels[f.type] || 'BUG'}</span>
+              <span style="color:${sevColor}; font-weight:600; text-transform:uppercase;">${f.severity}</span>
+            </div>
+            <div style="font-size:0.8rem; color:var(--text);">${escHtml(f.message)}</div>
+            <div style="font-size:0.7rem; color:var(--text3); font-family:monospace;">
+              ${escHtml(f.file)}:${f.line} ${f.code ? `[${f.code}]` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      listEl.innerHTML = '<div style="color:var(--green);font-size:0.82rem;padding:20px;text-align:center;">✅ Code hoàn hảo! Không phát hiện lỗi chất lượng nào.</div>';
+    }
+    
+    showToast('🚧 Chạy DevOps Quality Gate thành công');
+  } catch (e) {
+    showToast(`❌ Lỗi: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btnIcon.textContent = '🚧';
+    btnText.textContent = 'Run DevOps Gate';
+  }
+}
+
+async function runConfigAudit() {
+  const btn = document.querySelector('#st-config-audit button');
+  const btnIcon = document.getElementById('config-btn-icon');
+  const btnText = document.getElementById('config-btn-text');
+  const wrapper = document.getElementById('config-results-wrapper');
+  
+  btn.disabled = true;
+  btnIcon.innerHTML = '<div class="spinner"></div>';
+  btnText.textContent = 'Auditing...';
+  wrapper.style.display = 'none';
+  
+  try {
+    const res = await fetch(`${API}/api/features/config-audit`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    
+    wrapper.style.display = 'flex';
+    
+    const secretsEl = document.getElementById('config-secrets-list');
+    const secrets = data.secrets_found || [];
+    if (secrets.length) {
+      secretsEl.innerHTML = secrets.map(s => `
+        <div style="padding:10px; border:1px solid rgba(248,113,113,0.3); border-radius:var(--radius-sm); background:rgba(248,113,113,0.03); display:flex; flex-direction:column; gap:4px; font-size:0.8rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="color:var(--red);">${escHtml(s.label)}</strong>
+            <span style="font-family:monospace; color:var(--text3); font-size:0.75rem;">${escHtml(s.file)}:${s.line}</span>
+          </div>
+          <div style="color:var(--text); font-family:monospace; font-size:0.78rem; background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">
+            ${escHtml(s.masked)}
+          </div>
+        </div>
+      `).join('');
+    } else {
+      secretsEl.innerHTML = '<div style="color:var(--green); font-size:0.82rem; padding:10px;">✅ Không phát hiện credentials bị rò rỉ.</div>';
+    }
+    
+    const driftEl = document.getElementById('config-drift-list');
+    const drift = data.drift || {};
+    let driftHtml = '';
+    
+    if (drift.missing_in_env && drift.missing_in_env.length) {
+      driftHtml += `
+        <div style="padding:10px; border:1px solid rgba(251,146,60,0.3); border-radius:var(--radius-sm); background:rgba(251,146,60,0.03); display:flex; flex-direction:column; gap:4px; font-size:0.8rem; margin-bottom:8px;">
+          <div style="color:var(--orange); font-weight:bold;">⚠️ Thiếu trong .env (có ở .env.example)</div>
+          <div style="color:var(--text); font-family:monospace; font-size:0.78rem;">${escHtml(drift.missing_in_env.join(', '))}</div>
+        </div>
+      `;
+    }
+    if (drift.missing_in_example && drift.missing_in_example.length) {
+      driftHtml += `
+        <div style="padding:10px; border:1px solid rgba(251,146,60,0.3); border-radius:var(--radius-sm); background:rgba(251,146,60,0.03); display:flex; flex-direction:column; gap:4px; font-size:0.8rem; margin-bottom:8px;">
+          <div style="color:var(--orange); font-weight:bold;">⚠️ Thiếu trong .env.example (có ở .env)</div>
+          <div style="color:var(--text); font-family:monospace; font-size:0.78rem;">${escHtml(drift.missing_in_example.join(', '))}</div>
+        </div>
+      `;
+    }
+    if (drift.unregistered_in_code && drift.unregistered_in_code.length) {
+      driftHtml += `
+        <div style="padding:10px; border:1px solid rgba(251,146,60,0.3); border-radius:var(--radius-sm); background:rgba(251,146,60,0.03); display:flex; flex-direction:column; gap:4px; font-size:0.8rem; margin-bottom:8px;">
+          <div style="color:var(--orange); font-weight:bold;">⚠️ os.environ dùng trong code chưa khai báo ở .env / .env.example</div>
+          <div style="color:var(--text); font-family:monospace; font-size:0.78rem;">${escHtml(drift.unregistered_in_code.join(', '))}</div>
+        </div>
+      `;
+    }
+    if (!driftHtml) {
+      driftHtml = '<div style="color:var(--green); font-size:0.82rem; padding:10px;">✅ Tệp cấu hình môi trường đồng bộ hoàn toàn.</div>';
+    }
+    driftEl.innerHTML = driftHtml;
+    
+    const generalEl = document.getElementById('config-general-list');
+    const generalFindings = (data.findings || []).filter(f => f.category === 'cors' || f.category === 'ssl' || f.category === 'security');
+    if (generalFindings.length) {
+      generalEl.innerHTML = generalFindings.map(f => `
+        <div style="padding:10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:rgba(255,255,255,0.01); display:flex; flex-direction:column; gap:4px; font-size:0.8rem; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="color:var(--cyan); text-transform:uppercase;">${escHtml(f.category)}</strong>
+            <span style="color:var(--red); font-weight:600;">${f.severity.toUpperCase()}</span>
+          </div>
+          <div style="color:var(--text);">${escHtml(f.issue)}</div>
+          <div style="color:var(--text3); font-size:0.72rem; margin-top:2px;">👉 Gợi ý sửa: ${escHtml(f.suggested_fix)}</div>
+        </div>
+      `).join('');
+    } else {
+      generalEl.innerHTML = '<div style="color:var(--green); font-size:0.82rem; padding:10px;">✅ Không phát hiện lỗ hổng CORS/SSL hay API Security.</div>';
+    }
+    
+    showToast('🛡️ Quét cấu hình & Secrets thành công');
+  } catch (e) {
+    showToast(`❌ Lỗi: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btnIcon.textContent = '🛡️';
+    btnText.textContent = 'Run Config Audit';
+  }
+}
+
+async function loadFinOpsStats() {
+  try {
+    const res = await fetch(`${API}/api/features/finops-stats`);
+    if (!res.ok) return;
+    const d = await res.json();
+    
+    document.getElementById('fin-total-cost').textContent = d.total_cost_usd ? `$${d.total_cost_usd.toFixed(6)}` : '$0.000000';
+    document.getElementById('fin-total-tokens').textContent = (d.total_prompt_tokens + d.total_completion_tokens).toLocaleString();
+    document.getElementById('fin-cache-hits').textContent = d.total_cache_hits.toString();
+    document.getElementById('fin-avg-latency').textContent = d.total_steps ? `${(d.total_latency_ms / d.total_steps / 1000).toFixed(2)}s` : '0s';
+    
+    const mStatsEl = document.getElementById('fin-model-stats');
+    if (d.model_stats && d.model_stats.length) {
+      mStatsEl.innerHTML = d.model_stats.map(m => `
+        <div style="display:flex;flex-direction:column;gap:3px;padding:6px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:0.75rem;font-weight:600;color:var(--text);font-family:monospace;">${escHtml(m.model)}</span>
+            <span style="font-size:0.72rem;color:var(--green);font-weight:bold;">$${m.cost_usd.toFixed(6)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);">
+            <span>Calls: ${m.count} | Latency: ${(m.avg_latency_ms / 1000).toFixed(1)}s</span>
+            <span>Tokens: ${m.prompt_tokens + m.completion_tokens}</span>
+          </div>
+        </div>
+      `).join('');
+    } else {
+      mStatsEl.innerHTML = '<div style="color:var(--text3);font-size:0.78rem;">Chưa có dữ liệu thống kê...</div>';
+    }
+    
+    const rStatsEl = document.getElementById('fin-runs-stats');
+    if (d.recent_runs && d.recent_runs.length) {
+      rStatsEl.innerHTML = d.recent_runs.map(r => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px;border-bottom:1px solid var(--border);font-size:0.75rem;">
+          <div style="display:flex;flex-direction:column;">
+            <span style="font-weight:600;color:var(--accent2);font-family:monospace;">#${r.run_id}</span>
+            <span style="font-size:0.65rem;color:var(--text3);">${escHtml(r.workflow_type)} · ${r.ts}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;">
+            <span style="font-weight:bold;color:var(--green);">$${r.total_cost.toFixed(6)}</span>
+            <span style="font-size:0.65rem;color:var(--text3);">${(r.duration_ms / 1000).toFixed(1)}s</span>
+          </div>
+        </div>
+      `).join('');
+    } else {
+      rStatsEl.innerHTML = '<div style="color:var(--text3);font-size:0.78rem;">Chưa có lịch sử chạy...</div>';
+    }
+  } catch(e) {
+    console.error('Lỗi FinOps stats:', e);
+  }
+}
+</script>
+</body>
+</html>

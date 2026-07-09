@@ -1,0 +1,484 @@
+"""Setup helper — được install.ps1 gọi, hoặc chạy trực tiếp: python merge_settings.py
+Merge cấu hình harness vào ~/.claude/CLAUDE.md và ~/.claude/settings.json.
+Idempotent: chạy lại bao nhiêu lần cũng không tạo trùng lặp.
+"""
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+CLAUDE_MARKER = "<!-- agent-harness-managed -->"
+GEMINI_MARKER = "<!-- agent-harness -->"
+HOOK_ID = "agent-harness-panel-reminder"
+
+
+def _harness_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _harness_server() -> str:
+    return str(_harness_root() / "mcp_server.py")
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+CLAUDE_MD_SECTION = """\
+<!-- agent-harness-managed -->
+# Agent Harness — quy trình khi làm coding task
+
+Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+
+## Auto-Pilot — mặc định bật
+
+- Sau mọi batch Edit/Write đáng kể, gọi `mcp__agent-harness__auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
+- Trước khi báo hoàn thành, gọi lại `mcp__agent-harness__auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Không gửi `.env` thật vào `panel_review`; `auto_trigger` sẽ tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
+- Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
+
+## Bắt buộc
+
+1. **Trước khi implement phần phức tạp** (thuật toán khó, kiến trúc mới, concurrency, auth/security, payment): gọi `mcp__agent-harness__consult` với câu hỏi design cụ thể + files liên quan. Cân nhắc advice nhưng tự quyết định cuối cùng.
+
+2. **Sau khi viết/sửa xong code, TRƯỚC khi báo hoàn thành**: gọi `mcp__agent-harness__auto_trigger` (`stage="final"`, `mode="max"`) hoặc `mcp__agent-harness__panel_review` với danh sách files đã sửa (hoặc diff). Chạy MỘT LẦN cho cả batch thay đổi cuối cùng — không chạy sau mỗi edit lẻ. Findings mức critical/high phải xử lý (fix hoặc giải thích vì sao bỏ qua) trước khi chốt task.
+
+## Dùng khi phù hợp
+
+3. **Debug bí** (sau 1-2 lần thử không ra): `mcp__agent-harness__suggest_fix` với code + error/stack trace.
+4. **Cần hiểu flow xuyên nhiều file trong codebase lớn**: `mcp__agent-harness__ask_codebase`.
+5. **Cần so sánh 2 hướng implement cho module độc lập**: `mcp__agent-harness__alt_implementation`.
+6. **Việc vặt** (fixtures, mock data, boilerplate): `mcp__agent-harness__quick_task`.
+
+## Tự động theo context
+
+**Tier 1:**
+- `pr_generator` — task xong, có git changes chưa có PR description
+- `dead_code_scanner` — sau refactor lớn hoặc xóa/đổi tên function/class/module
+- `coverage_analyzer` — sau khi viết logic mới có nhánh phức tạp (>2 code paths)
+- `incident_responder` — user paste log/stack trace kèm: crash, down, 500, exception, FATAL
+- `secret_scanner` — trước git commit khi thêm file mới có credentials/token, khi sửa .env.example
+- `env_parity_checker` — khi sửa .env.example hoặc .env; trước deploy/release
+
+**Tier 2:**
+- `migration_validator` — khi viết/sửa file trong thư mục migrations/, alembic/versions/
+- `sql_query_analyzer` — khi viết ORM query mới hoặc thêm endpoint có DB access
+- `openapi_spec_sync` — khi thêm/sửa route handler hoặc Pydantic model
+- `breaking_change_detector` — trước khi tạo PR vào main; khi sửa public API/function signature
+- `container_linter` — khi sửa Dockerfile, docker-compose.yml, hoặc trước deploy
+- `ci_pipeline_validator` — khi sửa .github/workflows/ hoặc .gitlab-ci.yml
+- `data_flow_taint_analyzer` — khi thêm endpoint nhận user input mới (Body, Form, Query)
+- `duplicate_code_scanner` — sau khi viết module mới lớn hoặc sau refactor lớn
+- `api_contract_tester` — khi thêm/sửa API endpoint
+- `complexity_analyzer` — sau khi viết logic mới có >2 nhánh hoặc sau refactor lớn
+- `changelog_generator` — khi user đề cập release, version bump, chuẩn bị deploy
+
+**Tier 3:**
+- `flaky_test_detector` — khi CI thỉnh thoảng fail không rõ lý do
+- `mutation_tester` — khi coverage cao nhưng nghi ngờ test không assert đúng
+- `performance_regression_detector` — sau refactor function critical; khi user mention "chậm hơn trước"
+- `dependency_graph_visualizer` — khi gặp ImportError, circular import, hoặc thêm module mới
+- `git_archaeologist` — khi cần hiểu "tại sao code được viết vậy" trước khi sửa
+- `sbom_generator` — khi chuẩn bị deploy lên production
+- `chaos_tester` — khi implement retry, circuit breaker, timeout, concurrent queue
+
+## Ngoại lệ — KHÔNG cần panel_review
+
+- Sửa docs, comment, README, config nhỏ
+- Đổi tên biến, format code, thay đổi tầm thường dưới ~10 dòng
+- User nói rõ bỏ qua review (vd: "khỏi review", "nhanh thôi")
+
+## Khi harness lỗi
+
+Nếu tool agent-harness lỗi (server không chạy, Azure timeout/rate-limit): tiếp tục task bình thường, báo ngắn gọn cho user là harness đang lỗi. Không retry quá 1 lần, không block task vì harness.
+<!-- /agent-harness-managed -->
+"""
+
+HOOK_REMINDER_CMD = (
+    'echo \'{"hookSpecificOutput":{"hookEventName":"PostToolUse",'
+    '"additionalContext":"Code da thay doi trong turn nay. Neu day la coding task: '
+    'hay goi mcp__agent-harness__auto_trigger voi changed_files/task/stage=post_edit/mode=max. '
+    'Truoc khi bao hoan thanh, goi auto_trigger stage=final mode=max hoac panel_review MOT LAN tren '
+    'toan bo files da sua. Khong gui .env that vao panel_review."}}\'' 
+)
+
+
+def _read_md(md_path: Path) -> tuple[str, str] | None:
+    """Đọc file markdown, trả về (content, write_encoding). None nếu không đọc được.
+    write_encoding là encoding để ghi lại nhằm giữ nguyên BOM/encoding gốc.
+    """
+    try:
+        raw = md_path.read_bytes()
+    except OSError as e:
+        print(f"[error] Khong doc duoc {md_path} ({e}).")
+        return None
+    # UTF-16 LE/BE BOM
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16"), "utf-16"
+    # UTF-8 BOM — trả về utf-8-sig để write_text tái tạo BOM
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw[3:].decode("utf-8"), "utf-8-sig"
+    # Plain UTF-8
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        print(f"[error] {md_path} khong doc duoc (encoding khong phai UTF-8/UTF-16). Chuyen sang UTF-8 roi chay lai.")
+        return None
+
+
+def _end_marker_for(marker: str) -> str:
+    return marker.replace("<!-- ", "<!-- /", 1)
+
+
+def _replace_managed_section(content: str, marker: str, section: str) -> tuple[str, bool]:
+    end_marker = _end_marker_for(marker)
+    if end_marker not in section:
+        section = section.rstrip() + "\n" + end_marker + "\n"
+    start = content.find(marker)
+    if start == -1:
+        return content.rstrip() + "\n\n" + section, False
+    end = content.find(end_marker, start + len(marker))
+    if end != -1:
+        tail_start = end + len(end_marker)
+        return content[:start].rstrip() + "\n\n" + section + "\n\n" + content[tail_start:].lstrip(), True
+    # Legacy section had no end marker and was appended by older installers.
+    # Preserve user content instead of guessing a broad prefix boundary.
+    return content.rstrip() + "\n\n" + section, False
+
+
+def merge_claude_md(claude_dir: Path) -> None:
+    md_path = claude_dir / "CLAUDE.md"
+    if md_path.exists():
+        result = _read_md(md_path)
+        if result is None:
+            return
+        content, enc = result
+        new_content, replaced = _replace_managed_section(content, CLAUDE_MARKER, CLAUDE_MD_SECTION)
+        try:
+            md_path.write_text(new_content, encoding=enc)
+        except OSError as e:
+            print(f"[error] Khong ghi duoc CLAUDE.md ({e}). Kiem tra quyen ghi hoac dung luong dia.")
+            return
+        print("[ok]   Da cap nhat section agent-harness trong CLAUDE.md" if replaced else "[ok]   Da append section agent-harness vao CLAUDE.md")
+    else:
+        try:
+            md_path.write_text(CLAUDE_MD_SECTION, encoding="utf-8")
+        except OSError as e:
+            print(f"[error] Khong tao duoc ~/.claude/CLAUDE.md ({e}).")
+            return
+        print("[ok]   Da tao ~/.claude/CLAUDE.md")
+
+
+def _read_settings(st_path: Path) -> tuple[dict, int]:
+    """Đọc settings.json, trả về (dict, error_code). error_code=1 nếu fail."""
+    try:
+        raw = st_path.read_bytes()
+        # Detect encoding by BOM: UTF-16 LE/BE, UTF-8 BOM, plain UTF-8
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            text = raw.decode("utf-16")
+        elif raw[:3] == b"\xef\xbb\xbf":
+            text = raw.decode("utf-8-sig")
+        else:
+            text = raw.decode("utf-8")
+        data = json.loads(text)
+    except OSError as e:
+        print(f"[error] Khong doc duoc {st_path} ({e}). Kiem tra quyen doc.")
+        return {}, 1
+    except UnicodeDecodeError as e:
+        print(f"[error] {st_path} khong doc duoc ({e}). Luu lai file voi encoding UTF-8 roi chay lai.")
+        return {}, 1
+    except json.JSONDecodeError as e:
+        print(f"[error] {st_path} khong phai JSON hop le ({e}). Sua tay roi chay lai.")
+        return {}, 1
+
+    # Validate schema — hooks phai la dict, PostToolUse phai la list
+    if not isinstance(data, dict):
+        print(f"[error] {st_path} root phai la object JSON. Sua tay roi chay lai.")
+        return {}, 1
+    if "hooks" in data:
+        if not isinstance(data["hooks"], dict):
+            print(f"[error] {st_path}: 'hooks' phai la object, hien la {type(data['hooks']).__name__}. Sua tay roi chay lai.")
+            return {}, 1
+        if "PostToolUse" in data["hooks"] and not isinstance(data["hooks"]["PostToolUse"], list):
+            print(f"[error] {st_path}: 'hooks.PostToolUse' phai la array. Sua tay roi chay lai.")
+            return {}, 1
+    return data, 0
+
+
+def merge_settings_json(claude_dir: Path) -> int:
+    st_path = claude_dir / "settings.json"
+    settings: dict = {}
+    if st_path.exists():
+        settings, err = _read_settings(st_path)
+        if err:
+            return err
+
+    # Defensive: hooks phải là dict, PostToolUse phải là list
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        print(f"[error] settings.json: 'hooks' phai la object, hien la {type(hooks).__name__}. Sua tay roi chay lai.")
+        return 1
+    post = hooks.setdefault("PostToolUse", [])
+    if not isinstance(post, list):
+        print("[error] settings.json: 'hooks.PostToolUse' phai la array. Sua tay roi chay lai.")
+        return 1
+
+    # Idempotency: nhận diện theo id (ổn định) hoặc theo command (legacy/không có id)
+    _cmd_norm = " ".join(HOOK_REMINDER_CMD.split())  # normalize whitespace cho compare
+
+    def _is_existing_hook(e: dict) -> bool:
+        if e.get("id") == HOOK_ID:
+            return True
+        # fallback: cùng matcher + command (so sánh sau normalize whitespace) → hook cũ chưa có id
+        sub = e.get("hooks", [])
+        return (e.get("matcher") == "Edit|Write|NotebookEdit"
+                and isinstance(sub, list)
+                and any(isinstance(h, dict)
+                        and " ".join((h.get("command") or "").split()) == _cmd_norm
+                        for h in sub))
+
+    if any(isinstance(e, dict) and _is_existing_hook(e) for e in post):
+        print("[skip] Hook nhac Auto-Pilot da ton tai trong settings.json")
+        return 0
+
+    post.append({
+        "id": HOOK_ID,
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [{
+            "type": "command",
+            "command": HOOK_REMINDER_CMD,
+            "timeout": 10,
+            "suppressOutput": True,
+        }],
+    })
+
+    # Atomic write với fallback: mkstemp trong cùng dir → os.replace
+    # Fallback nếu mkstemp bị policy chặn: ghi thẳng với backup .bak
+    content = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=st_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, st_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        # Fallback: backup rồi ghi trực tiếp
+        bak_path = st_path.with_suffix(".json.bak")
+        try:
+            if st_path.exists():
+                import shutil
+                shutil.copy2(st_path, bak_path)
+            st_path.write_text(content, encoding="utf-8")
+        except OSError as e2:
+            print(f"[error] Khong ghi duoc settings.json ({e2}). Kiem tra quyen ghi hoac dung luong dia.")
+            return 1
+
+    print("[ok]   Da them hook nhac panel_review vao settings.json")
+    return 0
+
+
+def configure_claude_mcp(claude_dir: Path) -> None:
+    path = claude_dir / "claude_mcp_config.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    else:
+        data = {}
+    servers = data.setdefault("mcpServers", {})
+    servers["agent-harness"] = {
+        "command": "python",
+        "args": [_harness_server()],
+        "env": {"PYTHONPATH": str(_harness_root())},
+    }
+    _write_json(path, data)
+    print("[ok]   Da cau hinh Claude MCP agent-harness dung path hien tai")
+
+
+def configure_gemini_mcp(gemini_dir: Path) -> None:
+    for rel in ("config/mcp_config.json", "antigravity-ide/mcp_config.json"):
+        path = gemini_dir / rel
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
+        else:
+            data = {}
+        servers = data.setdefault("mcpServers", {})
+        servers["agent-harness"] = {
+            "command": "python",
+            "args": [_harness_server()],
+            "env": {"PYTHONPATH": str(_harness_root())},
+        }
+        _write_json(path, data)
+    print("[ok]   Da cau hinh Gemini/Antigravity MCP agent-harness dung path hien tai")
+
+
+def configure_codex_mcp() -> None:
+    path = Path.home() / ".codex" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    server_path = _harness_server().replace("\\", "/")
+    block = (
+        '[mcp_servers.agent-harness]\n'
+        'command = "python"\n'
+        f'args = [ "{server_path}" ]\n'
+    )
+    if path.exists():
+        content = path.read_text(encoding="utf-8", errors="replace")
+    else:
+        content = ""
+    import re
+    pattern = r'(?ms)^\s*\[mcp_servers\.agent-harness\]\n.*?(?=^\s*\[|\Z)'
+    if re.search(pattern, content):
+        content = re.sub(pattern, block + "\n", content)
+    else:
+        content = content.rstrip() + "\n\n" + block
+    path.write_text(content, encoding="utf-8")
+    print("[ok]   Da cau hinh Codex MCP agent-harness dung path hien tai")
+
+
+GEMINI_MD_SECTION = """\
+<!-- agent-harness -->
+# Agent Harness — quy trình khi làm coding task
+
+Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+
+## Auto-Pilot — mặc định bật
+
+- Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
+- Trước khi báo hoàn thành, gọi lại `auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Không gửi `.env` thật vào `panel_review`; `auto_trigger` tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
+- Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
+
+## Bắt buộc
+
+1. **Trước khi implement phần phức tạp** (thuật toán khó, kiến trúc mới, concurrency, auth/security, payment): gọi `consult` với câu hỏi design cụ thể + files liên quan.
+
+2. **Sau khi viết/sửa xong code, TRƯỚC khi báo hoàn thành**: gọi `auto_trigger` (`stage="final"`, `mode="max"`) hoặc `panel_review` với danh sách files đã sửa (hoặc diff). Chạy MỘT LẦN cho cả batch thay đổi cuối. Findings critical/high phải xử lý hoặc giải thích. Panel 3 stage: Pre-pass (khi diff >200KB — SYNTHESIZER gpt-5.4-pro-2 tóm gọn xuống ~100KB, giữ security/logic/API changes); Stage 1 song song — reviewer (code quality), security (OWASP), tester (adversarial — race condition, hidden assumption, edge case); Stage 2 sequential — integrity (data integrity: missing transaction, partial failure gap + synthesis toàn bộ findings). Output mỗi finding có field `triage`: `auto_fix` = fix mechanical (áp ngay), `ask_user` = cần developer quyết. `warnings[]` có thể chứa cảnh báo anti-consensus. `degraded: true` nếu integrity stage fail.
+
+## Dùng khi phù hợp
+
+3. **Debug bí** (sau 1-2 lần thử): `suggest_fix` với code + error/stack trace.
+4. **Hiểu flow xuyên nhiều file**: `ask_codebase` — không cần truyền `files`, tự tìm file liên quan qua index. Tối đa 15 file per query.
+5. **Cần so sánh 2 hướng implement**: `alt_implementation`.
+6. **Việc vặt** (fixtures, mock data, boilerplate): `quick_task`.
+7. **Tìm kiếm symbol/file/hàm**: `semantic_search` — polyglot, 158 ngôn ngữ, FTS5. Index tự build lần đầu.
+8. **Rebuild index sau refactor lớn**: `index_codebase` với `force=true`.
+
+## Tự động theo context
+
+**Tier 1:**
+- `pr_generator` — task xong, có git changes chưa có PR description
+- `dead_code_scanner` — sau refactor lớn hoặc xóa/đổi tên function/class/module
+- `coverage_analyzer` — sau khi viết logic mới có nhánh phức tạp (>2 code paths)
+- `incident_responder` — user paste log/stack trace kèm: crash, down, 500, exception, FATAL
+- `secret_scanner` — trước git commit khi thêm file mới có credentials/token, khi sửa .env.example
+- `env_parity_checker` — khi sửa .env.example hoặc .env; trước deploy/release
+- `config_security_audit` — khi thêm file config mới, sửa .env, CORS config, hoặc trước deploy
+- `devops_pipeline` — trước commit/PR: quality gate (ruff+mypy+black) để bắt lỗi lint/type trước panel_review
+- `security_autofix` — sau panel_review tìm thấy Critical/High security finding
+
+**Tier 2:**
+- `migration_validator` — khi viết/sửa file trong thư mục migrations/, alembic/versions/
+- `sql_query_analyzer` — khi viết ORM query mới hoặc thêm endpoint có DB access
+- `openapi_spec_sync` — khi thêm/sửa route handler hoặc Pydantic model
+- `breaking_change_detector` — trước khi tạo PR vào main; khi sửa public API/function signature
+- `container_linter` — khi sửa Dockerfile, docker-compose.yml, hoặc trước deploy
+- `ci_pipeline_validator` — khi sửa .github/workflows/ hoặc .gitlab-ci.yml
+- `data_flow_taint_analyzer` — khi thêm endpoint nhận user input mới (Body, Form, Query)
+- `duplicate_code_scanner` — sau khi viết module mới lớn hoặc sau refactor lớn
+- `api_contract_tester` — khi thêm/sửa API endpoint
+- `complexity_analyzer` — sau khi viết logic mới có >2 nhánh hoặc sau refactor lớn
+- `changelog_generator` — khi user đề cập release, version bump, chuẩn bị deploy
+- `schema_drift` — khi sửa Pydantic models hoặc sau refactor data layer
+- `swarm_debug` — khi suggest_fix thất bại 2+ lần hoặc bug span nhiều file phức tạp
+- `auto_tester` — sau panel_review có findings → sinh và chạy pytest tự động
+- `dependency_upgrader` — trước release/deploy; khi requirements.txt có packages lỗi thời
+- `doc_sync` — sau khi đổi signature public functions hoặc trước PR vào main
+- `polyglot_reviewer` — khi codebase có >1 ngôn ngữ và files vừa sửa span nhiều ngôn ngữ
+- `a11y_auditor` — khi có thay đổi HTML/JSX/CSS/template
+- `dependency_graph_visualizer` — khi gặp ImportError, circular import, hoặc thêm module mới
+
+**Tier 3:**
+- `flaky_test_detector` — khi CI thỉnh thoảng fail không rõ lý do
+- `mutation_tester` — khi coverage cao nhưng nghi ngờ test không assert đúng
+- `performance_regression_detector` — sau refactor function critical; khi user mention "chậm hơn trước"
+- `git_archaeologist` — khi cần hiểu "tại sao code được viết vậy" trước khi sửa
+- `sbom_generator` — khi chuẩn bị deploy lên production
+- `feature_flag_auditor` — khi user hỏi về flags, rollout, A/B test, hoặc trước release
+- `i18n_auditor` — khi có string literals mới trong UI code (không phải log/comment)
+- `load_tester` — khi thêm HTTP endpoint mới và user hỏi về performance/load
+- `benchmarker` — sau alt_implementation để so sánh performance 2 approach
+- `visual_reviewer` — khi có thay đổi UI và app đang chạy có URL
+- `telemetry_debugger` — khi user paste stack trace (bổ sung incident_responder — focus file:line + patch)
+
+## Ngoại lệ — KHÔNG cần panel_review
+
+- Sửa docs, comment, README, config nhỏ
+- Đổi tên biến, format code, thay đổi tầm thường dưới ~10 dòng
+- Fix trực tiếp từ suggestion của vòng panel_review trước + thay đổi <20 dòng
+- User nói rõ bỏ qua review
+
+## Khi harness lỗi
+
+Nếu tool agent-harness lỗi: tiếp tục task bình thường, báo ngắn gọn cho user. Không retry quá 1 lần, không block task vì harness.
+
+## Token efficiency
+
+- **Grep trước, Read sau**: Grep tìm line number → Read với offset+limit chính xác.
+- **Không Read lại sau Edit/Write**: tool đã confirm thành công = đủ.
+- **Gom hết fix trong batch → 1 panel_review cuối**: không gọi sau mỗi file nhỏ.
+<!-- /agent-harness -->
+"""
+
+
+def merge_gemini_md(gemini_dir: Path) -> None:
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+    md_path = gemini_dir / "GEMINI.md"
+    if md_path.exists():
+        result = _read_md(md_path)
+        if result is None:
+            return
+        content, enc = result
+        new_content, replaced = _replace_managed_section(content, GEMINI_MARKER, GEMINI_MD_SECTION)
+        try:
+            md_path.write_text(new_content, encoding=enc)
+        except OSError as e:
+            print(f"[error] Khong ghi duoc GEMINI.md ({e}). Kiem tra quyen ghi hoac dung luong dia.")
+            return
+        print("[ok]   Da cap nhat section agent-harness trong GEMINI.md" if replaced else "[ok]   Da append section agent-harness vao GEMINI.md")
+    else:
+        try:
+            md_path.write_text(GEMINI_MD_SECTION, encoding="utf-8")
+        except OSError as e:
+            print(f"[error] Khong tao duoc ~/.gemini/GEMINI.md ({e}).")
+            return
+        print("[ok]   Da tao ~/.gemini/GEMINI.md")
+
+
+def main() -> int:
+    claude_dir = Path.home() / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    merge_claude_md(claude_dir)
+    err = merge_settings_json(claude_dir)
+    if err:
+        return err
+    configure_claude_mcp(claude_dir)
+    configure_codex_mcp()
+    gemini_dir = Path.home() / ".gemini"
+    merge_gemini_md(gemini_dir)
+    configure_gemini_mcp(gemini_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

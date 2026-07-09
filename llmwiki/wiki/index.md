@@ -1,0 +1,837 @@
+---
+title: LLMWiki Index — Agent Harness
+type: index
+---
+
+## Concepts
+
+- [app-check-limits](concepts/app-check-limits.md) — App Check limits and quotas
+- [archive-extraction-zip-slip](concepts/archive-extraction-zip-slip.md) — Zip slip path traversal via archive extraction
+- [auth-and-passport](concepts/auth-and-passport.md) — Auth and Passport.js security patterns
+- [authentication-jwt-attack-surface](concepts/authentication-jwt-attack-surface.md) — JWT authentication attack surface
+- [bfla-attack-surface](concepts/bfla-attack-surface.md) — BFLA attack surface overview
+- [bfla-batch-job-paths](concepts/bfla-batch-job-paths.md) — BFLA via batch job paths
+- [bfla-cache-key-confusion](concepts/bfla-cache-key-confusion.md) — BFLA via cache key confusion
+- [bfla-content-type-paths](concepts/bfla-content-type-paths.md) — BFLA via content-type path confusion
+- [bfla-edge-vs-core-mismatch](concepts/bfla-edge-vs-core-mismatch.md) — BFLA edge vs core authorization mismatch
+- [bfla-feature-flag-bypass](concepts/bfla-feature-flag-bypass.md) — BFLA via feature flag bypass
+- [bfla-graphql-abuse](concepts/bfla-graphql-abuse.md) — BFLA via GraphQL abuse
+- [bfla-grpc-abuse](concepts/bfla-grpc-abuse.md) — BFLA via gRPC abuse
+- [bfla-header-trust](concepts/bfla-header-trust.md) — BFLA via header trust issues
+- [bfla-high-value-actions](concepts/bfla-high-value-actions.md) — BFLA high value target actions
+- [bfla-idempotency-and-retries](concepts/bfla-idempotency-and-retries.md) — BFLA via idempotency and retries
+- [bfla-microservices-authz](concepts/bfla-microservices-authz.md) — BFLA in microservices authorization
+- [bfla-multi-tenant-authz](concepts/bfla-multi-tenant-authz.md) — BFLA in multi-tenant authorization
+- [bfla-route-shadowing](concepts/bfla-route-shadowing.md) — BFLA via route shadowing
+- [bfla-testing-methodology](concepts/bfla-testing-methodology.md) — BFLA testing methodology
+- [bfla-verb-drift-and-aliases](concepts/bfla-verb-drift-and-aliases.md) — BFLA via HTTP verb drift and aliases
+- [bfla-websocket-abuse](concepts/bfla-websocket-abuse.md) — BFLA via WebSocket abuse
+- [broken-function-level-authorization](concepts/broken-function-level-authorization.md) — Broken function level authorization overview
+- [business-logic-attack-surface](concepts/business-logic-attack-surface.md) — Business logic attack surface
+- [business-logic-bypass-techniques](concepts/business-logic-bypass-techniques.md) — Business logic bypass techniques
+- [business-logic-concurrency-and-idempotency](concepts/business-logic-concurrency-and-idempotency.md) — Business logic: concurrency and idempotency flaws
+- [business-logic-event-driven-sagas](concepts/business-logic-event-driven-sagas.md) — Business logic in event-driven sagas
+- [business-logic-feature-gates-and-roles](concepts/business-logic-feature-gates-and-roles.md) — Business logic: feature gates and roles
+- [business-logic-flaws](concepts/business-logic-flaws.md) — Business logic flaws overview
+- [business-logic-microservices-boundaries](concepts/business-logic-microservices-boundaries.md) — Business logic at microservices boundaries
+- [business-logic-multi-tenant-isolation](concepts/business-logic-multi-tenant-isolation.md) — Business logic multi-tenant isolation
+- [business-logic-numeric-and-currency](concepts/business-logic-numeric-and-currency.md) — Business logic: numeric and currency issues
+- [business-logic-quotas-limits-inventory](concepts/business-logic-quotas-limits-inventory.md) — Business logic: quotas, limits, and inventory
+- [business-logic-refunds-and-chargebacks](concepts/business-logic-refunds-and-chargebacks.md) — Business logic: refunds and chargebacks
+- [business-logic-state-machine-abuse](concepts/business-logic-state-machine-abuse.md) — Business logic: state machine abuse
+- [business-logic-testing-methodology](concepts/business-logic-testing-methodology.md) — Business logic testing methodology
+- [channels-websocket-security](concepts/channels-websocket-security.md) — Django Channels WebSocket security
+- [client-side-xss-and-hydration](concepts/client-side-xss-and-hydration.md) — Client-side XSS and hydration attacks
+- [cloud-functions-trust-boundaries](concepts/cloud-functions-trust-boundaries.md) — Cloud functions trust boundary issues
+- [cloud-storage-security](concepts/cloud-storage-security.md) — Cloud storage security risks
+- [content-type-switching](concepts/content-type-switching.md) — Content-type switching attacks
+- [cors-misconfiguration](concepts/cors-misconfiguration.md) — CORS misconfiguration vulnerabilities
+- [crud-generators](concepts/crud-generators.md) — Security issues in CRUD generators
+- [csrf](concepts/csrf.md) — Cross-site request forgery overview
+- [csrf-attack-surface](concepts/csrf-attack-surface.md) — CSRF attack surface
+- [csrf-bypass-techniques](concepts/csrf-bypass-techniques.md) — CSRF bypass techniques
+- [csrf-chaining-attacks](concepts/csrf-chaining-attacks.md) — CSRF chaining attacks
+- [csrf-cors-misconfiguration](concepts/csrf-cors-misconfiguration.md) — CSRF via CORS misconfiguration
+- [csrf-exposure](concepts/csrf-exposure.md) — CSRF exposure patterns
+- [csrf-graphql-csrf](concepts/csrf-graphql-csrf.md) — GraphQL CSRF attacks
+- [csrf-json-csrf](concepts/csrf-json-csrf.md) — JSON CSRF attacks
+- [csrf-login-logout-csrf](concepts/csrf-login-logout-csrf.md) — Login/logout CSRF attacks
+- [csrf-method-and-content-type-abuse](concepts/csrf-method-and-content-type-abuse.md) — CSRF via method and content-type abuse
+- [csrf-misconfiguration](concepts/csrf-misconfiguration.md) — CSRF token misconfiguration
+- [csrf-navigation-csrf](concepts/csrf-navigation-csrf.md) — Navigation CSRF attacks
+- [csrf-oauth-oidc-csrf](concepts/csrf-oauth-oidc-csrf.md) — CSRF in OAuth/OIDC flows
+- [csrf-session-and-cookie-security](concepts/csrf-session-and-cookie-security.md) — CSRF: session and cookie security
+- [csrf-special-contexts](concepts/csrf-special-contexts.md) — CSRF in special contexts
+- [csrf-testing-methodology](concepts/csrf-testing-methodology.md) — CSRF testing methodology
+- [csrf-token-and-origin-validation](concepts/csrf-token-and-origin-validation.md) — CSRF token and origin validation
+- [csrf-websocket-csrf](concepts/csrf-websocket-csrf.md) — WebSocket CSRF attacks
+- [data-exposure-via-next-data](concepts/data-exposure-via-next-data.md) — Data exposure via __NEXT_DATA__
+- [debug-and-settings-leakage](concepts/debug-and-settings-leakage.md) — Debug mode and settings leakage
+- [dependency-injection-gaps](concepts/dependency-injection-gaps.md) — Dependency injection security gaps
+- [django-admin-security](concepts/django-admin-security.md) — Django admin panel security
+- [django-testing-methodology](concepts/django-testing-methodology.md) — Django testing methodology
+- [draft-preview-mode-security](concepts/draft-preview-mode-security.md) — Next.js draft/preview mode security
+- [drf-filter-backend-safety](concepts/drf-filter-backend-safety.md) — DRF filter backend safety issues
+- [fastapi-attack-surface](concepts/fastapi-attack-surface.md) — FastAPI attack surface
+- [fastapi-testing-methodology](concepts/fastapi-testing-methodology.md) — FastAPI testing methodology
+- [file-handling-risks](concepts/file-handling-risks.md) — File handling security risks
+- [file-upload-risks](concepts/file-upload-risks.md) — File upload security risks
+- [firebase-auth-token-validation](concepts/firebase-auth-token-validation.md) — Firebase auth token validation issues
+- [firebase-bypass-techniques](concepts/firebase-bypass-techniques.md) — Firebase security bypass techniques
+- [firebase-firestore-attack-surface](concepts/firebase-firestore-attack-surface.md) — Firebase Firestore attack surface
+- [firebase-testing-methodology](concepts/firebase-testing-methodology.md) — Firebase testing methodology
+- [firestore-query-abuse](concepts/firestore-query-abuse.md) — Firestore query abuse patterns
+- [firestore-rules-security](concepts/firestore-rules-security.md) — Firestore security rules issues
+- [graphql-and-sqlalchemy-alternative-stacks](concepts/graphql-and-sqlalchemy-alternative-stacks.md) — GraphQL and SQLAlchemy alternative stacks
+- [guard-bypass](concepts/guard-bypass.md) — NestJS guard bypass techniques
+- [harness-architecture](concepts/harness-architecture.md) — MCP flow, routing rules, Azure endpoint constraints
+- [header-injection-attack-surface](concepts/header-injection-attack-surface.md) — Header injection attack surface
+- [header-injection-bypass-techniques](concepts/header-injection-bypass-techniques.md) — Header injection bypass techniques
+- [header-injection-cache-poisoning](concepts/header-injection-cache-poisoning.md) — Header injection cache poisoning
+- [header-injection-content-type-confusion](concepts/header-injection-content-type-confusion.md) — Header injection via content-type confusion
+- [header-injection-cookie-manipulation](concepts/header-injection-cookie-manipulation.md) — Header injection cookie manipulation
+- [header-injection-crlf-response-splitting](concepts/header-injection-crlf-response-splitting.md) — CRLF injection and response splitting
+- [header-injection-host-confusion](concepts/header-injection-host-confusion.md) — Header injection via host confusion
+- [header-injection-http2-frame-confusion](concepts/header-injection-http2-frame-confusion.md) — Header injection via HTTP/2 frame confusion
+- [header-injection-open-redirect](concepts/header-injection-open-redirect.md) — Header injection open redirect
+- [header-injection-proxy-forwarding-spoofing](concepts/header-injection-proxy-forwarding-spoofing.md) — Header injection via proxy forwarding spoofing
+- [header-injection-testing-methodology](concepts/header-injection-testing-methodology.md) — Header injection testing methodology
+- [header-injection-xss-via-response-headers](concepts/header-injection-xss-via-response-headers.md) — XSS via injected response headers
+- [host-header-and-password-reset-poisoning](concepts/host-header-and-password-reset-poisoning.md) — Host header and password reset poisoning
+- [http-header-injection](concepts/http-header-injection.md) — HTTP header injection techniques
+- [http-request-smuggling](concepts/http-request-smuggling.md) — HTTP request smuggling overview
+- [http-request-smuggling-attack-surface](concepts/http-request-smuggling-attack-surface.md) — HTTP request smuggling attack surface
+- [http-request-smuggling-cache-poisoning-chain](concepts/http-request-smuggling-cache-poisoning-chain.md) — Smuggling to cache poisoning chain
+- [http-request-smuggling-cl-te](concepts/http-request-smuggling-cl-te.md) — CL.TE request smuggling
+- [http-request-smuggling-cross-user-capture](concepts/http-request-smuggling-cross-user-capture.md) — Cross-user request capture via smuggling
+- [http-request-smuggling-detection-methods](concepts/http-request-smuggling-detection-methods.md) — HTTP request smuggling detection methods
+- [http-request-smuggling-front-end-bypass](concepts/http-request-smuggling-front-end-bypass.md) — Smuggling to bypass front-end controls
+- [http-request-smuggling-h2-cl](concepts/http-request-smuggling-h2-cl.md) — H2.CL request smuggling
+- [http-request-smuggling-h2-te](concepts/http-request-smuggling-h2-te.md) — H2.TE request smuggling
+- [http-request-smuggling-parser-differentials](concepts/http-request-smuggling-parser-differentials.md) — Parser differential smuggling techniques
+- [http-request-smuggling-response-queue-poisoning](concepts/http-request-smuggling-response-queue-poisoning.md) — Response queue poisoning via smuggling
+- [http-request-smuggling-te-cl](concepts/http-request-smuggling-te-cl.md) — TE.CL request smuggling
+- [http-request-smuggling-testing-methodology](concepts/http-request-smuggling-testing-methodology.md) — HTTP request smuggling testing methodology
+- [http-request-smuggling-validation](concepts/http-request-smuggling-validation.md) — HTTP request smuggling validation and fixes
+- [http-request-smuggling-websocket-hijacking](concepts/http-request-smuggling-websocket-hijacking.md) — WebSocket hijacking via smuggling
+- [idor](concepts/idor.md) — Insecure direct object reference overview
+- [idor-and-mass-assignment](concepts/idor-and-mass-assignment.md) — IDOR combined with mass assignment
+- [idor-via-dependencies](concepts/idor-via-dependencies.md) — IDOR via indirect dependencies
+- [image-optimizer-ssrf](concepts/image-optimizer-ssrf.md) — SSRF via image optimizer endpoints
+- [information-disclosure](concepts/information-disclosure.md) — Information disclosure overview
+- [information-disclosure-cdn-cache-keys](concepts/information-disclosure-cdn-cache-keys.md) — Information disclosure via CDN cache keys
+- [information-disclosure-cross-channel-mirroring](concepts/information-disclosure-cross-channel-mirroring.md) — Information disclosure via cross-channel mirroring
+- [information-disclosure-differential-oracles](concepts/information-disclosure-differential-oracles.md) — Differential oracle information disclosure
+- [information-disclosure-exploitation-chains](concepts/information-disclosure-exploitation-chains.md) — Information disclosure exploitation chains
+- [information-disclosure-testing-methodology](concepts/information-disclosure-testing-methodology.md) — Information disclosure testing methodology
+- [information-disclosure-validation](concepts/information-disclosure-validation.md) — Information disclosure validation and fixes
+- [insecure-deserialization](concepts/insecure-deserialization.md) — Insecure deserialization overview
+- [insecure-deserialization-advanced-techniques](concepts/insecure-deserialization-advanced-techniques.md) — Advanced insecure deserialization techniques
+- [insecure-deserialization-bypass-methods](concepts/insecure-deserialization-bypass-methods.md) — Insecure deserialization bypass methods
+- [insecure-deserialization-dotnet](concepts/insecure-deserialization-dotnet.md) — .NET insecure deserialization
+- [insecure-deserialization-java-deserialization](concepts/insecure-deserialization-java-deserialization.md) — Java deserialization vulnerabilities
+- [insecure-deserialization-php-unserialize](concepts/insecure-deserialization-php-unserialize.md) — PHP unserialize vulnerabilities
+- [insecure-deserialization-python-pickle](concepts/insecure-deserialization-python-pickle.md) — Python pickle deserialization attacks
+- [insecure-deserialization-reconnaissance](concepts/insecure-deserialization-reconnaissance.md) — Insecure deserialization reconnaissance
+- [insecure-deserialization-ruby-marshal](concepts/insecure-deserialization-ruby-marshal.md) — Ruby Marshal deserialization attacks
+- [insecure-deserialization-testing-methodology](concepts/insecure-deserialization-testing-methodology.md) — Insecure deserialization testing methodology
+- [insecure-deserialization-validation](concepts/insecure-deserialization-validation.md) — Insecure deserialization validation and fixes
+- [insecure-file-uploads](concepts/insecure-file-uploads.md) — Insecure file uploads overview
+- [insecure-file-uploads-advanced-techniques](concepts/insecure-file-uploads-advanced-techniques.md) — Advanced insecure file upload techniques
+- [insecure-file-uploads-bypass-techniques](concepts/insecure-file-uploads-bypass-techniques.md) — File upload validation bypass techniques
+- [insecure-file-uploads-special-contexts](concepts/insecure-file-uploads-special-contexts.md) — Insecure file uploads in special contexts
+- [insecure-file-uploads-testing-methodology](concepts/insecure-file-uploads-testing-methodology.md) — Insecure file uploads testing methodology
+- [insecure-file-uploads-validation](concepts/insecure-file-uploads-validation.md) — Insecure file uploads validation and fixes
+- [interceptor-abuse](concepts/interceptor-abuse.md) — NestJS interceptor abuse
+- [jwks-caching-and-rotation](concepts/jwks-caching-and-rotation.md) — JWKS caching and key rotation issues
+- [jws-edge-cases](concepts/jws-edge-cases.md) — JWS edge cases and pitfalls
+- [jwt-chaining-attacks](concepts/jwt-chaining-attacks.md) — JWT chaining attacks
+- [jwt-claims-validation](concepts/jwt-claims-validation.md) — JWT claims validation issues
+- [jwt-header-manipulation](concepts/jwt-header-manipulation.md) — JWT header manipulation attacks
+- [jwt-misuse](concepts/jwt-misuse.md) — JWT misuse patterns
+- [jwt-signature-verification](concepts/jwt-signature-verification.md) — JWT signature verification bypass
+- [jwt-simplejwt-configuration](concepts/jwt-simplejwt-configuration.md) — SimpleJWT configuration issues
+- [jwt-testing-methodology](concepts/jwt-testing-methodology.md) — JWT testing methodology
+- [lfi-wrappers-and-techniques](concepts/lfi-wrappers-and-techniques.md) — LFI wrappers and exploitation techniques
+- [mass-assignment](concepts/mass-assignment.md) — Mass assignment overview
+- [mass-assignment-advanced-techniques](concepts/mass-assignment-advanced-techniques.md) — Advanced mass assignment techniques
+- [mass-assignment-bypass-techniques](concepts/mass-assignment-bypass-techniques.md) — Mass assignment bypass techniques
+- [mass-assignment-encodings-and-channels](concepts/mass-assignment-encodings-and-channels.md) — Mass assignment via encodings and channels
+- [mass-assignment-false-positives](concepts/mass-assignment-false-positives.md) — Mass assignment false positives
+- [mass-assignment-key-vulnerabilities](concepts/mass-assignment-key-vulnerabilities.md) — Key mass assignment vulnerabilities
+- [mass-assignment-reconnaissance](concepts/mass-assignment-reconnaissance.md) — Mass assignment reconnaissance
+- [mass-assignment-shape-variants](concepts/mass-assignment-shape-variants.md) — Mass assignment shape variants
+- [mass-assignment-testing-methodology](concepts/mass-assignment-testing-methodology.md) — Mass assignment testing methodology
+- [mass-assignment-validation](concepts/mass-assignment-validation.md) — Mass assignment validation and fixes
+- [microservice-transport-security](concepts/microservice-transport-security.md) — Microservice transport security
+- [microservices-token-verification](concepts/microservices-token-verification.md) — Token verification in microservices
+- [middleware-bypass](concepts/middleware-bypass.md) — Middleware bypass techniques
+- [middleware-ordering](concepts/middleware-ordering.md) — Middleware ordering security issues
+- [mobile-token-security](concepts/mobile-token-security.md) — Mobile token storage and security
+- [model-roles](concepts/model-roles.md) — 10 agent roles, trigger conditions, model mapping
+- [module-boundary-leaks](concepts/module-boundary-leaks.md) — NestJS module boundary leaks
+- [mounted-apps-security](concepts/mounted-apps-security.md) — Mounted sub-application security
+- [nestjs-attack-surface](concepts/nestjs-attack-surface.md) — NestJS attack surface
+- [nestjs-testing-methodology](concepts/nestjs-testing-methodology.md) — NestJS testing methodology
+- [nextauth-pitfalls](concepts/nextauth-pitfalls.md) — NextAuth.js security pitfalls
+- [nextjs-attack-surface](concepts/nextjs-attack-surface.md) — Next.js attack surface
+- [nextjs-testing-methodology](concepts/nextjs-testing-methodology.md) — Next.js testing methodology
+- [nosql-injection](concepts/nosql-injection.md) — NoSQL injection overview
+- [nosql-injection-aggregation-pipeline-injection](concepts/nosql-injection-aggregation-pipeline-injection.md) — NoSQL injection in aggregation pipelines
+- [nosql-injection-blind-extraction](concepts/nosql-injection-blind-extraction.md) — Blind NoSQL injection extraction
+- [nosql-injection-bypass-techniques](concepts/nosql-injection-bypass-techniques.md) — NoSQL injection bypass techniques
+- [nosql-injection-dynamodb-cassandra-couchdb-neo4j](concepts/nosql-injection-dynamodb-cassandra-couchdb-neo4j.md) — NoSQL injection in DynamoDB/Cassandra/CouchDB/Neo4j
+- [nosql-injection-elasticsearch-query-injection](concepts/nosql-injection-elasticsearch-query-injection.md) — Elasticsearch query injection
+- [nosql-injection-false-positives](concepts/nosql-injection-false-positives.md) — NoSQL injection false positives
+- [nosql-injection-graphql-variable-injection](concepts/nosql-injection-graphql-variable-injection.md) — NoSQL injection via GraphQL variables
+- [nosql-injection-mongodb-auth-bypass](concepts/nosql-injection-mongodb-auth-bypass.md) — MongoDB authentication bypass
+- [nosql-injection-reconnaissance](concepts/nosql-injection-reconnaissance.md) — NoSQL injection reconnaissance
+- [nosql-injection-redis-command-injection](concepts/nosql-injection-redis-command-injection.md) — Redis command injection
+- [nosql-injection-ssjs](concepts/nosql-injection-ssjs.md) — Server-side JavaScript injection
+- [nosql-injection-testing-methodology](concepts/nosql-injection-testing-methodology.md) — NoSQL injection testing methodology
+- [nosql-injection-validation](concepts/nosql-injection-validation.md) — NoSQL injection validation and fixes
+- [oauth-device-pkce-security](concepts/oauth-device-pkce-security.md) — OAuth device flow and PKCE security
+- [oidc-token-confusion](concepts/oidc-token-confusion.md) — OIDC token confusion attacks
+- [open-redirect](concepts/open-redirect.md) — Open redirect overview
+- [open-redirect-allowlist-validation](concepts/open-redirect-allowlist-validation.md) — Open redirect allowlist validation bypass
+- [open-redirect-client-side-vectors](concepts/open-redirect-client-side-vectors.md) — Client-side open redirect vectors
+- [open-redirect-false-positives](concepts/open-redirect-false-positives.md) — Open redirect false positives
+- [open-redirect-oauth-abuse](concepts/open-redirect-oauth-abuse.md) — Open redirect in OAuth flows
+- [open-redirect-ssrf-chaining](concepts/open-redirect-ssrf-chaining.md) — Open redirect chained to SSRF
+- [open-redirect-testing-methodology](concepts/open-redirect-testing-methodology.md) — Open redirect testing methodology
+- [open-redirect-validation](concepts/open-redirect-validation.md) — Open redirect validation and fixes
+- [orm-injection](concepts/orm-injection.md) — ORM injection vulnerabilities
+- [orm-sql-injection](concepts/orm-sql-injection.md) — SQL injection via ORM misuse
+- [parameter-manipulation](concepts/parameter-manipulation.md) — Parameter manipulation attacks
+- [path-traversal-bypasses](concepts/path-traversal-bypasses.md) — Path traversal bypass techniques
+- [path-traversal-false-positives](concepts/path-traversal-false-positives.md) — Path traversal false positives
+- [path-traversal-lfi-rfi](concepts/path-traversal-lfi-rfi.md) — Path traversal, LFI, and RFI overview
+- [path-traversal-testing-methodology](concepts/path-traversal-testing-methodology.md) — Path traversal testing methodology
+- [path-traversal-validation](concepts/path-traversal-validation.md) — Path traversal validation and fixes
+- [permission-class-gaps](concepts/permission-class-gaps.md) — DRF permission class gaps
+- [postgrest-rest-abuse](concepts/postgrest-rest-abuse.md) — PostgREST REST API abuse
+- [prototype-pollution](concepts/prototype-pollution.md) — Prototype pollution overview
+- [prototype-pollution-bypass-methods](concepts/prototype-pollution-bypass-methods.md) — Prototype pollution bypass methods
+- [prototype-pollution-client-side](concepts/prototype-pollution-client-side.md) — Client-side prototype pollution
+- [prototype-pollution-false-positives](concepts/prototype-pollution-false-positives.md) — Prototype pollution false positives
+- [prototype-pollution-filter-bypasses](concepts/prototype-pollution-filter-bypasses.md) — Prototype pollution filter bypasses
+- [prototype-pollution-impact](concepts/prototype-pollution-impact.md) — Prototype pollution impact and exploitation
+- [prototype-pollution-server-side-nodejs](concepts/prototype-pollution-server-side-nodejs.md) — Server-side prototype pollution in Node.js
+- [prototype-pollution-testing-methodology](concepts/prototype-pollution-testing-methodology.md) — Prototype pollution testing methodology
+- [prototype-pollution-validation](concepts/prototype-pollution-validation.md) — Prototype pollution validation and fixes
+- [proxy-and-host-trust](concepts/proxy-and-host-trust.md) — Proxy and host header trust issues
+- [pydantic-exploitation](concepts/pydantic-exploitation.md) — Pydantic model exploitation
+- [race-conditions](concepts/race-conditions.md) — Race conditions overview
+- [race-conditions-atomicity-gaps](concepts/race-conditions-atomicity-gaps.md) — Race conditions from atomicity gaps
+- [race-conditions-cross-service-races](concepts/race-conditions-cross-service-races.md) — Cross-service race conditions
+- [race-conditions-database-isolation](concepts/race-conditions-database-isolation.md) — Race conditions and database isolation
+- [race-conditions-distributed-locks](concepts/race-conditions-distributed-locks.md) — Race conditions in distributed lock systems
+- [race-conditions-false-positives](concepts/race-conditions-false-positives.md) — Race condition false positives
+- [race-conditions-idempotency-dedup-bypass](concepts/race-conditions-idempotency-dedup-bypass.md) — Race conditions bypassing idempotency/dedup
+- [race-conditions-impact](concepts/race-conditions-impact.md) — Race condition impact and exploitation
+- [race-conditions-optimistic-concurrency-evasion](concepts/race-conditions-optimistic-concurrency-evasion.md) — Evading optimistic concurrency controls
+- [race-conditions-rate-limits-and-quotas](concepts/race-conditions-rate-limits-and-quotas.md) — Race conditions bypassing rate limits and quotas
+- [race-conditions-request-synchronization](concepts/race-conditions-request-synchronization.md) — Race condition request synchronization techniques
+- [race-conditions-testing-methodology](concepts/race-conditions-testing-methodology.md) — Race conditions testing methodology
+- [race-conditions-validation](concepts/race-conditions-validation.md) — Race condition validation and fixes
+- [rate-limiting](concepts/rate-limiting.md) — Rate limiting bypass and evasion
+- [rce](concepts/rce.md) — Remote code execution overview
+- [rce-bypass-techniques](concepts/rce-bypass-techniques.md) — RCE bypass techniques
+- [rce-command-injection](concepts/rce-command-injection.md) — RCE via command injection
+- [rce-container-and-kubernetes-escalation](concepts/rce-container-and-kubernetes-escalation.md) — RCE container and Kubernetes escalation
+- [rce-deserialization-and-el](concepts/rce-deserialization-and-el.md) — RCE via deserialization and expression languages
+- [rce-detection-channels](concepts/rce-detection-channels.md) — RCE detection channels
+- [rce-false-positives](concepts/rce-false-positives.md) — RCE false positives
+- [rce-impact](concepts/rce-impact.md) — RCE impact and post-exploitation
+- [rce-media-and-document-pipelines](concepts/rce-media-and-document-pipelines.md) — RCE via media and document pipelines
+- [rce-post-exploitation](concepts/rce-post-exploitation.md) — RCE post-exploitation techniques
+- [rce-ssrf-to-rce](concepts/rce-ssrf-to-rce.md) — SSRF chained to RCE
+- [rce-template-injection](concepts/rce-template-injection.md) — RCE via template injection
+- [rce-testing-methodology](concepts/rce-testing-methodology.md) — RCE testing methodology
+- [rce-validation](concepts/rce-validation.md) — RCE validation and fixes
+- [realtime-database-rules-security](concepts/realtime-database-rules-security.md) — Firebase Realtime Database rules security
+- [refresh-token-and-session-security](concepts/refresh-token-and-session-security.md) — Refresh token and session security
+- [rfi-conditions-and-exploitation](concepts/rfi-conditions-and-exploitation.md) — RFI conditions and exploitation
+- [rsc-and-caching-boundaries](concepts/rsc-and-caching-boundaries.md) — React Server Components and caching boundaries
+- [runtime-divergence](concepts/runtime-divergence.md) — Runtime divergence security issues
+- [scope-bypass](concepts/scope-bypass.md) — OAuth scope bypass techniques
+- [serialization-leaks](concepts/serialization-leaks.md) — Serialization data leaks
+- [server-actions-security](concepts/server-actions-security.md) — Next.js server actions security
+- [session-issues](concepts/session-issues.md) — Session management issues
+- [session-weaknesses](concepts/session-weaknesses.md) — Session weakness patterns
+- [sql-injection](concepts/sql-injection.md) — SQL injection overview
+- [sql-injection-blind-extraction](concepts/sql-injection-blind-extraction.md) — Blind SQL injection extraction
+- [sql-injection-bypass-techniques](concepts/sql-injection-bypass-techniques.md) — SQL injection bypass techniques
+- [sql-injection-detection-channels](concepts/sql-injection-detection-channels.md) — SQL injection detection channels
+- [sql-injection-false-positives](concepts/sql-injection-false-positives.md) — SQL injection false positives
+- [sql-injection-impact](concepts/sql-injection-impact.md) — SQL injection impact and exploitation
+- [sql-injection-orm-and-query-builders](concepts/sql-injection-orm-and-query-builders.md) — SQL injection via ORM and query builders
+- [sql-injection-out-of-band](concepts/sql-injection-out-of-band.md) — Out-of-band SQL injection
+- [sql-injection-testing-methodology](concepts/sql-injection-testing-methodology.md) — SQL injection testing methodology
+- [sql-injection-union-based-extraction](concepts/sql-injection-union-based-extraction.md) — UNION-based SQL injection extraction
+- [sql-injection-validation](concepts/sql-injection-validation.md) — SQL injection validation and fixes
+- [sql-injection-write-primitives](concepts/sql-injection-write-primitives.md) — SQL injection write primitives
+- [sso-federation-security](concepts/sso-federation-security.md) — SSO federation security issues
+- [ssrf](concepts/ssrf.md) — Server-side request forgery overview
+- [ssrf-address-variants](concepts/ssrf-address-variants.md) — SSRF address variants and bypasses
+- [ssrf-blind-ssrf](concepts/ssrf-blind-ssrf.md) — Blind SSRF techniques
+- [ssrf-bypass-techniques](concepts/ssrf-bypass-techniques.md) — SSRF bypass techniques
+- [ssrf-chaining-attacks](concepts/ssrf-chaining-attacks.md) — SSRF chaining attacks
+- [ssrf-false-positives](concepts/ssrf-false-positives.md) — SSRF false positives
+- [ssrf-header-and-method-control](concepts/ssrf-header-and-method-control.md) — SSRF via header and method control
+- [ssrf-impact](concepts/ssrf-impact.md) — SSRF impact and exploitation
+- [ssrf-in-django](concepts/ssrf-in-django.md) — SSRF in Django applications
+- [ssrf-in-fastapi](concepts/ssrf-in-fastapi.md) — SSRF in FastAPI applications
+- [ssrf-protocol-exploitation](concepts/ssrf-protocol-exploitation.md) — SSRF protocol exploitation
+- [ssrf-redirect-abuse](concepts/ssrf-redirect-abuse.md) — SSRF via redirect abuse
+- [ssrf-testing-methodology](concepts/ssrf-testing-methodology.md) — SSRF testing methodology
+- [ssrf-url-confusion](concepts/ssrf-url-confusion.md) — SSRF URL confusion attacks
+- [ssrf-validation](concepts/ssrf-validation.md) — SSRF validation and fixes
+- [ssti](concepts/ssti.md) — Server-side template injection overview
+- [ssti-blind-probes](concepts/ssti-blind-probes.md) — Blind SSTI probing techniques
+- [ssti-bypass-techniques](concepts/ssti-bypass-techniques.md) — SSTI bypass techniques
+- [ssti-engine-fingerprinting](concepts/ssti-engine-fingerprinting.md) — SSTI engine fingerprinting
+- [ssti-false-positives](concepts/ssti-false-positives.md) — SSTI false positives
+- [ssti-impact](concepts/ssti-impact.md) — SSTI impact and exploitation
+- [ssti-java-engines](concepts/ssti-java-engines.md) — SSTI in Java template engines
+- [ssti-javascript-engines](concepts/ssti-javascript-engines.md) — SSTI in JavaScript template engines
+- [ssti-jinja-mako](concepts/ssti-jinja-mako.md) — SSTI in Jinja2 and Mako
+- [ssti-php-engines](concepts/ssti-php-engines.md) — SSTI in PHP template engines
+- [ssti-post-exploitation](concepts/ssti-post-exploitation.md) — SSTI post-exploitation
+- [ssti-rce-primitives](concepts/ssti-rce-primitives.md) — SSTI RCE primitives
+- [ssti-ruby-engines](concepts/ssti-ruby-engines.md) — SSTI in Ruby template engines
+- [ssti-testing-methodology](concepts/ssti-testing-methodology.md) — SSTI testing methodology
+- [ssti-validation](concepts/ssti-validation.md) — SSTI validation and fixes
+- [subdomain-takeover](concepts/subdomain-takeover.md) — Subdomain takeover overview
+- [subdomain-takeover-blind-and-cache-channels](concepts/subdomain-takeover-blind-and-cache-channels.md) — Blind and cache channel subdomain takeover
+- [subdomain-takeover-cdn-alternate-domains](concepts/subdomain-takeover-cdn-alternate-domains.md) — CDN alternate domain subdomain takeover
+- [subdomain-takeover-claiming-resources](concepts/subdomain-takeover-claiming-resources.md) — Claiming resources for subdomain takeover
+- [subdomain-takeover-dns-indicators](concepts/subdomain-takeover-dns-indicators.md) — DNS indicators for subdomain takeover
+- [subdomain-takeover-enumeration-pipeline](concepts/subdomain-takeover-enumeration-pipeline.md) — Subdomain takeover enumeration pipeline
+- [subdomain-takeover-false-positives](concepts/subdomain-takeover-false-positives.md) — Subdomain takeover false positives
+- [subdomain-takeover-http-fingerprints](concepts/subdomain-takeover-http-fingerprints.md) — HTTP fingerprints for subdomain takeover
+- [subdomain-takeover-impact](concepts/subdomain-takeover-impact.md) — Subdomain takeover impact
+- [subdomain-takeover-mail-surface](concepts/subdomain-takeover-mail-surface.md) — Mail surface subdomain takeover
+- [subdomain-takeover-ns-delegation-takeover](concepts/subdomain-takeover-ns-delegation-takeover.md) — NS delegation subdomain takeover
+- [subdomain-takeover-oauth-and-trust-chains](concepts/subdomain-takeover-oauth-and-trust-chains.md) — OAuth and trust chain subdomain takeover
+- [subdomain-takeover-testing-methodology](concepts/subdomain-takeover-testing-methodology.md) — Subdomain takeover testing methodology
+- [subdomain-takeover-validation](concepts/subdomain-takeover-validation.md) — Subdomain takeover validation and fixes
+- [subdomain-takeover-verification-gaps](concepts/subdomain-takeover-verification-gaps.md) — Subdomain takeover verification gaps
+- [subdomain-takeover-wildcards-and-fallbacks](concepts/subdomain-takeover-wildcards-and-fallbacks.md) — Wildcard and fallback subdomain takeover
+- [supabase-attack-surface](concepts/supabase-attack-surface.md) — Supabase attack surface
+- [supabase-auth-token-validation](concepts/supabase-auth-token-validation.md) — Supabase auth token validation
+- [supabase-bypass-techniques](concepts/supabase-bypass-techniques.md) — Supabase security bypass techniques
+- [supabase-edge-functions-security](concepts/supabase-edge-functions-security.md) — Supabase edge functions security
+- [supabase-realtime-security](concepts/supabase-realtime-security.md) — Supabase Realtime security
+- [supabase-rls-security](concepts/supabase-rls-security.md) — Supabase Row Level Security
+- [supabase-rpc-security](concepts/supabase-rpc-security.md) — Supabase RPC security
+- [supabase-storage-security](concepts/supabase-storage-security.md) — Supabase storage security
+- [supabase-tenant-isolation](concepts/supabase-tenant-isolation.md) — Supabase tenant isolation
+- [supabase-testing-methodology](concepts/supabase-testing-methodology.md) — Supabase testing methodology
+- [template-engines-dynamic-resolution](concepts/template-engines-dynamic-resolution.md) — Dynamic template engine resolution risks
+- [template-injection](concepts/template-injection.md) — Template injection overview
+- [template-injection-jinja2](concepts/template-injection-jinja2.md) — Jinja2 template injection
+- [tenant-isolation](concepts/tenant-isolation.md) — Multi-tenant isolation patterns
+- [token-storage-and-transport](concepts/token-storage-and-transport.md) — Token storage and transport security
+- [validation-pipe-exploits](concepts/validation-pipe-exploits.md) — NestJS validation pipe exploits
+- [websocket-gateway-security](concepts/websocket-gateway-security.md) — WebSocket gateway security
+- [websocket-security](concepts/websocket-security.md) — WebSocket security overview
+- [xss](concepts/xss.md) — Cross-site scripting overview
+- [xss-context-encoding-rules](concepts/xss-context-encoding-rules.md) — XSS context-specific encoding rules
+- [xss-csp-bypass](concepts/xss-csp-bypass.md) — XSS CSP bypass techniques
+- [xss-dom-xss](concepts/xss-dom-xss.md) — DOM-based XSS
+- [xss-false-positives](concepts/xss-false-positives.md) — XSS false positives
+- [xss-framework-specific](concepts/xss-framework-specific.md) — Framework-specific XSS issues
+- [xss-impact](concepts/xss-impact.md) — XSS impact and exploitation
+- [xss-mutation-xss](concepts/xss-mutation-xss.md) — Mutation XSS (mXSS)
+- [xss-polyglot-payloads](concepts/xss-polyglot-payloads.md) — XSS polyglot payloads
+- [xss-post-exploitation](concepts/xss-post-exploitation.md) — XSS post-exploitation
+- [xss-special-contexts](concepts/xss-special-contexts.md) — XSS in special contexts
+- [xss-template-injection](concepts/xss-template-injection.md) — XSS via template injection
+- [xss-testing-methodology](concepts/xss-testing-methodology.md) — XSS testing methodology
+- [xss-trusted-types-bypass](concepts/xss-trusted-types-bypass.md) — XSS Trusted Types bypass
+- [xss-validation](concepts/xss-validation.md) — XSS validation and fixes
+- [xxe](concepts/xxe.md) — XML external entity injection overview
+- [xxe-bypass-techniques](concepts/xxe-bypass-techniques.md) — XXE bypass techniques
+- [xxe-core-payloads](concepts/xxe-core-payloads.md) — XXE core payloads
+- [xxe-detection-channels](concepts/xxe-detection-channels.md) — XXE detection channels
+- [xxe-false-positives](concepts/xxe-false-positives.md) — XXE false positives
+- [xxe-impact](concepts/xxe-impact.md) — XXE impact and exploitation
+- [xxe-parameter-entities](concepts/xxe-parameter-entities.md) — XXE via parameter entities
+- [xxe-protocol-wrappers](concepts/xxe-protocol-wrappers.md) — XXE protocol wrapper exploitation
+- [xxe-special-contexts](concepts/xxe-special-contexts.md) — XXE in special contexts
+- [xxe-testing-methodology](concepts/xxe-testing-methodology.md) — XXE testing methodology
+- [xxe-validation](concepts/xxe-validation.md) — XXE validation and fixes
+- [xxe-xinclude](concepts/xxe-xinclude.md) — XXE via XInclude
+- [xxe-xslt-document](concepts/xxe-xslt-document.md) — XXE via XSLT document()
+
+## Entities
+
+- [bfla-actions](entities/bfla-actions.md) — BFLA high-value action targets
+- [bfla-encodings](entities/bfla-encodings.md) — BFLA encoding variants
+- [bfla-graphql-entities](entities/bfla-graphql-entities.md) — BFLA GraphQL entity targets
+- [bfla-grpc-entities](entities/bfla-grpc-entities.md) — BFLA gRPC entity targets
+- [bfla-headers](entities/bfla-headers.md) — BFLA header targets
+- [bfla-job-entities](entities/bfla-job-entities.md) — BFLA batch job entities
+- [bfla-middleware-and-routing](entities/bfla-middleware-and-routing.md) — BFLA middleware and routing entities
+- [bfla-tenant-selectors](entities/bfla-tenant-selectors.md) — BFLA tenant selector entities
+- [bfla-transport-entities](entities/bfla-transport-entities.md) — BFLA transport entities
+- [bfla-websocket-entities](entities/bfla-websocket-entities.md) — BFLA WebSocket entities
+- [business-logic-attack-domains](entities/business-logic-attack-domains.md) — Business logic attack domain entities
+- [business-logic-authoritative-sources](entities/business-logic-authoritative-sources.md) — Business logic authoritative source entities
+- [business-logic-business-selectors](entities/business-logic-business-selectors.md) — Business logic selector entities
+- [business-logic-high-value-targets](entities/business-logic-high-value-targets.md) — Business logic high-value target entities
+- [business-logic-invariants](entities/business-logic-invariants.md) — Business logic invariant entities
+- [business-logic-state-entities](entities/business-logic-state-entities.md) — Business logic state entities
+- [business-logic-time-windows](entities/business-logic-time-windows.md) — Business logic time window entities
+- [business-logic-transport-entities](entities/business-logic-transport-entities.md) — Business logic transport entities
+- [business-logic-workflow-tokens](entities/business-logic-workflow-tokens.md) — Business logic workflow token entities
+- [csrf-anti-csrf-tokens](entities/csrf-anti-csrf-tokens.md) — CSRF anti-forgery token entities
+- [csrf-cookie-attributes](entities/csrf-cookie-attributes.md) — CSRF cookie attribute entities
+- [csrf-endpoints](entities/csrf-endpoints.md) — CSRF vulnerable endpoint entities
+- [csrf-graphql-entities](entities/csrf-graphql-entities.md) — CSRF GraphQL entities
+- [csrf-methods-and-content-types](entities/csrf-methods-and-content-types.md) — CSRF method and content-type entities
+- [csrf-mobile-spa-entities](entities/csrf-mobile-spa-entities.md) — CSRF mobile and SPA entities
+- [csrf-oauth-oidc-entities](entities/csrf-oauth-oidc-entities.md) — CSRF OAuth/OIDC entities
+- [csrf-request-headers](entities/csrf-request-headers.md) — CSRF request header entities
+- [csrf-websocket-entities](entities/csrf-websocket-entities.md) — CSRF WebSocket entities
+- [django-admin-path](entities/django-admin-path.md) — Django admin path entities
+- [django-attack-surface](entities/django-attack-surface.md) — Django attack surface entities
+- [django-auth-components](entities/django-auth-components.md) — Django auth component entities
+- [django-channels-websocket-consumer](entities/django-channels-websocket-consumer.md) — Django Channels WebSocket consumer entities
+- [django-file-fields](entities/django-file-fields.md) — Django file field entities
+- [django-openapi-schema-endpoints](entities/django-openapi-schema-endpoints.md) — Django OpenAPI schema endpoint entities
+- [django-orm-query-apis](entities/django-orm-query-apis.md) — Django ORM query API entities
+- [django-session-cookie-backends](entities/django-session-cookie-backends.md) — Django session cookie backend entities
+- [django-settings](entities/django-settings.md) — Django settings entities
+- [drf-permission-classes](entities/drf-permission-classes.md) — DRF permission class entities
+- [drf-serializers](entities/drf-serializers.md) — DRF serializer entities
+- [fastapi-background-tasks](entities/fastapi-background-tasks.md) — FastAPI background task entities
+- [fastapi-channel-types](entities/fastapi-channel-types.md) — FastAPI channel type entities
+- [fastapi-dependency-primitives](entities/fastapi-dependency-primitives.md) — FastAPI dependency primitive entities
+- [fastapi-deployment-stack](entities/fastapi-deployment-stack.md) — FastAPI deployment stack entities
+- [fastapi-file-and-static-apis](entities/fastapi-file-and-static-apis.md) — FastAPI file and static API entities
+- [fastapi-middlewares](entities/fastapi-middlewares.md) — FastAPI middleware entities
+- [fastapi-mounted-subapps](entities/fastapi-mounted-subapps.md) — FastAPI mounted sub-application entities
+- [fastapi-oauth-flows](entities/fastapi-oauth-flows.md) — FastAPI OAuth flow entities
+- [fastapi-openapi-docs-endpoints](entities/fastapi-openapi-docs-endpoints.md) — FastAPI OpenAPI docs endpoint entities
+- [fastapi-pydantic-models](entities/fastapi-pydantic-models.md) — FastAPI Pydantic model entities
+- [fastapi-router-constructs](entities/fastapi-router-constructs.md) — FastAPI router construct entities
+- [fastapi-security-schemes](entities/fastapi-security-schemes.md) — FastAPI security scheme entities
+- [fastapi-template-engine](entities/fastapi-template-engine.md) — FastAPI template engine entities
+- [fastapi-websocket-endpoints](entities/fastapi-websocket-endpoints.md) — FastAPI WebSocket endpoint entities
+- [firebase-admin-sdk](entities/firebase-admin-sdk.md) — Firebase Admin SDK entities
+- [firebase-auth-entities](entities/firebase-auth-entities.md) — Firebase auth entities
+- [firebase-client-config](entities/firebase-client-config.md) — Firebase client config entities
+- [firebase-cloud-functions-apis](entities/firebase-cloud-functions-apis.md) — Firebase Cloud Functions API entities
+- [firebase-firestore-endpoints](entities/firebase-firestore-endpoints.md) — Firebase Firestore endpoint entities
+- [firebase-principals](entities/firebase-principals.md) — Firebase principal entities
+- [firebase-rules-engines](entities/firebase-rules-engines.md) — Firebase rules engine entities
+- [firebase-rules-snippets](entities/firebase-rules-snippets.md) — Firebase security rules snippet entities
+- [firebase-storage-object-apis](entities/firebase-storage-object-apis.md) — Firebase storage object API entities
+- [firebase-tenant-model](entities/firebase-tenant-model.md) — Firebase tenant model entities
+- [header-injection-cache-signals](entities/header-injection-cache-signals.md) — Header injection cache signal entities
+- [header-injection-crlf-encodings](entities/header-injection-crlf-encodings.md) — CRLF encoding entities
+- [header-injection-email-fields](entities/header-injection-email-fields.md) — Header injection email field entities
+- [header-injection-headers](entities/header-injection-headers.md) — Header injection target header entities
+- [header-injection-http2-pseudo-headers](entities/header-injection-http2-pseudo-headers.md) — HTTP/2 pseudo-header entities
+- [header-injection-protocols-and-transports](entities/header-injection-protocols-and-transports.md) — Header injection protocol and transport entities
+- [header-injection-request-framing](entities/header-injection-request-framing.md) — Header injection request framing entities
+- [header-injection-routing-and-redirect-fields](entities/header-injection-routing-and-redirect-fields.md) — Header injection routing and redirect field entities
+- [http-request-smuggling-endpoints](entities/http-request-smuggling-endpoints.md) — HTTP request smuggling endpoint entities
+- [http-request-smuggling-headers](entities/http-request-smuggling-headers.md) — HTTP request smuggling header entities
+- [http-request-smuggling-http-versions](entities/http-request-smuggling-http-versions.md) — HTTP request smuggling version entities
+- [http-request-smuggling-infrastructure-topologies](entities/http-request-smuggling-infrastructure-topologies.md) — HTTP request smuggling infrastructure topology entities
+- [http-request-smuggling-pseudo-headers](entities/http-request-smuggling-pseudo-headers.md) — HTTP request smuggling pseudo-header entities
+- [http-request-smuggling-response-artifacts](entities/http-request-smuggling-response-artifacts.md) — HTTP request smuggling response artifact entities
+- [http-request-smuggling-security-controls](entities/http-request-smuggling-security-controls.md) — HTTP request smuggling security control entities
+- [idor-attack-surface](entities/idor-attack-surface.md) — IDOR attack surface entities
+- [idor-cache-and-blind-signals](entities/idor-cache-and-blind-signals.md) — IDOR cache and blind signal entities
+- [idor-expansion-projection-knobs](entities/idor-expansion-projection-knobs.md) — IDOR expansion and projection entities
+- [idor-graphql-example](entities/idor-graphql-example.md) — IDOR GraphQL example entities
+- [idor-high-value-targets](entities/idor-high-value-targets.md) — IDOR high-value target entities
+- [idor-identifier-forms](entities/idor-identifier-forms.md) — IDOR identifier form entities
+- [idor-microservice-headers](entities/idor-microservice-headers.md) — IDOR microservice header entities
+- [idor-pagination-cursors](entities/idor-pagination-cursors.md) — IDOR pagination cursor entities
+- [idor-relationship-references](entities/idor-relationship-references.md) — IDOR relationship reference entities
+- [idor-websocket-and-grpc-fields](entities/idor-websocket-and-grpc-fields.md) — IDOR WebSocket and gRPC field entities
+- [information-disclosure-api-schemas](entities/information-disclosure-api-schemas.md) — Information disclosure API schema entities
+- [information-disclosure-attack-surface](entities/information-disclosure-attack-surface.md) — Information disclosure attack surface entities
+- [information-disclosure-client-bundles](entities/information-disclosure-client-bundles.md) — Information disclosure client bundle entities
+- [information-disclosure-cloud-storage](entities/information-disclosure-cloud-storage.md) — Information disclosure cloud storage entities
+- [information-disclosure-configs-and-secrets](entities/information-disclosure-configs-and-secrets.md) — Information disclosure config and secret entities
+- [information-disclosure-cross-origin-signals](entities/information-disclosure-cross-origin-signals.md) — Information disclosure cross-origin signal entities
+- [information-disclosure-debug-endpoints](entities/information-disclosure-debug-endpoints.md) — Information disclosure debug endpoint entities
+- [information-disclosure-dvcs-and-backups](entities/information-disclosure-dvcs-and-backups.md) — Information disclosure DVCS and backup entities
+- [information-disclosure-error-types](entities/information-disclosure-error-types.md) — Information disclosure error type entities
+- [information-disclosure-file-metadata](entities/information-disclosure-file-metadata.md) — Information disclosure file metadata entities
+- [information-disclosure-headers-and-metadata](entities/information-disclosure-headers-and-metadata.md) — Information disclosure header and metadata entities
+- [information-disclosure-observability-and-admin](entities/information-disclosure-observability-and-admin.md) — Information disclosure observability and admin entities
+- [information-disclosure-storage-and-exports](entities/information-disclosure-storage-and-exports.md) — Information disclosure storage and export entities
+- [information-disclosure-triage-rubric](entities/information-disclosure-triage-rubric.md) — Information disclosure triage rubric entities
+- [insecure-deserialization-compression-wrappers](entities/insecure-deserialization-compression-wrappers.md) — Insecure deserialization compression wrapper entities
+- [insecure-deserialization-detection-signals](entities/insecure-deserialization-detection-signals.md) — Insecure deserialization detection signal entities
+- [insecure-deserialization-dotnet-payload](entities/insecure-deserialization-dotnet-payload.md) — .NET deserialization payload entities
+- [insecure-deserialization-dotnet-types](entities/insecure-deserialization-dotnet-types.md) — .NET deserialization type entities
+- [insecure-deserialization-formats](entities/insecure-deserialization-formats.md) — Insecure deserialization format entities
+- [insecure-deserialization-frameworks](entities/insecure-deserialization-frameworks.md) — Insecure deserialization framework entities
+- [insecure-deserialization-input-locations](entities/insecure-deserialization-input-locations.md) — Insecure deserialization input location entities
+- [insecure-deserialization-jackson-json-typing](entities/insecure-deserialization-jackson-json-typing.md) — Jackson JSON typing deserialization entities
+- [insecure-deserialization-java-gadget-chains](entities/insecure-deserialization-java-gadget-chains.md) — Java deserialization gadget chain entities
+- [insecure-deserialization-php-magic-methods](entities/insecure-deserialization-php-magic-methods.md) — PHP magic method deserialization entities
+- [insecure-deserialization-php-phar](entities/insecure-deserialization-php-phar.md) — PHP PHAR deserialization entities
+- [insecure-deserialization-python-pickle-example](entities/insecure-deserialization-python-pickle-example.md) — Python pickle deserialization example entities
+- [insecure-deserialization-python-yaml-payload](entities/insecure-deserialization-python-yaml-payload.md) — Python YAML deserialization payload entities
+- [insecure-deserialization-ruby-marshal-load](entities/insecure-deserialization-ruby-marshal-load.md) — Ruby Marshal.load deserialization entities
+- [insecure-deserialization-second-order](entities/insecure-deserialization-second-order.md) — Second-order insecure deserialization entities
+- [insecure-deserialization-session-cookies](entities/insecure-deserialization-session-cookies.md) — Session cookie deserialization entities
+- [insecure-deserialization-signed-blob-bypass](entities/insecure-deserialization-signed-blob-bypass.md) — Signed blob bypass deserialization entities
+- [insecure-deserialization-tooling](entities/insecure-deserialization-tooling.md) — Insecure deserialization tooling entities
+- [insecure-deserialization-white-box-indicators](entities/insecure-deserialization-white-box-indicators.md) — Insecure deserialization white-box indicator entities
+- [insecure-file-uploads-archive-attacks](entities/insecure-file-uploads-archive-attacks.md) — File upload archive attack entities
+- [insecure-file-uploads-attack-surface](entities/insecure-file-uploads-attack-surface.md) — Insecure file upload attack surface entities
+- [insecure-file-uploads-capability-probes](entities/insecure-file-uploads-capability-probes.md) — File upload capability probe entities
+- [insecure-file-uploads-cloud-storage-vectors](entities/insecure-file-uploads-cloud-storage-vectors.md) — File upload cloud storage vector entities
+- [insecure-file-uploads-detection-channels](entities/insecure-file-uploads-detection-channels.md) — File upload detection channel entities
+- [insecure-file-uploads-evasion-tricks](entities/insecure-file-uploads-evasion-tricks.md) — File upload evasion trick entities
+- [insecure-file-uploads-filename-and-path](entities/insecure-file-uploads-filename-and-path.md) — File upload filename and path entities
+- [insecure-file-uploads-header-manipulation](entities/insecure-file-uploads-header-manipulation.md) — File upload header manipulation entities
+- [insecure-file-uploads-metadata-abuse](entities/insecure-file-uploads-metadata-abuse.md) — File upload metadata abuse entities
+- [insecure-file-uploads-mime-polyglots](entities/insecure-file-uploads-mime-polyglots.md) — File upload MIME polyglot entities
+- [insecure-file-uploads-mobile-clients](entities/insecure-file-uploads-mobile-clients.md) — File upload mobile client entities
+- [insecure-file-uploads-processing-races](entities/insecure-file-uploads-processing-races.md) — File upload processing race entities
+- [insecure-file-uploads-resumable-multipart](entities/insecure-file-uploads-resumable-multipart.md) — Resumable and multipart file upload entities
+- [insecure-file-uploads-rich-text-editors](entities/insecure-file-uploads-rich-text-editors.md) — File upload via rich text editor entities
+- [insecure-file-uploads-serverless-and-cdn](entities/insecure-file-uploads-serverless-and-cdn.md) — File upload serverless and CDN entities
+- [insecure-file-uploads-stored-xss-payloads](entities/insecure-file-uploads-stored-xss-payloads.md) — File upload stored XSS payload entities
+- [insecure-file-uploads-surface-map](entities/insecure-file-uploads-surface-map.md) — Insecure file upload surface map entities
+- [insecure-file-uploads-toolchain-exploits](entities/insecure-file-uploads-toolchain-exploits.md) — File upload toolchain exploit entities
+- [insecure-file-uploads-validation-gaps](entities/insecure-file-uploads-validation-gaps.md) — File upload validation gap entities
+- [insecure-file-uploads-web-shells-and-configs](entities/insecure-file-uploads-web-shells-and-configs.md) — File upload web shell and config entities
+- [jwt-attack-tools](entities/jwt-attack-tools.md) — JWT attack tool entities
+- [jwt-claims](entities/jwt-claims.md) — JWT claim entities
+- [jwt-client-context](entities/jwt-client-context.md) — JWT client context entities
+- [jwt-endpoints](entities/jwt-endpoints.md) — JWT endpoint entities
+- [jwt-flow-entities](entities/jwt-flow-entities.md) — JWT flow entities
+- [jwt-headers](entities/jwt-headers.md) — JWT header entities
+- [jwt-key-material](entities/jwt-key-material.md) — JWT key material entities
+- [jwt-security-controls](entities/jwt-security-controls.md) — JWT security control entities
+- [jwt-storage-locations](entities/jwt-storage-locations.md) — JWT storage location entities
+- [jwt-token-types](entities/jwt-token-types.md) — JWT token type entities
+- [mass-assignment-attack-surface](entities/mass-assignment-attack-surface.md) — Mass assignment attack surface entities
+- [mass-assignment-batch-paths](entities/mass-assignment-batch-paths.md) — Mass assignment batch path entities
+- [mass-assignment-encodings](entities/mass-assignment-encodings.md) — Mass assignment encoding entities
+- [mass-assignment-graphql-specific](entities/mass-assignment-graphql-specific.md) — Mass assignment GraphQL entities
+- [mass-assignment-orm-framework-edges](entities/mass-assignment-orm-framework-edges.md) — Mass assignment ORM framework edge entities
+- [mass-assignment-parameter-strategies](entities/mass-assignment-parameter-strategies.md) — Mass assignment parameter strategy entities
+- [mass-assignment-parser-validator-gaps](entities/mass-assignment-parser-validator-gaps.md) — Mass assignment parser/validator gap entities
+- [mass-assignment-race-and-reorder](entities/mass-assignment-race-and-reorder.md) — Mass assignment race and reorder entities
+- [mass-assignment-shape-variants-entity](entities/mass-assignment-shape-variants-entity.md) — Mass assignment shape variant entities
+- [mass-assignment-surface-map](entities/mass-assignment-surface-map.md) — Mass assignment surface map entities
+- [mass-assignment-validation-artifacts](entities/mass-assignment-validation-artifacts.md) — Mass assignment validation artifact entities
+- [nestjs-auth-config-apis](entities/nestjs-auth-config-apis.md) — NestJS auth config API entities
+- [nestjs-config-service](entities/nestjs-config-service.md) — NestJS config service entities
+- [nestjs-controller-and-transport-types](entities/nestjs-controller-and-transport-types.md) — NestJS controller and transport type entities
+- [nestjs-crud-generator-apis](entities/nestjs-crud-generator-apis.md) — NestJS CRUD generator API entities
+- [nestjs-data-layer-apis](entities/nestjs-data-layer-apis.md) — NestJS data layer API entities
+- [nestjs-decorator-pipeline](entities/nestjs-decorator-pipeline.md) — NestJS decorator pipeline entities
+- [nestjs-graphql-apis](entities/nestjs-graphql-apis.md) — NestJS GraphQL API entities
+- [nestjs-guards-and-metadata](entities/nestjs-guards-and-metadata.md) — NestJS guard and metadata entities
+- [nestjs-health-and-metrics-apis](entities/nestjs-health-and-metrics-apis.md) — NestJS health and metrics API entities
+- [nestjs-microservice-handlers](entities/nestjs-microservice-handlers.md) — NestJS microservice handler entities
+- [nestjs-module-system](entities/nestjs-module-system.md) — NestJS module system entities
+- [nestjs-swagger-apis](entities/nestjs-swagger-apis.md) — NestJS Swagger API entities
+- [nestjs-validation-pipes](entities/nestjs-validation-pipes.md) — NestJS validation pipe entities
+- [nestjs-websocket-gateways](entities/nestjs-websocket-gateways.md) — NestJS WebSocket gateway entities
+- [next-build-artifacts](entities/next-build-artifacts.md) — Next.js build artifact entities
+- [next-image-entities](entities/next-image-entities.md) — Next.js image component entities
+- [nextauth-entities](entities/nextauth-entities.md) — NextAuth.js entities
+- [nextjs-cache-entities](entities/nextjs-cache-entities.md) — Next.js cache entities
+- [nextjs-client-bundle-artifacts](entities/nextjs-client-bundle-artifacts.md) — Next.js client bundle artifact entities
+- [nextjs-data-containers](entities/nextjs-data-containers.md) — Next.js data container entities
+- [nextjs-data-path-entities](entities/nextjs-data-path-entities.md) — Next.js data path entities
+- [nextjs-middleware-headers](entities/nextjs-middleware-headers.md) — Next.js middleware header entities
+- [nextjs-path-variants](entities/nextjs-path-variants.md) — Next.js path variant entities
+- [nextjs-preview-mode-entities](entities/nextjs-preview-mode-entities.md) — Next.js preview mode entities
+- [nextjs-rendering-and-cache-entities](entities/nextjs-rendering-and-cache-entities.md) — Next.js rendering and cache entities
+- [nextjs-router-entities](entities/nextjs-router-entities.md) — Next.js router entities
+- [nextjs-runtime-entities](entities/nextjs-runtime-entities.md) — Next.js runtime entities
+- [nextjs-server-action-protocol](entities/nextjs-server-action-protocol.md) — Next.js server action protocol entities
+- [nextjs-sitemap-and-robots](entities/nextjs-sitemap-and-robots.md) — Next.js sitemap and robots entities
+- [nosql-injection-aggregation-stages](entities/nosql-injection-aggregation-stages.md) — NoSQL injection aggregation stage entities
+- [nosql-injection-attack-surface](entities/nosql-injection-attack-surface.md) — NoSQL injection attack surface entities
+- [nosql-injection-blind-regex-payloads](entities/nosql-injection-blind-regex-payloads.md) — Blind NoSQL injection regex payload entities
+- [nosql-injection-cassandra-cql](entities/nosql-injection-cassandra-cql.md) — Cassandra CQL injection entities
+- [nosql-injection-content-type-and-input-shape](entities/nosql-injection-content-type-and-input-shape.md) — NoSQL injection content-type and input shape entities
+- [nosql-injection-couchdb-design-docs](entities/nosql-injection-couchdb-design-docs.md) — CouchDB design document injection entities
+- [nosql-injection-couchdb-enumeration](entities/nosql-injection-couchdb-enumeration.md) — CouchDB enumeration injection entities
+- [nosql-injection-couchdb-mango](entities/nosql-injection-couchdb-mango.md) — CouchDB Mango injection entities
+- [nosql-injection-dos-vectors](entities/nosql-injection-dos-vectors.md) — NoSQL injection DoS vector entities
+- [nosql-injection-dynamodb-partiql](entities/nosql-injection-dynamodb-partiql.md) — DynamoDB PartiQL injection entities
+- [nosql-injection-elasticsearch-painless](entities/nosql-injection-elasticsearch-painless.md) — Elasticsearch Painless injection entities
+- [nosql-injection-elasticsearch-query-string](entities/nosql-injection-elasticsearch-query-string.md) — Elasticsearch query string injection entities
+- [nosql-injection-error-fingerprinting](entities/nosql-injection-error-fingerprinting.md) — NoSQL injection error fingerprinting entities
+- [nosql-injection-function-accumulator-payloads](entities/nosql-injection-function-accumulator-payloads.md) — NoSQL injection function accumulator payload entities
+- [nosql-injection-graphql-introspection](entities/nosql-injection-graphql-introspection.md) — NoSQL injection GraphQL introspection entities
+- [nosql-injection-high-value-targets](entities/nosql-injection-high-value-targets.md) — NoSQL injection high-value target entities
+- [nosql-injection-mongodb-bypass-payloads](entities/nosql-injection-mongodb-bypass-payloads.md) — MongoDB bypass payload entities
+- [nosql-injection-mongodb-operators](entities/nosql-injection-mongodb-operators.md) — MongoDB operator injection entities
+- [nosql-injection-neo4j-apoc](entities/nosql-injection-neo4j-apoc.md) — Neo4j APOC injection entities
+- [nosql-injection-neo4j-cypher](entities/nosql-injection-neo4j-cypher.md) — Neo4j Cypher injection entities
+- [nosql-injection-operator-alternatives](entities/nosql-injection-operator-alternatives.md) — NoSQL injection operator alternative entities
+- [nosql-injection-operator-probe](entities/nosql-injection-operator-probe.md) — NoSQL injection operator probe entities
+- [nosql-injection-prototype-pollution](entities/nosql-injection-prototype-pollution.md) — NoSQL injection prototype pollution entities
+- [nosql-injection-redis-resp](entities/nosql-injection-redis-resp.md) — Redis RESP injection entities
+- [nosql-injection-ssjs-detection](entities/nosql-injection-ssjs-detection.md) — SSJS injection detection entities
+- [nosql-injection-stores-in-scope](entities/nosql-injection-stores-in-scope.md) — NoSQL stores in scope entities
+- [nosql-injection-structure-manipulation](entities/nosql-injection-structure-manipulation.md) — NoSQL injection structure manipulation entities
+- [nosql-injection-validation-artifacts](entities/nosql-injection-validation-artifacts.md) — NoSQL injection validation artifact entities
+- [nosql-injection-where-payloads](entities/nosql-injection-where-payloads.md) — NoSQL injection WHERE clause payload entities
+- [open-redirect-allowlist-mistakes](entities/open-redirect-allowlist-mistakes.md) — Open redirect allowlist mistake entities
+- [open-redirect-attack-surface](entities/open-redirect-attack-surface.md) — Open redirect attack surface entities
+- [open-redirect-client-side-apis](entities/open-redirect-client-side-apis.md) — Open redirect client-side API entities
+- [open-redirect-encoding-bypasses](entities/open-redirect-encoding-bypasses.md) — Open redirect encoding bypass entities
+- [open-redirect-exploitation-scenarios](entities/open-redirect-exploitation-scenarios.md) — Open redirect exploitation scenario entities
+- [open-redirect-high-value-targets](entities/open-redirect-high-value-targets.md) — Open redirect high-value target entities
+- [open-redirect-injection-points](entities/open-redirect-injection-points.md) — Open redirect injection point entities
+- [open-redirect-oauth-uri-abuse](entities/open-redirect-oauth-uri-abuse.md) — Open redirect OAuth URI abuse entities
+- [open-redirect-parser-differentials](entities/open-redirect-parser-differentials.md) — Open redirect parser differential entities
+- [open-redirect-reverse-proxies-and-gateways](entities/open-redirect-reverse-proxies-and-gateways.md) — Open redirect reverse proxy and gateway entities
+- [open-redirect-ssrf-targets](entities/open-redirect-ssrf-targets.md) — Open redirect SSRF target entities
+- [open-redirect-validation-artifacts](entities/open-redirect-validation-artifacts.md) — Open redirect validation artifact entities
+- [path-traversal-alias-root-mismatch](entities/path-traversal-alias-root-mismatch.md) — Path traversal alias root mismatch entities
+- [path-traversal-archive-formats](entities/path-traversal-archive-formats.md) — Path traversal archive format entities
+- [path-traversal-attack-surface](entities/path-traversal-attack-surface.md) — Path traversal attack surface entities
+- [path-traversal-bypass-encodings](entities/path-traversal-bypass-encodings.md) — Path traversal bypass encoding entities
+- [path-traversal-capability-probes](entities/path-traversal-capability-probes.md) — Path traversal capability probe entities
+- [path-traversal-detection-channels](entities/path-traversal-detection-channels.md) — Path traversal detection channel entities
+- [path-traversal-dot-tricks](entities/path-traversal-dot-tricks.md) — Path traversal dot trick entities
+- [path-traversal-high-value-targets-application](entities/path-traversal-high-value-targets-application.md) — Path traversal high-value application target entities
+- [path-traversal-high-value-targets-unix](entities/path-traversal-high-value-targets-unix.md) — Path traversal high-value Unix target entities
+- [path-traversal-high-value-targets-windows](entities/path-traversal-high-value-targets-windows.md) — Path traversal high-value Windows target entities
+- [path-traversal-lfi-wrappers](entities/path-traversal-lfi-wrappers.md) — Path traversal LFI wrapper entities
+- [path-traversal-log-session-poisoning](entities/path-traversal-log-session-poisoning.md) — Path traversal log/session poisoning entities
+- [path-traversal-mixed-separators](entities/path-traversal-mixed-separators.md) — Path traversal mixed separator entities
+- [path-traversal-proc-and-caches](entities/path-traversal-proc-and-caches.md) — Path traversal /proc and cache entities
+- [path-traversal-protocol-handlers](entities/path-traversal-protocol-handlers.md) — Path traversal protocol handler entities
+- [path-traversal-rfi-conditions](entities/path-traversal-rfi-conditions.md) — Path traversal RFI condition entities
+- [path-traversal-surface-map](entities/path-traversal-surface-map.md) — Path traversal surface map entities
+- [path-traversal-template-engines](entities/path-traversal-template-engines.md) — Path traversal template engine entities
+- [path-traversal-upload-temp-names](entities/path-traversal-upload-temp-names.md) — Path traversal upload temp name entities
+- [path-traversal-upstream-vs-backend-decoding](entities/path-traversal-upstream-vs-backend-decoding.md) — Path traversal upstream vs backend decoding entities
+- [path-traversal-validation-artifacts](entities/path-traversal-validation-artifacts.md) — Path traversal validation artifact entities
+- [prototype-pollution-attack-surface](entities/prototype-pollution-attack-surface.md) — Prototype pollution attack surface entities
+- [prototype-pollution-baseline-marker](entities/prototype-pollution-baseline-marker.md) — Prototype pollution baseline marker entities
+- [prototype-pollution-channel-matrix](entities/prototype-pollution-channel-matrix.md) — Prototype pollution channel matrix entities
+- [prototype-pollution-client-gadgets](entities/prototype-pollution-client-gadgets.md) — Prototype pollution client gadget entities
+- [prototype-pollution-client-side-impact](entities/prototype-pollution-client-side-impact.md) — Prototype pollution client-side impact entities
+- [prototype-pollution-fix-patterns](entities/prototype-pollution-fix-patterns.md) — Prototype pollution fix pattern entities
+- [prototype-pollution-freeze-seal-gaps](entities/prototype-pollution-freeze-seal-gaps.md) — Prototype pollution Object.freeze/seal gap entities
+- [prototype-pollution-gadget-hunting](entities/prototype-pollution-gadget-hunting.md) — Prototype pollution gadget hunting entities
+- [prototype-pollution-gadget-reference](entities/prototype-pollution-gadget-reference.md) — Prototype pollution gadget reference entities
+- [prototype-pollution-input-vectors](entities/prototype-pollution-input-vectors.md) — Prototype pollution input vector entities
+- [prototype-pollution-merge-points](entities/prototype-pollution-merge-points.md) — Prototype pollution merge point entities
+- [prototype-pollution-payload-shapes](entities/prototype-pollution-payload-shapes.md) — Prototype pollution payload shape entities
+- [prototype-pollution-rce-gadget-chains](entities/prototype-pollution-rce-gadget-chains.md) — Prototype pollution RCE gadget chain entities
+- [prototype-pollution-sanitization-bypasses](entities/prototype-pollution-sanitization-bypasses.md) — Prototype pollution sanitization bypass entities
+- [prototype-pollution-server-side-sinks](entities/prototype-pollution-server-side-sinks.md) — Prototype pollution server-side sink entities
+- [prototype-pollution-tooling](entities/prototype-pollution-tooling.md) — Prototype pollution tooling entities
+- [prototype-pollution-tooling-nuclei](entities/prototype-pollution-tooling-nuclei.md) — Prototype pollution Nuclei tooling entities
+- [prototype-pollution-tooling-ppfuzz](entities/prototype-pollution-tooling-ppfuzz.md) — Prototype pollution PPFuzz tooling entities
+- [prototype-pollution-vulnerable-patterns](entities/prototype-pollution-vulnerable-patterns.md) — Prototype pollution vulnerable pattern entities
+- [prototype-pollution-whitebox-scan-artifacts](entities/prototype-pollution-whitebox-scan-artifacts.md) — Prototype pollution white-box scan artifact entities
+- [race-conditions-atomicity-examples](entities/race-conditions-atomicity-examples.md) — Race condition atomicity example entities
+- [race-conditions-attack-surface](entities/race-conditions-attack-surface.md) — Race condition attack surface entities
+- [race-conditions-auth-flows](entities/race-conditions-auth-flows.md) — Race condition auth flow entities
+- [race-conditions-chaining-attacks](entities/race-conditions-chaining-attacks.md) — Race condition chaining attack entities
+- [race-conditions-cross-service-patterns](entities/race-conditions-cross-service-patterns.md) — Cross-service race condition pattern entities
+- [race-conditions-database-anomalies](entities/race-conditions-database-anomalies.md) — Race condition database anomaly entities
+- [race-conditions-distributed-lock-components](entities/race-conditions-distributed-lock-components.md) — Distributed lock component entities
+- [race-conditions-files-storage](entities/race-conditions-files-storage.md) — Race condition file storage entities
+- [race-conditions-graphql](entities/race-conditions-graphql.md) — Race condition GraphQL entities
+- [race-conditions-high-value-targets](entities/race-conditions-high-value-targets.md) — Race condition high-value target entities
+- [race-conditions-http2-and-last-byte-sync](entities/race-conditions-http2-and-last-byte-sync.md) — Race condition HTTP/2 and last-byte sync entities
+- [race-conditions-idempotency-key-scope](entities/race-conditions-idempotency-key-scope.md) — Race condition idempotency key scope entities
+- [race-conditions-locking-patterns](entities/race-conditions-locking-patterns.md) — Race condition locking pattern entities
+- [race-conditions-optimistic-concurrency-fields](entities/race-conditions-optimistic-concurrency-fields.md) — Race condition optimistic concurrency field entities
+- [race-conditions-race-window-identifiers](entities/race-conditions-race-window-identifiers.md) — Race window identifier entities
+- [race-conditions-rate-limit-patterns](entities/race-conditions-rate-limit-patterns.md) — Race condition rate limit pattern entities
+- [race-conditions-recon-signals](entities/race-conditions-recon-signals.md) — Race condition recon signal entities
+- [race-conditions-special-contexts](entities/race-conditions-special-contexts.md) — Race condition special context entities
+- [race-conditions-validation-artifacts](entities/race-conditions-validation-artifacts.md) — Race condition validation artifact entities
+- [race-conditions-websocket](entities/race-conditions-websocket.md) — Race condition WebSocket entities
+- [rce-attack-surface](entities/rce-attack-surface.md) — RCE attack surface entities
+- [rce-command-injection-argument-injection](entities/rce-command-injection-argument-injection.md) — RCE command and argument injection entities
+- [rce-command-injection-evasion](entities/rce-command-injection-evasion.md) — RCE command injection evasion entities
+- [rce-command-injection-operators](entities/rce-command-injection-operators.md) — RCE command injection operator entities
+- [rce-context-artifacts](entities/rce-context-artifacts.md) — RCE context artifact entities
+- [rce-deserialization-languages](entities/rce-deserialization-languages.md) — RCE deserialization language entities
+- [rce-detection-oracles](entities/rce-detection-oracles.md) — RCE detection oracle entities
+- [rce-docker-artifacts](entities/rce-docker-artifacts.md) — RCE Docker artifact entities
+- [rce-dotnet-serialization](entities/rce-dotnet-serialization.md) — RCE .NET serialization entities
+- [rce-expression-languages](entities/rce-expression-languages.md) — RCE expression language entities
+- [rce-ghostscript-operators](entities/rce-ghostscript-operators.md) — RCE Ghostscript operator entities
+- [rce-imagemagick-payload](entities/rce-imagemagick-payload.md) — RCE ImageMagick payload entities
+- [rce-java-gadgets](entities/rce-java-gadgets.md) — RCE Java gadget entities
+- [rce-kubernetes-artifacts](entities/rce-kubernetes-artifacts.md) — RCE Kubernetes artifact entities
+- [rce-latex-features](entities/rce-latex-features.md) — RCE LaTeX feature entities
+- [rce-media-pipelines](entities/rce-media-pipelines.md) — RCE media pipeline entities
+- [rce-oast-tooling](entities/rce-oast-tooling.md) — RCE OAST tooling entities
+- [rce-output-based-payloads](entities/rce-output-based-payloads.md) — RCE output-based payload entities
+- [rce-php-deserialization](entities/rce-php-deserialization.md) — RCE PHP deserialization entities
+- [rce-post-exploitation-artifacts](entities/rce-post-exploitation-artifacts.md) — RCE post-exploitation artifact entities
+- [rce-python-ruby-deserialization](entities/rce-python-ruby-deserialization.md) — RCE Python/Ruby deserialization entities
+- [rce-ssrf-targets](entities/rce-ssrf-targets.md) — RCE SSRF target entities
+- [rce-template-engines](entities/rce-template-engines.md) — RCE template engine entities
+- [rce-template-probes](entities/rce-template-probes.md) — RCE template probe entities
+- [rce-tooling](entities/rce-tooling.md) — RCE tooling entities
+- [rce-unix-time-based-payloads](entities/rce-unix-time-based-payloads.md) — RCE Unix time-based payload entities
+- [rce-windows-time-based-payloads](entities/rce-windows-time-based-payloads.md) — RCE Windows time-based payload entities
+- [sql-injection-attack-surface](entities/sql-injection-attack-surface.md) — SQL injection attack surface entities
+- [sql-injection-blind-artifacts](entities/sql-injection-blind-artifacts.md) — SQL injection blind artifact entities
+- [sql-injection-bypass-artifacts](entities/sql-injection-bypass-artifacts.md) — SQL injection bypass artifact entities
+- [sql-injection-dbms-primitives](entities/sql-injection-dbms-primitives.md) — SQL injection DBMS primitive entities
+- [sql-injection-detection-oracles](entities/sql-injection-detection-oracles.md) — SQL injection detection oracle entities
+- [sql-injection-impact-artifacts](entities/sql-injection-impact-artifacts.md) — SQL injection impact artifact entities
+- [sql-injection-input-locations](entities/sql-injection-input-locations.md) — SQL injection input location entities
+- [sql-injection-mssql-primitives](entities/sql-injection-mssql-primitives.md) — SQL injection MSSQL primitive entities
+- [sql-injection-mysql-primitives](entities/sql-injection-mysql-primitives.md) — SQL injection MySQL primitive entities
+- [sql-injection-oob-artifacts](entities/sql-injection-oob-artifacts.md) — SQL injection OOB artifact entities
+- [sql-injection-oracle-primitives](entities/sql-injection-oracle-primitives.md) — SQL injection Oracle primitive entities
+- [sql-injection-orm-dangerous-apis](entities/sql-injection-orm-dangerous-apis.md) — SQL injection ORM dangerous API entities
+- [sql-injection-postgresql-primitives](entities/sql-injection-postgresql-primitives.md) — SQL injection PostgreSQL primitive entities
+- [sql-injection-testing-artifacts](entities/sql-injection-testing-artifacts.md) — SQL injection testing artifact entities
+- [sql-injection-uncommon-contexts](entities/sql-injection-uncommon-contexts.md) — SQL injection uncommon context entities
+- [sql-injection-union-extraction-artifacts](entities/sql-injection-union-extraction-artifacts.md) — SQL injection UNION extraction artifact entities
+- [sql-injection-validation-artifacts](entities/sql-injection-validation-artifacts.md) — SQL injection validation artifact entities
+- [sql-injection-write-artifacts](entities/sql-injection-write-artifacts.md) — SQL injection write artifact entities
+- [ssrf-address-artifacts](entities/ssrf-address-artifacts.md) — SSRF address artifact entities
+- [ssrf-attack-surface](entities/ssrf-attack-surface.md) — SSRF attack surface entities
+- [ssrf-aws-metadata](entities/ssrf-aws-metadata.md) — SSRF AWS metadata endpoint entities
+- [ssrf-azure-metadata](entities/ssrf-azure-metadata.md) — SSRF Azure metadata endpoint entities
+- [ssrf-blind-artifacts](entities/ssrf-blind-artifacts.md) — Blind SSRF artifact entities
+- [ssrf-chaining-artifacts](entities/ssrf-chaining-artifacts.md) — SSRF chaining artifact entities
+- [ssrf-direct-url-params](entities/ssrf-direct-url-params.md) — SSRF direct URL parameter entities
+- [ssrf-gcp-metadata](entities/ssrf-gcp-metadata.md) — SSRF GCP metadata endpoint entities
+- [ssrf-high-value-targets](entities/ssrf-high-value-targets.md) — SSRF high-value target entities
+- [ssrf-internal-services](entities/ssrf-internal-services.md) — SSRF internal service entities
+- [ssrf-kubernetes-targets](entities/ssrf-kubernetes-targets.md) — SSRF Kubernetes target entities
+- [ssrf-protocol-artifacts](entities/ssrf-protocol-artifacts.md) — SSRF protocol artifact entities
+- [ssrf-redirect-artifacts](entities/ssrf-redirect-artifacts.md) — SSRF redirect artifact entities
+- [ssrf-testing-artifacts](entities/ssrf-testing-artifacts.md) — SSRF testing artifact entities
+- [ssrf-url-confusion-artifacts](entities/ssrf-url-confusion-artifacts.md) — SSRF URL confusion artifact entities
+- [ssrf-validation-artifacts](entities/ssrf-validation-artifacts.md) — SSRF validation artifact entities
+- [ssti-attack-surface](entities/ssti-attack-surface.md) — SSTI attack surface entities
+- [ssti-blind-artifacts](entities/ssti-blind-artifacts.md) — Blind SSTI artifact entities
+- [ssti-engines-in-scope](entities/ssti-engines-in-scope.md) — SSTI engines in scope entities
+- [ssti-fingerprinting-probes](entities/ssti-fingerprinting-probes.md) — SSTI fingerprinting probe entities
+- [ssti-high-value-targets](entities/ssti-high-value-targets.md) — SSTI high-value target entities
+- [ssti-java-artifacts](entities/ssti-java-artifacts.md) — SSTI Java artifact entities
+- [ssti-jinja-artifacts](entities/ssti-jinja-artifacts.md) — SSTI Jinja2 artifact entities
+- [ssti-js-artifacts](entities/ssti-js-artifacts.md) — SSTI JavaScript artifact entities
+- [ssti-php-artifacts](entities/ssti-php-artifacts.md) — SSTI PHP artifact entities
+- [ssti-post-exploitation-artifacts](entities/ssti-post-exploitation-artifacts.md) — SSTI post-exploitation artifact entities
+- [ssti-rce-primitives-artifacts](entities/ssti-rce-primitives-artifacts.md) — SSTI RCE primitive artifact entities
+- [ssti-ruby-artifacts](entities/ssti-ruby-artifacts.md) — SSTI Ruby artifact entities
+- [ssti-secondary-signals](entities/ssti-secondary-signals.md) — SSTI secondary signal entities
+- [ssti-thymeleaf-artifacts](entities/ssti-thymeleaf-artifacts.md) — SSTI Thymeleaf artifact entities
+- [ssti-validation-artifacts](entities/ssti-validation-artifacts.md) — SSTI validation artifact entities
+- [subdomain-takeover-attack-surface](entities/subdomain-takeover-attack-surface.md) — Subdomain takeover attack surface entities
+- [subdomain-takeover-cdn-providers](entities/subdomain-takeover-cdn-providers.md) — Subdomain takeover CDN provider entities
+- [subdomain-takeover-claimable-resources](entities/subdomain-takeover-claimable-resources.md) — Subdomain takeover claimable resource entities
+- [subdomain-takeover-dns-delegations](entities/subdomain-takeover-dns-delegations.md) — Subdomain takeover DNS delegation entities
+- [subdomain-takeover-dns-record-types](entities/subdomain-takeover-dns-record-types.md) — Subdomain takeover DNS record type entities
+- [subdomain-takeover-enumeration-sources](entities/subdomain-takeover-enumeration-sources.md) — Subdomain takeover enumeration source entities
+- [subdomain-takeover-http-signatures](entities/subdomain-takeover-http-signatures.md) — Subdomain takeover HTTP signature entities
+- [subdomain-takeover-impact-artifacts](entities/subdomain-takeover-impact-artifacts.md) — Subdomain takeover impact artifact entities
+- [subdomain-takeover-provider-domains](entities/subdomain-takeover-provider-domains.md) — Subdomain takeover provider domain entities
+- [subdomain-takeover-record-graph](entities/subdomain-takeover-record-graph.md) — Subdomain takeover DNS record graph entities
+- [subdomain-takeover-resolver-signals](entities/subdomain-takeover-resolver-signals.md) — Subdomain takeover resolver signal entities
+- [subdomain-takeover-serverless-hosting](entities/subdomain-takeover-serverless-hosting.md) — Subdomain takeover serverless hosting entities
+- [subdomain-takeover-storage-hosting](entities/subdomain-takeover-storage-hosting.md) — Subdomain takeover storage hosting entities
+- [subdomain-takeover-tls-clues](entities/subdomain-takeover-tls-clues.md) — Subdomain takeover TLS clue entities
+- [subdomain-takeover-verification-artifacts](entities/subdomain-takeover-verification-artifacts.md) — Subdomain takeover verification artifact entities
+- [supabase-auth-claims](entities/supabase-auth-claims.md) — Supabase auth claim entities
+- [supabase-auth-service](entities/supabase-auth-service.md) — Supabase auth service entities
+- [supabase-edge-function-runtime](entities/supabase-edge-function-runtime.md) — Supabase edge function runtime entities
+- [supabase-endpoints](entities/supabase-endpoints.md) — Supabase endpoint entities
+- [supabase-graphql-entity](entities/supabase-graphql-entity.md) — Supabase GraphQL entities
+- [supabase-headers](entities/supabase-headers.md) — Supabase header entities
+- [supabase-policy-snippets](entities/supabase-policy-snippets.md) — Supabase RLS policy snippet entities
+- [supabase-realtime-channels](entities/supabase-realtime-channels.md) — Supabase Realtime channel entities
+- [supabase-roles](entities/supabase-roles.md) — Supabase role entities
+- [supabase-storage-objects](entities/supabase-storage-objects.md) — Supabase storage object entities
+- [tool-schemas](entities/tool-schemas.md) — Input/output schemas cho 6 MCP tools
+- [xss-angular-artifacts](entities/xss-angular-artifacts.md) — XSS Angular artifact entities
+- [xss-attack-surface](entities/xss-attack-surface.md) — XSS attack surface entities
+- [xss-client-render-sinks](entities/xss-client-render-sinks.md) — XSS client render sink entities
+- [xss-cross-context-channels](entities/xss-cross-context-channels.md) — XSS cross-context channel entities
+- [xss-csp-artifacts](entities/xss-csp-artifacts.md) — XSS CSP artifact entities
+- [xss-dom-xss-sinks](entities/xss-dom-xss-sinks.md) — XSS DOM sink entities
+- [xss-dom-xss-sources](entities/xss-dom-xss-sources.md) — XSS DOM source entities
+- [xss-email-artifacts](entities/xss-email-artifacts.md) — XSS email artifact entities
+- [xss-event-handlers](entities/xss-event-handlers.md) — XSS event handler entities
+- [xss-file-metadata](entities/xss-file-metadata.md) — XSS file metadata entities
+- [xss-file-upload-artifacts](entities/xss-file-upload-artifacts.md) — XSS file upload artifact entities
+- [xss-injection-points](entities/xss-injection-points.md) — XSS injection point entities
+- [xss-markdown-richtext-artifacts](entities/xss-markdown-richtext-artifacts.md) — XSS Markdown/rich text artifact entities
+- [xss-mutation-xss-artifacts](entities/xss-mutation-xss-artifacts.md) — XSS mutation artifact entities
+- [xss-pdf-doc-artifacts](entities/xss-pdf-doc-artifacts.md) — XSS PDF/doc artifact entities
+- [xss-polyglot-artifacts](entities/xss-polyglot-artifacts.md) — XSS polyglot artifact entities
+- [xss-post-exploitation-artifacts](entities/xss-post-exploitation-artifacts.md) — XSS post-exploitation artifact entities
+- [xss-react-artifacts](entities/xss-react-artifacts.md) — XSS React artifact entities
+- [xss-server-render-sinks](entities/xss-server-render-sinks.md) — XSS server render sink entities
+- [xss-svelte-artifacts](entities/xss-svelte-artifacts.md) — XSS Svelte artifact entities
+- [xss-template-injection-artifacts](entities/xss-template-injection-artifacts.md) — XSS template injection artifact entities
+- [xss-trusted-types-artifacts](entities/xss-trusted-types-artifacts.md) — XSS Trusted Types artifact entities
+- [xss-url-dom-sources](entities/xss-url-dom-sources.md) — XSS URL DOM source entities
+- [xss-vue-artifacts](entities/xss-vue-artifacts.md) — XSS Vue artifact entities
+- [xxe-attack-surface](entities/xxe-attack-surface.md) — XXE attack surface entities
+- [xxe-capabilities](entities/xxe-capabilities.md) — XXE capability entities
+- [xxe-hidden-paths](entities/xxe-hidden-paths.md) — XXE hidden path entities
+- [xxe-high-value-targets](entities/xxe-high-value-targets.md) — XXE high-value target entities
+- [xxe-local-file-payloads](entities/xxe-local-file-payloads.md) — XXE local file payload entities
+- [xxe-oast-artifacts](entities/xxe-oast-artifacts.md) — XXE OAST artifact entities
+- [xxe-office-doc-artifacts](entities/xxe-office-doc-artifacts.md) — XXE Office document artifact entities
+- [xxe-oob-dtd-artifacts](entities/xxe-oob-dtd-artifacts.md) — XXE OOB DTD artifact entities
+- [xxe-parser-options](entities/xxe-parser-options.md) — XXE parser option entities
+- [xxe-saml-artifacts](entities/xxe-saml-artifacts.md) — XXE SAML artifact entities
+- [xxe-soap-artifacts](entities/xxe-soap-artifacts.md) — XXE SOAP artifact entities
+- [xxe-ssrf-targets](entities/xxe-ssrf-targets.md) — XXE SSRF target entities
+- [xxe-svg-renderer-artifacts](entities/xxe-svg-renderer-artifacts.md) — XXE SVG renderer artifact entities
+- [xxe-wrapper-artifacts](entities/xxe-wrapper-artifacts.md) — XXE wrapper artifact entities
+- [xxe-xinclude-artifacts](entities/xxe-xinclude-artifacts.md) — XXE XInclude artifact entities
+- [xxe-xslt-artifacts](entities/xxe-xslt-artifacts.md) — XXE XSLT artifact entities
+
+## Sources
+
+- [frameworks_django](sources/frameworks_django.md) — Source page: Django framework security
+- [frameworks_fastapi](sources/frameworks_fastapi.md) — Source page: FastAPI framework security
+- [frameworks_nestjs](sources/frameworks_nestjs.md) — Source page: NestJS framework security
+- [frameworks_nextjs](sources/frameworks_nextjs.md) — Source page: Next.js framework security
+- [postmortem_normalization](sources/postmortem_normalization.md) — Source page: postmortem raw doc đã ingest
+- [technologies_firebase_firestore](sources/technologies_firebase_firestore.md) — Source page: Firebase/Firestore security
+- [technologies_supabase](sources/technologies_supabase.md) — Source page: Supabase security
+- [vulnerabilities_authentication_jwt](sources/vulnerabilities_authentication_jwt.md) — Source page: JWT authentication vulnerabilities
+- [vulnerabilities_broken_function_level_authorization](sources/vulnerabilities_broken_function_level_authorization.md) — Source page: BFLA vulnerabilities
+- [vulnerabilities_business_logic](sources/vulnerabilities_business_logic.md) — Source page: business logic vulnerabilities
+- [vulnerabilities_csrf](sources/vulnerabilities_csrf.md) — Source page: CSRF vulnerabilities
+- [vulnerabilities_header_injection](sources/vulnerabilities_header_injection.md) — Source page: header injection vulnerabilities
+- [vulnerabilities_http_request_smuggling](sources/vulnerabilities_http_request_smuggling.md) — Source page: HTTP request smuggling vulnerabilities
+- [vulnerabilities_idor](sources/vulnerabilities_idor.md) — Source page: IDOR vulnerabilities
+- [vulnerabilities_information_disclosure](sources/vulnerabilities_information_disclosure.md) — Source page: information disclosure vulnerabilities
+- [vulnerabilities_insecure_deserialization](sources/vulnerabilities_insecure_deserialization.md) — Source page: insecure deserialization vulnerabilities
+- [vulnerabilities_insecure_file_uploads](sources/vulnerabilities_insecure_file_uploads.md) — Source page: insecure file upload vulnerabilities
+- [vulnerabilities_mass_assignment](sources/vulnerabilities_mass_assignment.md) — Source page: mass assignment vulnerabilities
+- [vulnerabilities_nosql_injection](sources/vulnerabilities_nosql_injection.md) — Source page: NoSQL injection vulnerabilities
+- [vulnerabilities_open_redirect](sources/vulnerabilities_open_redirect.md) — Source page: open redirect vulnerabilities
+- [vulnerabilities_path_traversal_lfi_rfi](sources/vulnerabilities_path_traversal_lfi_rfi.md) — Source page: path traversal/LFI/RFI vulnerabilities
+- [vulnerabilities_prototype_pollution](sources/vulnerabilities_prototype_pollution.md) — Source page: prototype pollution vulnerabilities
+- [vulnerabilities_race_conditions](sources/vulnerabilities_race_conditions.md) — Source page: race condition vulnerabilities
+- [vulnerabilities_rce](sources/vulnerabilities_rce.md) — Source page: RCE vulnerabilities
+- [vulnerabilities_sql_injection](sources/vulnerabilities_sql_injection.md) — Source page: SQL injection vulnerabilities
+- [vulnerabilities_ssrf](sources/vulnerabilities_ssrf.md) — Source page: SSRF vulnerabilities
+- [vulnerabilities_ssti](sources/vulnerabilities_ssti.md) — Source page: SSTI vulnerabilities
+- [vulnerabilities_subdomain_takeover](sources/vulnerabilities_subdomain_takeover.md) — Source page: subdomain takeover vulnerabilities
+- [vulnerabilities_xss](sources/vulnerabilities_xss.md) — Source page: XSS vulnerabilities
+- [vulnerabilities_xxe](sources/vulnerabilities_xxe.md) — Source page: XXE vulnerabilities

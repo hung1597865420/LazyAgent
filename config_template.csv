@@ -1,0 +1,15 @@
+Variable,Value (điền vào đây),Ghi chú
+AZURE_OPENAI_ENDPOINT,,https://ten-resource.openai.azure.com/
+AZURE_OPENAI_API_KEY,,API key từ Azure Portal
+AZURE_API_VERSION,2025-01-01-preview,Giữ nguyên nếu không chắc
+,,,
+MODEL_MANAGER,gpt-5.4-pro,Đổi nếu deployment name khác
+MODEL_SYNTHESIZER,gpt-5.4-pro-2,Đổi nếu deployment name khác
+MODEL_ANALYZER,grok-4-20-reasoning,Đổi nếu deployment name khác
+MODEL_CODE_A,Kimi-K2.6,Đổi nếu deployment name khác
+MODEL_CODE_B,gpt-5.4,Đổi nếu deployment name khác
+MODEL_REVIEWER,gpt-5.3-codex,Đổi nếu deployment name khác
+MODEL_TESTER,gpt-5.3-codex-2,Đổi nếu deployment name khác
+MODEL_SECURITY,gpt-5.3-codex-3,Đổi nếu deployment name khác
+MODEL_DEBUGGER,gpt-5.4-2,Đổi nếu deployment name khác
+MODEL_WORKER,gpt-5.4-mini,Đổi nếu deployment name khác
