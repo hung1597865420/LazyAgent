@@ -260,9 +260,9 @@ Các capability chính hiện có:
 - **Runtime workspace safe:** `_run_cmd_safe`, `git diff`, sandbox và swarm path checks dùng workspace runtime, tránh MCP process cũ chạy nhầm project.
 - **Goal concurrency guard:** goal check retry khi part đã advance trong lúc agent khác đang check, tránh ghi đè `last_result` cũ.
 - **Sandbox exit-code contract:** `run_in_sandbox` trả `returncode`; swarm debugger dùng exit code thật thay vì đoán qua text `passed/failed`.
-- **Rules sync:** `merge_settings.py` cập nhật Claude/Gemini để sau mỗi batch agent gọi `auto_trigger`, rồi hỏi `goal_supervisor`, không tự đoán vòng lặp.
+- **Rules sync:** `merge_settings.py` cập nhật Claude/Gemini/Codex để agent gọi `auto_trigger`, rồi hỏi `goal_supervisor`, không tự đoán vòng lặp. MCP server cũng tự lazy-merge rules theo `RULES_VERSION` khi client `list_tools` hoặc gọi tool đầu tiên, nên sau update code không cần nhớ chạy merge tay.
 
-Sau khi pull/update code harness, phải restart MCP client/Claude/Gemini để schema 61 tools và rules mới được nạp. Nếu phiên MCP cũ vẫn sống, `ask_codebase` có thể vẫn timeout theo behavior cũ hoặc chưa thấy `prod_readiness_gate`.
+Sau khi pull/update code harness, MCP server mới sẽ tự merge rules vào Claude/Gemini/Codex bằng stamp `~/.claude/.harness_rules_version`. Vẫn phải restart MCP client/Claude/Gemini nếu phiên cũ đang sống, vì session cũ có thể cache tool schema/rules và chưa thấy `prod_readiness_gate`.
 
 #### Production readiness gate
 
@@ -1975,13 +1975,13 @@ Mặc định:
 
 #### Multi-agent config tự đồng bộ
 
-`merge_settings.py` giờ replace managed sections thay vì skip khi thấy marker cũ, và tự ghi MCP path hiện tại cho:
+`merge_settings.py` giờ replace managed sections thay vì skip khi thấy marker cũ, tự ghi MCP path hiện tại, và ghi stamp `~/.claude/.harness_rules_version` theo `RULES_VERSION`. `mcp_server.py` gọi lazy merge không chặn ở `list_tools()` và `call_tool()`; nếu rules đã đúng version thì chỉ đọc stamp, không ghi lại file.
 
 - Claude: `~/.claude/claude_mcp_config.json`
 - Codex: `~/.codex/config.toml`
 - Gemini/Antigravity: `~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity-ide/mcp_config.json`
 
-Chạy installer hoặc `python merge_settings.py` là đủ; user không cần tự thêm command MCP riêng cho từng agent.
+Chạy installer hoặc `python merge_settings.py` vẫn được, nhưng không còn bắt buộc sau mỗi update: MCP discovery sẽ tự merge nếu stamp cũ. User không cần tự thêm command MCP riêng cho từng agent.
 
 MCP server expose resources/templates no-op:
 
@@ -2002,7 +2002,7 @@ Nếu thiếu, tool vẫn fallback static analysis nhưng warning sẽ chỉ rõ
 
 #### Smoke test hiện tại
 
-`smoke_test.py` kiểm 61 MCP tools, resources/templates handshake, sandbox Windows + `returncode`, runtime workspace cho `_run_cmd_safe`, benchmark subprocess, Unicode-safe fix/debug output, Auto-Pilot trigger, Production readiness gate (`mode`, `since_commit`, `ask_user`, `fix_required`), Auto-Watch detect/ignore/lock/log-redaction, ask_codebase JSON unwrap + fallback citation, goal supervisor enum, devops/security scanners, swarm state machine, và các tool quality. Scratch file chạy trong `.harness_smoke/` và tự cleanup; `doc_sync` chạy trên workspace tạm nên không append README thật.
+`smoke_test.py` kiểm 61 MCP tools, resources/templates handshake, lazy rules auto-merge stamp/idempotency, sandbox Windows + `returncode`, runtime workspace cho `_run_cmd_safe`, benchmark subprocess, Unicode-safe fix/debug output, Auto-Pilot trigger, Production readiness gate (`mode`, `since_commit`, `ask_user`, `fix_required`), Auto-Watch detect/ignore/lock/log-redaction, ask_codebase JSON unwrap + fallback citation, goal supervisor enum, devops/security scanners, swarm state machine, và các tool quality. Scratch file chạy trong `.harness_smoke/` và tự cleanup; `doc_sync` chạy trên workspace tạm nên không append README thật.
 
 Kết quả mong muốn:
 
@@ -2016,7 +2016,7 @@ python smoke_test.py    -> Tất cả smoke tests pass
 Lần chạy mới nhất ngày 2026-07-13:
 
 ```text
-python -m py_compile tools\prod.py tools\__init__.py mcp_server.py support_tools.py merge_settings.py smoke_test.py -> pass
+python -m py_compile merge_settings.py mcp_server.py smoke_test.py -> pass
 python test_goal.py -> pass
-python smoke_test.py -> Tất cả smoke tests pass
+python smoke_test.py -> Tất cả smoke tests pass, gồm lazy rules merge
 ```

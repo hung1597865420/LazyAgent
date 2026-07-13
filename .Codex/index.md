@@ -7,7 +7,7 @@
 - tools/goal.py — Prompt-only goal autopilot state machine and alignment check.
 - tools/prod.py — Production readiness gate that aggregates final checks into a hard deploy verdict.
 - install.ps1 — Windows installer: dependencies, MCP registration, global Claude config, smoke test.
-- merge_settings.py — Global Claude/Gemini instruction and hook merge.
+- merge_settings.py — Global Claude/Gemini/Codex instruction merge with RULES_VERSION stamp.
 - smoke_test.py — Offline smoke checks for MCP registry and support tools.
 - llmwiki_tool.py — Local/global llmwiki ingest, query, and lint.
 - auto_watch.py — File watcher that triggers Auto-Pilot outside model calls.
@@ -23,3 +23,4 @@ Prod flow: release/prod prompt -> prod_readiness_gate -> final auto/security/rev
 - Some clients lazy-load MCP tools, so a tool may not appear until capability discovery/search.
 - `.harness_goal_state.json` is local runtime state for one active workspace goal.
 - Restart MCP clients after adding tools; cached sessions will not see new schemas.
+- MCP server lazy-merges global rules on `list_tools`/first tool call, but existing client sessions may still need restart.

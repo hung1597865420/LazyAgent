@@ -13,3 +13,7 @@
 ### 2026-07-13 — Production readiness gate
 **Decision:** Add standalone MCP tool `prod_readiness_gate` in `tools/prod.py` to aggregate final Auto-Pilot, security/env/secret, review, and release checks into one hard deploy verdict.
 **Alternatives bỏ:** Folding production policy into `auto_trigger` or `goal_supervisor`; those stay edit-loop and goal-loop focused.
+
+### 2026-07-13 — Lazy global rules merge
+**Decision:** MCP server calls `merge_settings.lazy_merge_if_needed()` on `list_tools` and first tool call, guarded by `RULES_VERSION` stamp at `~/.claude/.harness_rules_version`, so Claude/Gemini/Codex rules update automatically after harness upgrades.
+**Alternatives bỏ:** Requiring users to run `python merge_settings.py` manually after every tool/rule change; unconditional startup writes that slow or dirty every MCP launch.

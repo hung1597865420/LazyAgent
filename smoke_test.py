@@ -463,6 +463,39 @@ codex_new = re.sub(codex_pattern, codex_block + "\n", codex_sample)
 check("codex MCP block indent vẫn upsert idempotent",
       codex_new.count("[mcp_servers.agent-harness]") == 1 and "[mcp_servers.other]" in codex_new,
       codex_new)
+rules_home = SMOKE_DIR / "rules_home"
+check("lazy rules merge cần update khi chưa có stamp",
+      merge_settings.needs_update(home=rules_home))
+merged_once = merge_settings.lazy_merge_if_needed(home=rules_home)
+claude_rules = (rules_home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+gemini_rules = (rules_home / ".gemini" / "GEMINI.md").read_text(encoding="utf-8")
+codex_cfg = (rules_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+check("lazy rules merge tạo stamp và rules mới",
+      merged_once
+      and merge_settings.installed_rules_version(home=rules_home) == merge_settings.RULES_VERSION
+      and "goal_supervisor" in claude_rules
+      and "prod_readiness_gate" in gemini_rules
+      and "mcp_server.py" in codex_cfg)
+merged_twice = merge_settings.lazy_merge_if_needed(home=rules_home)
+check("lazy rules merge idempotent sau stamp",
+      not merged_twice and not merge_settings.needs_update(home=rules_home))
+old_lazy_done = mcp_server._LAZY_SETTINGS_MERGE_DONE
+old_lazy_merge = merge_settings.lazy_merge_if_needed
+lazy_calls = []
+try:
+    mcp_server._LAZY_SETTINGS_MERGE_DONE = False
+    def _fake_lazy_merge():
+        lazy_calls.append("called")
+        return False
+    merge_settings.lazy_merge_if_needed = _fake_lazy_merge
+    mcp_server._ensure_lazy_settings_merge()
+    mcp_server._ensure_lazy_settings_merge()
+    check("MCP lazy settings merge guard chỉ gọi một lần",
+          lazy_calls == ["called"],
+          str(lazy_calls))
+finally:
+    merge_settings.lazy_merge_if_needed = old_lazy_merge
+    mcp_server._LAZY_SETTINGS_MERGE_DONE = old_lazy_done
 
 # 5. list_agents chạy được không cần API
 out = asyncio.run(mcp_server.call_tool("list_agents", {}))

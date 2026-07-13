@@ -6,11 +6,14 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 
 CLAUDE_MARKER = "<!-- agent-harness-managed -->"
 GEMINI_MARKER = "<!-- agent-harness -->"
 HOOK_ID = "agent-harness-panel-reminder"
+RULES_VERSION = "2026-07-13-auto-merge-v1"
+RULES_STAMP_FILE = ".harness_rules_version"
 
 
 def _harness_root() -> Path:
@@ -24,6 +27,32 @@ def _harness_server() -> str:
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _home_dir(home: Path | None = None) -> Path:
+    return home or Path.home()
+
+
+def _rules_stamp_path(claude_dir: Path | None = None, home: Path | None = None) -> Path:
+    return (claude_dir or (_home_dir(home) / ".claude")) / RULES_STAMP_FILE
+
+
+def installed_rules_version(claude_dir: Path | None = None, home: Path | None = None) -> str | None:
+    try:
+        path = _rules_stamp_path(claude_dir, home)
+        return path.read_text(encoding="utf-8").strip() if path.exists() else None
+    except OSError:
+        return None
+
+
+def needs_update(claude_dir: Path | None = None, home: Path | None = None) -> bool:
+    return installed_rules_version(claude_dir, home) != RULES_VERSION
+
+
+def mark_rules_merged(claude_dir: Path | None = None, home: Path | None = None) -> None:
+    path = _rules_stamp_path(claude_dir, home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(RULES_VERSION + "\n", encoding="utf-8")
 
 CLAUDE_MD_SECTION = """\
 <!-- agent-harness-managed -->
@@ -328,8 +357,8 @@ def configure_gemini_mcp(gemini_dir: Path) -> None:
     print("[ok]   Da cau hinh Gemini/Antigravity MCP agent-harness dung path hien tai")
 
 
-def configure_codex_mcp() -> None:
-    path = Path.home() / ".codex" / "config.toml"
+def configure_codex_mcp(home: Path | None = None) -> None:
+    path = _home_dir(home) / ".codex" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     server_path = _harness_server().replace("\\", "/")
     block = (
@@ -474,19 +503,38 @@ def merge_gemini_md(gemini_dir: Path) -> None:
         print("[ok]   Da tao ~/.gemini/GEMINI.md")
 
 
-def main() -> int:
-    claude_dir = Path.home() / ".claude"
+def _merge_all(home: Path | None = None) -> int:
+    root_home = _home_dir(home)
+    claude_dir = root_home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     merge_claude_md(claude_dir)
     err = merge_settings_json(claude_dir)
     if err:
         return err
     configure_claude_mcp(claude_dir)
-    configure_codex_mcp()
-    gemini_dir = Path.home() / ".gemini"
+    configure_codex_mcp(root_home)
+    gemini_dir = root_home / ".gemini"
     merge_gemini_md(gemini_dir)
     configure_gemini_mcp(gemini_dir)
+    mark_rules_merged(claude_dir)
     return 0
+
+
+def lazy_merge_if_needed(home: Path | None = None) -> bool:
+    """Merge global rules once per RULES_VERSION. Never raise."""
+    if not needs_update(home=home):
+        return False
+    try:
+        # MCP uses stdout for protocol frames; keep setup chatter off stdout.
+        with redirect_stdout(sys.stderr):
+            return _merge_all(home) == 0
+    except Exception as e:
+        print(f"[warn] Lazy harness rules merge skipped: {e}", file=sys.stderr)
+        return False
+
+
+def main() -> int:
+    return _merge_all()
 
 
 if __name__ == "__main__":

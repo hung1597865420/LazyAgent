@@ -36,6 +36,7 @@ app = Server("agent-harness")
 _background_tasks: set[asyncio.Task] = set()
 # Giới hạn đồng thời để tránh Azure rate-limit khi spam cancel
 _TOOL_SEM = asyncio.Semaphore(8)
+_LAZY_SETTINGS_MERGE_DONE = False
 
 
 @app.list_resources()
@@ -128,6 +129,7 @@ _FILES_SCHEMA = {
 
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
+    _ensure_lazy_settings_merge()
     return [
         types.Tool(
             name="auto_trigger",
@@ -811,6 +813,20 @@ _auto_watch_roots: set[str] = set()
 _auto_watch_lock = threading.Lock()
 
 
+def _ensure_lazy_settings_merge() -> None:
+    global _LAZY_SETTINGS_MERGE_DONE
+    if _LAZY_SETTINGS_MERGE_DONE:
+        return
+    try:
+        import merge_settings
+        if merge_settings.lazy_merge_if_needed():
+            _log.info("Auto-merged Agent Harness rules version %s", merge_settings.RULES_VERSION)
+    except Exception as e:
+        _log.warning("Auto-merge settings skipped (non-fatal): %s", e)
+    finally:
+        _LAZY_SETTINGS_MERGE_DONE = True
+
+
 def _active_workspace() -> str:
     workspace = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
     if not workspace:
@@ -986,6 +1002,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     run_id = f"mcp-{uuid.uuid4().hex[:8]}"
     run_token = current_run_id.set(run_id)
     start_time = time.perf_counter()
+    _ensure_lazy_settings_merge()
     _kick_project_auto_watch()
     _kick_auto_wiki_ingest()
 
