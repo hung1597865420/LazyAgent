@@ -4,6 +4,8 @@ Production readiness gate orchestration.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 from typing import Any
 
 from .auto import (
@@ -26,6 +28,7 @@ VERDICTS = {
     "rollback_required",
 }
 _SEVERITY = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+DEFAULT_TOOL_TIMEOUT_SECONDS = 300.0
 
 
 def _has_any(text: str, words: set[str]) -> bool:
@@ -78,10 +81,27 @@ def _compact(name: str, result: Any, ok: bool) -> dict[str, Any]:
 
 
 async def _run_check(name: str, coro) -> dict[str, Any]:
+    actual_timeout = DEFAULT_TOOL_TIMEOUT_SECONDS
+    task = asyncio.create_task(coro)
     try:
-        result = await coro
+        try:
+            timeout = float(os.getenv("HARNESS_PROD_TOOL_TIMEOUT", str(DEFAULT_TOOL_TIMEOUT_SECONDS)))
+        except ValueError:
+            timeout = DEFAULT_TOOL_TIMEOUT_SECONDS
+        actual_timeout = max(0.01, min(timeout, 1800.0))
+        result = await asyncio.wait_for(task, timeout=actual_timeout)
         ok = not (isinstance(result, dict) and result.get("error"))
         return {"tool": name, "ok": ok, "raw": result, "summary": _compact(name, result, ok)}
+    except asyncio.TimeoutError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return {
+            "tool": name,
+            "ok": False,
+            "raw": {"error": "timeout", "timeout_seconds": actual_timeout},
+            "summary": {"tool": name, "ok": False, "error": "timeout"},
+        }
     except Exception as exc:
         return {
             "tool": name,
@@ -89,6 +109,12 @@ async def _run_check(name: str, coro) -> dict[str, Any]:
             "raw": {"error": str(exc)},
             "summary": {"tool": name, "ok": False, "error": str(exc)},
         }
+
+
+async def _run_gate_jobs(jobs: list[Any]) -> list[dict[str, Any]]:
+    if not jobs:
+        return []
+    return await asyncio.gather(*jobs)
 
 
 def _hard_flags(checks: list[dict[str, Any]]) -> tuple[list[str], list[str], list[str]]:
@@ -145,18 +171,24 @@ async def prod_readiness_gate(
     mode: str = "safe",
 ) -> dict[str, Any]:
     """Run a deploy gate and return a hard production readiness verdict."""
-    from .analysis import env_parity_checker, secret_scanner
+    from .analysis import env_parity_checker, secret_scanner, schema_drift
     from .auto import auto_trigger
+    from .intel import a11y_auditor, i18n_auditor, license_scanner
     from .intel import sbom_generator
     from .quality import (
         breaking_change_detector,
         ci_pipeline_validator,
         container_linter,
+        data_flow_taint_analyzer,
+        dependency_graph_visualizer,
         migration_validator,
         openapi_spec_sync,
+        performance_regression_detector,
+        sql_query_analyzer,
     )
     from .review import panel_review
     from .security import config_security_audit
+    from .testing import coverage_analyzer
     from .gap_tools import provenance_checker, release_orchestrator
 
     mode = (mode or "safe").strip().lower()
@@ -167,10 +199,13 @@ async def prod_readiness_gate(
     files = _norm_files(changed_files)
     text = "\n".join([task or "", context or "", diff or "", "\n".join(files)])
     code_files = [f for f in files if _ext(f) in CODE_EXTS]
+    ui_files = [f for f in files if _ext(f) in {".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue"}]
     migration_files = _migration_files(files)
     scan_files = _safe_scan_files(files)
     panel_files = _safe_panel_files(code_files or files)
     docs_only = _docs_only(files)
+    removed_safe_files = sorted(set(files) - set(scan_files))
+    sensitive_only = bool(files) and len(removed_safe_files) == len(files)
     has_api = _has_any(text, {"api", "route", "endpoint", "openapi", "request", "response", "pydantic"})
     has_container = any(_basename(f) in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for f in files)
     has_ci = any(".github/workflows" in f.replace("\\", "/").lower() or _basename(f) == ".gitlab-ci.yml" for f in files)
@@ -183,25 +218,72 @@ async def prod_readiness_gate(
         selected.append(name)
         jobs.append(_run_check(name, coro))
 
-    add("auto_trigger", auto_trigger(changed_files=files, diff=diff, task=task, stage="final", mode=mode))
+    prod_managed_tools = {
+        "a11y_auditor",
+        "breaking_change_detector",
+        "ci_pipeline_validator",
+        "config_security_audit",
+        "container_linter",
+        "coverage_analyzer",
+        "data_flow_taint_analyzer",
+        "dependency_graph_visualizer",
+        "env_parity_checker",
+        "i18n_auditor",
+        "license_scanner",
+        "migration_validator",
+        "openapi_spec_sync",
+        "panel_review",
+        "performance_regression_detector",
+        "provenance_checker",
+        "release_orchestrator",
+        "schema_drift",
+        "sbom_generator",
+        "secret_scanner",
+        "sql_query_analyzer",
+    }
+    if not (docs_only and mode == "safe"):
+        add("auto_trigger", auto_trigger(
+            changed_files=files,
+            diff=diff,
+            task=task,
+            stage="final",
+            mode=mode,
+            exclude_tools=prod_managed_tools,
+        ))
     if not (docs_only and mode == "safe"):
         add("config_security_audit", config_security_audit())
         add("env_parity_checker", env_parity_checker())
     if scan_files and not docs_only:
         add("secret_scanner", secret_scanner(paths=scan_files))
     if (panel_files or staged or since_commit or diff) and not docs_only:
-        add("panel_review", panel_review(
-            files=panel_files,
-            diff=diff,
-            focus="production readiness gate",
-            staged=staged,
-            since_commit=since_commit,
-        ))
+        panel_kwargs: dict[str, Any] = {
+            "diff": diff,
+            "focus": "production readiness gate",
+            "staged": staged,
+            "since_commit": since_commit,
+        }
+        if panel_files:
+            panel_kwargs["files"] = panel_files
+        add("panel_review", panel_review(**panel_kwargs))
     if mode == "max":
         add("release_orchestrator", release_orchestrator(changed_files=files, diff=diff, context=context or task, mode=mode))
         add("provenance_checker", provenance_checker(files=files, context=context or task, mode=mode))
         add("sbom_generator", sbom_generator())
+        add("license_scanner", license_scanner())
+        add("coverage_analyzer", coverage_analyzer())
         add("breaking_change_detector", breaking_change_detector(base_ref=since_commit or ""))
+        add("performance_regression_detector", performance_regression_detector())
+        if code_files:
+            add("dependency_graph_visualizer", dependency_graph_visualizer(paths=code_files))
+        if code_files and (has_api or "auth" in text.lower() or "request" in text.lower()):
+            add("data_flow_taint_analyzer", data_flow_taint_analyzer(files=code_files))
+        if code_files and ("sql" in text.lower() or "query" in text.lower() or migration_files):
+            add("sql_query_analyzer", sql_query_analyzer(files=code_files))
+        if code_files and ("basemodel" in text.lower() or "pydantic" in text.lower() or has_api):
+            add("schema_drift", schema_drift())
+        if ui_files:
+            add("a11y_auditor", a11y_auditor(files=ui_files))
+            add("i18n_auditor", i18n_auditor(files=ui_files))
         if code_files or has_api:
             add("openapi_spec_sync", openapi_spec_sync())
         if migration_files:
@@ -210,7 +292,7 @@ async def prod_readiness_gate(
             add("container_linter", container_linter(paths=files if has_container else None))
         if has_ci or not files:
             add("ci_pipeline_validator", ci_pipeline_validator(paths=files if has_ci else None))
-    checks = await asyncio.gather(*jobs) if jobs else []
+    checks = await _run_gate_jobs(jobs)
     blockers, needs_user, soft_warnings = _hard_flags(checks)
     critical = [
         c for c in checks
@@ -221,8 +303,12 @@ async def prod_readiness_gate(
     warnings = soft_warnings
     if docs_only and mode == "safe":
         warnings.append("docs-only safe gate skipped heavy deploy checks; use mode=max before a real production release")
-    if panel_files != (code_files or files) or scan_files != files:
-        warnings.append(".env-like files were not sent to LLM review/content scanners")
+    if diff and not files:
+        warnings.append("diff was provided without changed_files; file-scoped checks may be incomplete")
+    if removed_safe_files:
+        warnings.append(f"Sensitive files excluded from LLM review/content scanners: {removed_safe_files[:10]}")
+    if sensitive_only:
+        warnings.append("sensitive-only change: content review skipped; rely on secret/env/config checks and inspect metadata manually")
 
     if critical:
         verdict = "rollback_required"

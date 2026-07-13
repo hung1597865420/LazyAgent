@@ -246,6 +246,38 @@ prod_gate_ref = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {
 check("prod_readiness_gate since_commit non-string không crash",
       json.loads(prod_gate_ref[0].text).get("status") == "completed",
       prod_gate_ref[0].text)
+from tools.prod import _run_check as _prod_run_check
+old_prod_timeout = os.environ.get("HARNESS_PROD_TOOL_TIMEOUT")
+os.environ["HARNESS_PROD_TOOL_TIMEOUT"] = "0.01"
+try:
+    async def _slow_prod_check():
+        await asyncio.sleep(0.05)
+        return {"status": "completed"}
+    prod_timeout = asyncio.run(_prod_run_check("slow_smoke", _slow_prod_check()))
+finally:
+    if old_prod_timeout is None:
+        os.environ.pop("HARNESS_PROD_TOOL_TIMEOUT", None)
+    else:
+        os.environ["HARNESS_PROD_TOOL_TIMEOUT"] = old_prod_timeout
+check("prod_readiness_gate tool timeout trả blocker có kiểm soát",
+      prod_timeout.get("ok") is False and prod_timeout.get("raw", {}).get("error") == "timeout",
+      str(prod_timeout))
+from tools.auto import _run_named as _auto_run_named
+old_auto_timeout = os.environ.get("HARNESS_AUTO_TOOL_TIMEOUT")
+os.environ["HARNESS_AUTO_TOOL_TIMEOUT"] = "0.01"
+try:
+    async def _slow_auto_check():
+        await asyncio.sleep(0.05)
+        return {"status": "completed"}
+    auto_timeout = asyncio.run(_auto_run_named("slow_auto_smoke", _slow_auto_check()))
+finally:
+    if old_auto_timeout is None:
+        os.environ.pop("HARNESS_AUTO_TOOL_TIMEOUT", None)
+    else:
+        os.environ["HARNESS_AUTO_TOOL_TIMEOUT"] = old_auto_timeout
+check("auto_trigger tool timeout trả lỗi có kiểm soát",
+      auto_timeout.get("ok") is False and auto_timeout.get("error") == "timeout",
+      str(auto_timeout))
 release_res = asyncio.run(mcp_server.call_tool("release_orchestrator", {
     "changed_files": ["README.md"],
     "mode": "safe",
@@ -438,6 +470,13 @@ auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {
     "mode": " SAFE ",
 }))
 check("auto_trigger stage/mode normalize hoa thường", json.loads(auto_upper[0].text).get("status") == "skipped")
+auto_docs_max = asyncio.run(mcp_server.call_tool("auto_trigger", {
+    "changed_files": ["README.md"],
+    "stage": "final",
+    "mode": "max",
+}))
+check("auto_trigger docs-only max skip nếu không phải release",
+      json.loads(auto_docs_max[0].text).get("status") == "skipped")
 auto_env_case = asyncio.run(mcp_server.call_tool("auto_trigger", {
     "changed_files": ["config/.ENV.EXAMPLE"],
     "stage": "post_edit",
@@ -447,6 +486,50 @@ auto_env_case_json = json.loads(auto_env_case[0].text)
 check("auto_trigger nhận diện .ENV.EXAMPLE không phân biệt hoa thường",
       auto_env_case_json.get("status") == "completed" and "env_parity_checker" in auto_env_case_json.get("selected_tools", []),
       str(auto_env_case_json))
+from tools.auto import (
+    _ci_files,
+    _container_files,
+    _dependency_files,
+    _discover_api_endpoints,
+    _extract_urls,
+    _migration_files,
+    _test_files,
+    _ui_files,
+)
+selector_files = [
+    "alembic/versions/001_init.py",
+    ".github/workflows/ci.yml",
+    "Dockerfile",
+    "requirements.txt",
+    "web/App.tsx",
+    "tests/test_app.py",
+]
+check("auto_trigger selectors cover db/ci/container/deps/ui/tests",
+      _migration_files(selector_files)
+      and _ci_files(selector_files)
+      and _container_files(selector_files)
+      and _dependency_files(selector_files)
+      and _ui_files(selector_files)
+      and _test_files(selector_files)
+      and _extract_urls("load test https://example.com/api")[0] == "https://example.com/api",
+      "selector helpers missed a contextual tool family")
+route_file = SMOKE_DIR / "route_api.py"
+route_file.write_text('@app.get("/health")\ndef health():\n    return {"ok": True}\n\n@api_router.post(\n    "/items"\n)\ndef items():\n    return {}\n', encoding="utf-8")
+route_rel = route_file.as_posix()
+route_abs = str(route_file.resolve())
+route_hits = _discover_api_endpoints([route_rel, route_abs])
+check("auto_trigger endpoint discovery nhận relative và absolute path",
+      any(hit.get("path") == "/health" for hit in route_hits)
+      and any(hit.get("path") == "/items" for hit in route_hits),
+      str(route_hits))
+sensitive_gate = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {
+    "changed_files": [".env"],
+    "mode": "safe",
+}))
+sensitive_gate_json = json.loads(sensitive_gate[0].text)
+check("prod_readiness_gate cảnh báo sensitive-only change",
+      any("sensitive-only" in w for w in sensitive_gate_json.get("warnings", [])),
+      str(sensitive_gate_json))
 
 from tools.swarm import (
     _extractive_codebase_answer,

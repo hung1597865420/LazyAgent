@@ -4,7 +4,10 @@ Auto-pilot orchestration for contextual harness checks.
 from __future__ import annotations
 
 import asyncio
+import ast
 import os
+import re
+import contextlib
 from typing import Any
 
 
@@ -13,7 +16,10 @@ CODE_EXTS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".java", ".go", ".rs",
     ".cs", ".php", ".rb", ".swift", ".kt", ".kts", ".sql", ".html", ".css",
 }
+UI_EXTS = {".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue"}
+DEP_FILES = {"requirements.txt", "package.json", "pyproject.toml", "poetry.lock", "package-lock.json", "pnpm-lock.yaml"}
 SENSITIVE_NAMES = {".env", ".env.local", ".env.production", ".env.development", ".env.test"}
+DEFAULT_TOOL_TIMEOUT_SECONDS = 180.0
 
 
 def _auto_enabled() -> bool:
@@ -63,6 +69,110 @@ def _has_any(text: str, words: set[str]) -> bool:
     return any(w in lower for w in words)
 
 
+def _migration_files(files: list[str]) -> list[str]:
+    out = []
+    for path in files:
+        lower = path.replace("\\", "/").lower()
+        if any(part in lower for part in ("migration", "migrations/", "migrate", "alembic/versions")):
+            if lower.endswith((".py", ".sql")):
+                out.append(path)
+    return out
+
+
+def _ci_files(files: list[str]) -> list[str]:
+    return [
+        f for f in files
+        if ".github/workflows" in f.replace("\\", "/").lower() or _basename(f) == ".gitlab-ci.yml"
+    ]
+
+
+def _container_files(files: list[str]) -> list[str]:
+    return [
+        f for f in files
+        if _basename(f) in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+        or _basename(f).startswith("dockerfile.")
+        or _basename(f).endswith(".dockerfile")
+    ]
+
+
+def _dependency_files(files: list[str]) -> list[str]:
+    return [f for f in files if _basename(f) in DEP_FILES]
+
+
+def _ui_files(files: list[str]) -> list[str]:
+    return [f for f in files if _ext(f) in UI_EXTS]
+
+
+def _test_files(files: list[str]) -> list[str]:
+    return [f for f in files if _basename(f).startswith("test_") or "_test" in _basename(f)]
+
+
+def _extract_urls(text: str) -> list[str]:
+    return re.findall(r"https?://[^\s)>'\"]+", text or "")[:3]
+
+
+def _discover_api_endpoints(files: list[str]) -> list[dict[str, str]]:
+    try:
+        from .core import _get_active_workspace
+        root = os.path.realpath(_get_active_workspace())
+    except Exception:
+        return []
+    endpoints: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    methods = {"get", "post", "put", "patch", "delete", "options", "head"}
+
+    def add_endpoint(method: str, path: str, file_path: str) -> None:
+        item = (method.upper(), path)
+        if item not in seen:
+            seen.add(item)
+            endpoints.append({"method": item[0], "path": item[1], "file": file_path.replace("\\", "/")})
+
+    for rel in files[:20]:
+        try:
+            candidate = rel
+            if os.path.isabs(candidate):
+                full_abs = os.path.realpath(candidate)
+                if os.path.commonpath([root, full_abs]) != root:
+                    continue
+                candidate = os.path.relpath(full_abs, root)
+            full = os.path.realpath(os.path.join(root, candidate))
+            if os.path.commonpath([root, full]) != root or not os.path.isfile(full):
+                continue
+            stat_before = os.stat(full)
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(80_000)
+            stat_after = os.stat(full)
+            if (stat_before.st_mtime_ns, stat_before.st_size) != (stat_after.st_mtime_ns, stat_after.st_size):
+                continue
+        except (OSError, ValueError):
+            continue
+        for match in re.finditer(r"@\w+\.(get|post|put|patch|delete|options|head)\(\s*['\"]([^'\"]+)", content):
+            add_endpoint(match.group(1), match.group(2), candidate)
+            if len(endpoints) >= 20:
+                return endpoints
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            tree = None
+        if tree:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for dec in node.decorator_list:
+                    if not isinstance(dec, ast.Call) or not isinstance(dec.func, ast.Attribute):
+                        continue
+                    if dec.func.attr not in methods or not dec.args:
+                        continue
+                    first = dec.args[0]
+                    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                        add_endpoint(dec.func.attr, first.value, candidate)
+                    elif isinstance(first, ast.JoinedStr):
+                        add_endpoint(dec.func.attr, "<dynamic>", candidate)
+                    if len(endpoints) >= 20:
+                        return endpoints
+    return endpoints
+
+
 def _summarize_result(result: Any) -> dict:
     if not isinstance(result, dict):
         return {"ok": True, "result_type": type(result).__name__}
@@ -79,11 +189,21 @@ def _summarize_result(result: Any) -> dict:
 
 
 async def _run_named(name: str, coro) -> dict:
+    task = asyncio.create_task(coro)
     try:
-        result = await coro
+        try:
+            timeout = float(os.getenv("HARNESS_AUTO_TOOL_TIMEOUT", str(DEFAULT_TOOL_TIMEOUT_SECONDS)))
+        except ValueError:
+            timeout = DEFAULT_TOOL_TIMEOUT_SECONDS
+        result = await asyncio.wait_for(task, timeout=max(0.01, min(timeout, 1800.0)))
         return {"tool": name, **_summarize_result(result)}
+    except asyncio.TimeoutError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return {"tool": name, "ok": False, "error": "timeout"}
     except Exception as e:
-        return {"tool": name, "ok": False, "error": str(e)}
+        return {"tool": name, "ok": False, "error": type(e).__name__, "detail": str(e) or repr(e)}
 
 
 async def auto_trigger(
@@ -92,6 +212,7 @@ async def auto_trigger(
     task: str | None = None,
     stage: str = "post_edit",
     mode: str | None = None,
+    exclude_tools: list[str] | set[str] | None = None,
 ) -> dict:
     """Run contextual checks automatically after edits.
 
@@ -108,11 +229,28 @@ async def auto_trigger(
         complexity_analyzer,
         dead_code_scanner,
         env_parity_checker,
+        load_tester,
         secret_scanner,
+        schema_drift,
     )
-    from .devops import devops_pipeline
-    from .quality import duplicate_code_scanner
+    from .devops import api_contract_tester, devops_pipeline
+    from .intel import a11y_auditor, i18n_auditor, license_scanner
+    from .quality import (
+        breaking_change_detector,
+        ci_pipeline_validator,
+        container_linter,
+        data_flow_taint_analyzer,
+        dependency_graph_visualizer,
+        duplicate_code_scanner,
+        flaky_test_detector,
+        migration_validator,
+        mutation_tester,
+        openapi_spec_sync,
+        performance_regression_detector,
+        sql_query_analyzer,
+    )
     from .security import config_security_audit
+    from .testing import coverage_analyzer
     from .gap_tools import (
         auth_matrix_auditor,
         harness_trace_viewer,
@@ -122,8 +260,12 @@ async def auto_trigger(
     )
 
     files = _norm_files(changed_files)
-    mode = (mode or os.getenv("HARNESS_AUTO_MODE", "max")).strip().lower()
-    stage = (stage or "post_edit").strip().lower()
+    mode = str(mode if mode is not None else os.getenv("HARNESS_AUTO_MODE", "max")).strip().lower()
+    if mode not in {"safe", "max"}:
+        return {"error": "invalid_argument", "detail": "mode must be one of: safe, max"}
+    stage = str(stage or "post_edit").strip().lower()
+    if stage not in {"post_edit", "final", "pre_complete"}:
+        return {"error": "invalid_argument", "detail": "stage must be one of: post_edit, final, pre_complete"}
     active_goal = get_active_goal()
     goal_text = active_goal.goal if active_goal else ""
     goal_summary = goal_progress_summary(active_goal) if active_goal else ""
@@ -142,18 +284,39 @@ async def auto_trigger(
         ))
         for f in files
     )
+    migration_files = _migration_files(files)
+    ci_files = _ci_files(files)
+    container_files = _container_files(files)
+    dependency_files = _dependency_files(files)
+    ui_files = _ui_files(files)
+    test_files = _test_files(files)
     has_security = _has_any(text, {"auth", "jwt", "session", "token", "secret", "password", "cors", "rls", "crypto"})
     has_db = _has_any(text, {"sql", "migration", "alembic", "schema", "transaction", "query", "orm"})
     has_refactor = _has_any(text, {"refactor", "rename", "delete", "remove", "dead code", "duplicate"})
     has_api = _has_any(text, {"route", "endpoint", "api", "request", "response", "pydantic", "openapi"})
     has_release = _has_any(text, {"release", "deploy", "production", "prod-ready", "tag", "changelog"})
     has_trace = _has_any(text, {"trace", "stack trace", "timeout", "rate-limit", "latency", "slow", "500", "exception"})
-    risky = has_security or has_db or has_api or has_refactor or len(code_files) > 1
+    if _docs_only(files) and not active_goal and not has_release:
+        return {"status": "skipped", "reason": "docs-only change", "files": files}
+    has_ui = bool(ui_files) or _has_any(text, {"a11y", "accessibility", "i18n", "translation", "wcag"})
+    has_deps = bool(dependency_files)
+    has_tests = bool(test_files) or _has_any(text, {"pytest", "coverage", "flaky", "mutation test", "benchmark"})
+    has_perf = _has_any(text, {"performance", "regression", "slow", "latency", "throughput", "load test", "benchmark"})
+    risky = (
+        has_security or has_db or has_api or has_refactor or len(code_files) > 1
+        or bool(migration_files or ci_files or container_files or dependency_files)
+    )
 
     selected: list[str] = []
     jobs = []
+    excluded = {str(name) for name in (exclude_tools or [])}
 
     def add(name: str, coro) -> None:
+        if name in excluded:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            return
         selected.append(name)
         jobs.append(_run_named(name, coro))
 
@@ -169,8 +332,51 @@ async def auto_trigger(
         add("config_security_audit", config_security_audit())
     if code_files and (mode == "max" or risky):
         add("complexity_analyzer", complexity_analyzer(paths=code_files))
-    if mode == "max" and code_files:
+    if mode == "max" and code_files and (
+        stage in {"final", "pre_complete"}
+        or bool(ci_files or container_files or dependency_files)
+        or has_release
+        or _has_any(text, {"ci", "build", "lint", "typecheck", "pipeline"})
+    ):
         add("devops_pipeline", devops_pipeline())
+    if has_db or migration_files:
+        if migration_files:
+            add("migration_validator", migration_validator(paths=migration_files))
+        if code_files:
+            add("sql_query_analyzer", sql_query_analyzer(files=code_files))
+    if code_files and (has_security or has_api or (mode == "max" and risky)):
+        add("data_flow_taint_analyzer", data_flow_taint_analyzer(files=code_files))
+    if has_api or (mode == "max" and any(_basename(f) in {"openapi.json", "openapi.yaml", "openapi.yml"} for f in files)):
+        add("openapi_spec_sync", openapi_spec_sync())
+        endpoints = _discover_api_endpoints(code_files)
+        if endpoints:
+            add("api_contract_tester", api_contract_tester(endpoints=endpoints))
+    if container_files:
+        add("container_linter", container_linter(paths=container_files or files))
+    if ci_files:
+        add("ci_pipeline_validator", ci_pipeline_validator(paths=ci_files))
+    if has_ui:
+        add("a11y_auditor", a11y_auditor(files=ui_files or files))
+        if mode == "max" or _has_any(text, {"i18n", "translation"}):
+            add("i18n_auditor", i18n_auditor(files=ui_files or files))
+    if has_deps:
+        add("license_scanner", license_scanner())
+    if code_files and (mode == "max" or _has_any(text, {"importerror", "circular import", "dependency graph"})):
+        add("dependency_graph_visualizer", dependency_graph_visualizer(paths=code_files))
+    if has_tests or (mode == "max" and stage in {"final", "pre_complete"}):
+        add("coverage_analyzer", coverage_analyzer())
+    if _has_any(text, {"flaky", "non-deterministic"}):
+        add("flaky_test_detector", flaky_test_detector(runs=3, test_path=test_files[0] if test_files else ""))
+    if _has_any(text, {"mutation test", "mutation score"}):
+        add("mutation_tester", mutation_tester(files=code_files or None))
+    if mode == "max" and (has_api or has_db or "basemodel" in text.lower()):
+        add("schema_drift", schema_drift())
+    if mode == "max" and stage in {"final", "pre_complete"} and (has_refactor or has_perf or len(code_files) >= 2):
+        add("breaking_change_detector", breaking_change_detector())
+        add("performance_regression_detector", performance_regression_detector())
+    urls = _extract_urls(text)
+    if urls and _has_any(text, {"load test", "throughput", "rps"}):
+        add("load_tester", load_tester(url=urls[0]))
     if has_refactor or (mode == "max" and len(code_files) >= 2):
         add("dead_code_scanner", dead_code_scanner())
         add("duplicate_code_scanner", duplicate_code_scanner())

@@ -260,6 +260,8 @@ Các capability chính hiện có:
 - **Hard supervisor:** `goal_supervisor` đọc goal state + last checks và trả đúng một `next_action`: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - **Goal summary injector:** context của `consult`, `panel_review`, `ask_codebase`, `auto_trigger`/goal checks tự có dòng ngắn: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
 - **Production readiness gate:** `prod_readiness_gate` gom final `auto_trigger`, security/env/secret, review và release checks; trả verdict cứng `ready_to_deploy`, `fix_required`, `blocked_needs_user`, `deploy_then_verify`, hoặc `rollback_required`.
+- **Contextual tool coverage:** `auto_trigger(mode=max)` không còn chỉ quanh 6-10 tool mặc định; nó tự mở rộng theo signal DB/API/UI/CI/container/dependency/test/perf. Scenario tổng hợp API+DB+UI+CI+deps chọn 27 checks; Python bug đơn giản vẫn giữ khoảng 7 checks để không spam.
+- **Bounded orchestration:** `auto_trigger` và `prod_readiness_gate` đều có per-tool timeout; prod gate dùng exclude-list để không chạy trùng các check đã quản lý top-level.
 - **Azure-max gap tools:** `release_orchestrator`, `provenance_checker`, `auth_matrix_auditor`, `incremental_refactor_guard`, `harness_trace_viewer` luôn dựng evidence static trước; khi `mode="max"` hoặc `HARNESS_STATIC_LLM=1` thì gọi Azure role phù hợp để enrich/triage.
 - **ask_codebase v2:** direct symbol scan + CodebaseIndex tự chọn file, narrow tối đa 15 file, prune context theo relevance, redact secret-like values, hard timeout, spare chain tắt mặc định, fallback local có `file:line` thay vì trả lời rỗng.
 - **Swarm/session hardening:** swarm init/proceed validate `target_files` là relative path trong workspace và không rỗng; cancel dùng CAS lock; ops ledger/status/doctor redact workspace/home paths trước khi trả hoặc ghi audit.
@@ -271,8 +273,9 @@ Các capability chính hiện có:
 
 Mức tự động hiện tại:
 - **Runtime-auto:** `goal_runner` tự init/resume, doctor, loop supervisor, chạy checks, final gate, ledger; `ask_codebase` tự chọn/narrow/prune/redact context và tự trả `context_health`.
+- **Context-auto:** `auto_trigger` tự chọn thêm `migration_validator`, `sql_query_analyzer`, `data_flow_taint_analyzer`, `openapi_spec_sync`, `api_contract_tester` khi detect route thật, `container_linter`, `ci_pipeline_validator`, `a11y_auditor`, `i18n_auditor`, `license_scanner`, `dependency_graph_visualizer`, `coverage_analyzer`, `schema_drift`, `breaking_change_detector`, `performance_regression_detector`, `flaky_test_detector`, `mutation_tester`, và `load_tester` khi có URL + load-test intent.
 - **Policy-auto:** Claude/Gemini/Codex được lazy-merge rules để tự gọi `harness_doctor`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check` khi ngữ cảnh khớp.
-- **Không chạy nền vô hạn:** benchmark/doctor/patch safety chạy theo trigger hoặc khi `goal_runner`/agent policy cần, để tránh tốn Azure và làm bẩn worktree không cần thiết.
+- **Không chạy nền vô hạn:** benchmark/doctor/patch safety và các tool cần input đặc biệt như visual review chỉ chạy theo trigger rõ ràng; dispatcher không gọi mù quáng để tránh tốn Azure, request ra ngoài, hoặc làm bẩn worktree.
 
 Sau khi pull/update code harness, MCP server mới sẽ tự merge rules vào Claude/Gemini/Codex bằng stamp `~/.claude/.harness_rules_version`. Vẫn phải restart MCP client/Claude/Gemini nếu phiên cũ đang sống, vì session cũ có thể cache tool schema/rules và chưa thấy tool mới như `goal_runner`.
 

@@ -33,3 +33,7 @@
 ### 2026-07-13 — Runtime-auto context and swarm hardening
 **Decision:** Hard-wire lightweight context health into `ask_codebase`, doctor/ledger into `goal_runner`, redact ops paths before persistence/output, and validate swarm `target_files` with CAS-protected cancel.
 **Alternatives bỏ:** Depending only on client-side rules to remember ops tools; allowing swarm sessions to proceed with empty or unsafe file scopes.
+
+### 2026-07-13 — Contextual auto-trigger coverage
+**Decision:** Expand `auto_trigger` and `prod_readiness_gate` from a small default check set to contextual DB/API/UI/CI/container/dependency/test/performance selectors, while skipping tools that lack required input.
+**Alternatives bỏ:** Calling all 76 tools every time; too slow, expensive, noisy, and unsafe for URL/load/visual/doc-writing tools.
