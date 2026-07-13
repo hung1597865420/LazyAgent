@@ -4,6 +4,7 @@ tools package — Re-exporting all tools.
 from .core import run_in_sandbox
 from .auto import auto_trigger
 from .goal import goal_autopilot, goal_supervisor
+from .runner import goal_runner
 from .prod import prod_readiness_gate
 from .gap_tools import (
     release_orchestrator,
@@ -54,6 +55,7 @@ __all__ = [
     "auto_trigger",
     "goal_autopilot",
     "goal_supervisor",
+    "goal_runner",
     "prod_readiness_gate",
     "release_orchestrator",
     "provenance_checker",

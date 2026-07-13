@@ -5,6 +5,7 @@
 - config.py — Environment variables, model defaults, Azure clients, workspace root.
 - tools/ — Modular tool implementations for review, security, testing, devops, wiki, analysis, quality.
 - tools/goal.py — Prompt-only goal autopilot state machine and alignment check.
+- tools/runner.py — Direct prompt runner that drives goal, agent CLI, checks, supervisor, and final gate.
 - tools/prod.py — Production readiness gate that aggregates final checks into a hard deploy verdict.
 - tools/gap_tools.py — Static-first production gap tools with Azure enrichment in max mode.
 - install.ps1 — Windows installer: dependencies, MCP registration, global Claude config, smoke test.
@@ -15,7 +16,7 @@
 
 ## Architecture
 Claude/Codex/Gemini MCP client -> mcp_server.py -> tools/* + agents.py -> Azure AI Foundry / static analyzers.
-Goal flow: prompt -> goal_autopilot(init) -> .harness_goal_state.json -> auto_trigger goal_alignment after edits.
+Goal flow: prompt -> goal_runner or goal_autopilot(init) -> .harness_goal_state.json -> agent/check/supervisor loop.
 Prod flow: release/prod prompt -> prod_readiness_gate -> final auto/security/review/release/provenance checks -> hard verdict.
 
 ## Constraints / Gotchas

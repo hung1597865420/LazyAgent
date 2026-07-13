@@ -252,6 +252,32 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="goal_runner",
+            description=(
+                "Direct prompt runner: initializes goal_autopilot from one prompt, delegates to an agent CLI, "
+                "runs auto_trigger/goal_supervisor loop, then finalizes through prod_readiness_gate."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Prompt/goal to run directly through the harness"},
+                    "max_iterations": {"type": "integer", "minimum": 1, "maximum": 30},
+                    "mode": {"type": "string", "enum": ["safe", "max"]},
+                    "agent_command": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Optional command template or argv array; use {prompt} placeholder or prompt is appended",
+                    },
+                    "agent_timeout": {"type": "number", "minimum": 5, "maximum": 7200},
+                    "dry_run": {"type": "boolean", "description": "True initializes/supervises but does not call an agent command"},
+                    "final_prod_gate": {"type": "boolean", "description": "Run prod_readiness_gate before completing the goal"},
+                },
+                "required": ["prompt"],
+            },
+        ),
+        types.Tool(
             name="panel_review",
             description=(
                 "3 model parallel (reviewer/security/tester adversarial) → findings JSON file/line/severity/fix. "
@@ -1223,6 +1249,32 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 diff=args.get("diff"),
                 context=args.get("context"),
                 last_checks=args.get("last_checks"),
+            ))
+
+        if name == "goal_runner":
+            mode = str(args.get("mode", "max")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            agent_command = args.get("agent_command")
+            if agent_command is not None and not (
+                isinstance(agent_command, str)
+                or (isinstance(agent_command, list) and all(isinstance(item, str) and item.strip() for item in agent_command))
+            ):
+                return _json_response({"error": "invalid_argument", "detail": "agent_command must be a string or list of strings"})
+            dry_run, dry_run_error = _parse_bool_arg(args, "dry_run")
+            if dry_run_error:
+                return _json_response({"error": "invalid_argument", "detail": dry_run_error})
+            final_prod_gate, final_prod_gate_error = _parse_bool_arg(args, "final_prod_gate", True)
+            if final_prod_gate_error:
+                return _json_response({"error": "invalid_argument", "detail": final_prod_gate_error})
+            return _json_response(await st.goal_runner(
+                prompt=args.get("prompt", ""),
+                max_iterations=args.get("max_iterations", 8),
+                mode=mode,
+                agent_command=agent_command,
+                agent_timeout=args.get("agent_timeout", 900.0),
+                dry_run=dry_run,
+                final_prod_gate=final_prod_gate,
             ))
 
         if name == "panel_review":

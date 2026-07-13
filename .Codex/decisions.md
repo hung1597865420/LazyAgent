@@ -21,3 +21,7 @@
 ### 2026-07-13 — Autonomous gap tools with Azure enrichment
 **Decision:** Add `release_orchestrator`, `provenance_checker`, `auth_matrix_auditor`, `harness_trace_viewer`, and `incremental_refactor_guard` as static-first MCP tools that call Azure enrichment in `mode=max` or when `HARNESS_STATIC_LLM=1`.
 **Alternatives bỏ:** Pure-offline gap tools; user explicitly wants harness to exploit Azure as much as possible while keeping smoke/fallback deterministic.
+
+### 2026-07-13 — Direct prompt goal runner
+**Decision:** Add `goal_runner` plus `goal_runner.py` so the harness can receive one prompt directly, initialize goal state, delegate implementation to an agent CLI, run Auto-Pilot checks, ask `goal_supervisor`, and finalize through `prod_readiness_gate`.
+**Alternatives bỏ:** Relying only on Claude/Gemini/Codex rules to call `goal_autopilot(init)`; this leaves prompt startup dependent on the client session.

@@ -186,12 +186,12 @@ check("SYSTEM_PROMPTS đủ 12 role", set(SYSTEM_PROMPTS) == set(AgentRole))
 check("ROLE_TO_MODEL đủ 12 role", set(ROLE_TO_MODEL) == set(AgentRole))
 check("ROLE_TEMPERATURE đủ 12 role", set(ROLE_TEMPERATURE) == set(AgentRole))
 
-# 4. MCP server: list_tools trả đủ 66 tool, schema hợp lệ
+# 4. MCP server: list_tools trả đủ 67 tool, schema hợp lệ
 tools = asyncio.run(mcp_server.list_tools())
 tool_names = {t.name for t in tools}
 expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "provenance_checker",
             "auth_matrix_auditor", "harness_trace_viewer", "incremental_refactor_guard",
-            "goal_autopilot", "goal_supervisor", "panel_review", "consult", "alt_implementation", "suggest_fix",
+            "goal_autopilot", "goal_supervisor", "goal_runner", "panel_review", "consult", "alt_implementation", "suggest_fix",
             "ask_codebase", "quick_task", "run_single_agent", "list_agents",
             "wiki_ingest", "wiki_query", "wiki_lint", "security_autofix",
             "auto_tester", "visual_reviewer", "benchmarker", "dependency_upgrader",
@@ -207,7 +207,7 @@ expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "prov
             "breaking_change_detector", "flaky_test_detector", "duplicate_code_scanner",
             "container_linter", "dependency_graph_visualizer", "ci_pipeline_validator",
             "mutation_tester", "data_flow_taint_analyzer", "performance_regression_detector"}
-check("MCP đăng ký đủ 66 tool", tool_names == expected,
+check("MCP đăng ký đủ 67 tool", tool_names == expected,
       f"thiếu {expected - tool_names}, thừa {tool_names - expected}")
 for t in tools:
     json.dumps(t.inputSchema)  # schema phải serialize được
@@ -293,6 +293,10 @@ check("quick_task nhận alias task",
       bool(json.loads(quick_task_alias[0].text).get("output")),
       quick_task_alias[0].text)
 from tools.gap_tools import _diff_symbol_changes, harness_trace_viewer as _harness_trace_viewer
+from tools.runner import _acquire_runner_lock, _parse_porcelain_z, _parse_porcelain_z_bytes, _prod_gate_ok, _release_runner_lock
+RUNNER_WORKSPACE = SMOKE_DIR / "runner_workspace"
+RUNNER_WORKSPACE.mkdir(exist_ok=True)
+(RUNNER_WORKSPACE / "README.md").write_text("# runner smoke\n", encoding="utf-8")
 multi_file_changes = _diff_symbol_changes(
     "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n-def public_a(x):\n+def public_a(x, y):\n"
     "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n-def public_b(x):\n+def public_b(x, y):\n"
@@ -304,6 +308,53 @@ trace_bad_limit = asyncio.run(_harness_trace_viewer(limit="bad", mode="safe"))
 check("harness_trace_viewer direct bad limit không crash",
       trace_bad_limit.get("status") == "completed",
       str(trace_bad_limit))
+check("goal_runner parse porcelain -z rename/path space",
+      _parse_porcelain_z("R  old name.py\0new name.py\0 R old2.py\0new2.py\0 M spaced file.py\0") == ["new name.py", "new2.py", "spaced file.py"])
+check("goal_runner parse porcelain -z bytes surrogateescape",
+      _parse_porcelain_z_bytes(b" M bad-\xff.py\0")[0].startswith("bad-"))
+check("goal_runner prod gate malformed blockers fail-closed",
+      not _prod_gate_ok({"verdict": "ready_to_deploy", "blockers_count": "bad"}))
+old_project_dir_for_lock = os.environ.get("CLAUDE_PROJECT_DIR")
+os.environ["CLAUDE_PROJECT_DIR"] = str(RUNNER_WORKSPACE.resolve())
+runner_lock = _acquire_runner_lock()
+try:
+    busy_res = asyncio.run(mcp_server.call_tool("goal_runner", {
+        "prompt": "second runner must not start",
+        "mode": "safe",
+        "dry_run": True,
+        "max_iterations": 1,
+    }))
+finally:
+    _release_runner_lock(runner_lock)
+    if old_project_dir_for_lock is None:
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+    else:
+        os.environ["CLAUDE_PROJECT_DIR"] = old_project_dir_for_lock
+check("goal_runner chặn concurrent run cùng workspace",
+      json.loads(busy_res[0].text).get("status") == "blocked_goal_busy",
+      busy_res[0].text)
+bad_agent_command = asyncio.run(mcp_server.call_tool("goal_runner", {
+    "prompt": "bad agent command",
+    "agent_command": 123,
+}))
+check("goal_runner reject agent_command sai kiểu",
+      "error" in json.loads(bad_agent_command[0].text),
+      bad_agent_command[0].text)
+blank_agent_command = asyncio.run(mcp_server.call_tool("goal_runner", {
+    "prompt": "blank agent command",
+    "agent_command": [" "],
+}))
+check("goal_runner reject agent_command whitespace",
+      "error" in json.loads(blank_agent_command[0].text),
+      blank_agent_command[0].text)
+direct_bad_agent = asyncio.run(__import__("tools.runner").runner.goal_runner(
+    "direct bad agent",
+    agent_command=[" "],
+    dry_run=True,
+))
+check("goal_runner direct reject agent_command sai kiểu",
+      "error" in direct_bad_agent,
+      str(direct_bad_agent))
 from tools.prod import _hard_flags
 _blockers, _needs_user, _warnings = _hard_flags([{
     "tool": "panel_review",
@@ -324,6 +375,25 @@ goal_supervisor_json = json.loads(goal_supervisor[0].text)
 check("goal_supervisor trả next_action không cần Azure",
       goal_supervisor_json.get("next_action") in {"continue_part", "run_check", "run_final", "blocked_ask_user", "complete"},
       str(goal_supervisor_json))
+old_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+os.environ["CLAUDE_PROJECT_DIR"] = str(RUNNER_WORKSPACE.resolve())
+try:
+    goal_runner_res = asyncio.run(mcp_server.call_tool("goal_runner", {
+        "prompt": "Update the runner smoke workspace",
+        "mode": "safe",
+        "dry_run": True,
+        "max_iterations": 1,
+        "final_prod_gate": False,
+    }))
+finally:
+    if old_project_dir is None:
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+    else:
+        os.environ["CLAUDE_PROJECT_DIR"] = old_project_dir
+goal_runner_json = json.loads(goal_runner_res[0].text)
+check("goal_runner dry-run init/supervise không cần client rules",
+      goal_runner_json.get("status") == "blocked_needs_agent",
+      str(goal_runner_json))
 auto_bad_mode = asyncio.run(mcp_server.call_tool("auto_trigger", {"mode": "wild"}))
 check("auto_trigger mode invalid → error", "error" in json.loads(auto_bad_mode[0].text))
 auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {

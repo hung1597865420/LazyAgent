@@ -40,6 +40,9 @@ from tools.goal import (
     goal_autopilot,
     goal_supervisor
 )
+from tools.runner import (
+    goal_runner
+)
 from tools.prod import (
     prod_readiness_gate
 )
