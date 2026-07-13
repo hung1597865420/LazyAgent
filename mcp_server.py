@@ -278,6 +278,71 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="goal_runner_control",
+            description="Control direct goal runner: status, resume active goal, or cancel a stale runner lock.",
+            inputSchema={"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["status", "resume", "cancel_stale"]},
+                "prompt": {"type": "string"},
+                "mode": {"type": "string", "enum": ["safe", "max"]},
+                "dry_run": {"type": "boolean"},
+            }},
+        ),
+        types.Tool(
+            name="run_ledger",
+            description="Read recent goal_runner/benchmark audit ledger entries.",
+            inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}}},
+        ),
+        types.Tool(
+            name="policy_profile",
+            description="Return harness policy profiles: fast, balanced, prod, paranoid.",
+            inputSchema={"type": "object", "properties": {"profile": {"type": "string", "enum": ["fast", "balanced", "prod", "paranoid"]}}},
+        ),
+        types.Tool(
+            name="agent_adapters",
+            description="List supported agent CLI adapters and whether claude/gemini/codex/custom command is available.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="context_auditor",
+            description="Audit context assembly for size, warnings, goal injection, and line-context presence without calling Azure.",
+            inputSchema={"type": "object", "properties": {
+                "question": {"type": "string"},
+                "files": _FILES_SCHEMA,
+                "context": {"type": "string"},
+            }},
+        ),
+        types.Tool(
+            name="ask_codebase_health",
+            description="Dry-run local ask_codebase context path to catch overlarge or weak context before Azure.",
+            inputSchema={"type": "object", "properties": {
+                "question": {"type": "string"},
+                "files": _FILES_SCHEMA,
+                "context": {"type": "string"},
+            }},
+        ),
+        types.Tool(
+            name="patch_safety_check",
+            description="Apply a proposed patch in an isolated git worktree and run tests; never mutates main workspace.",
+            inputSchema={"type": "object", "properties": {
+                "patch": {"type": "string"},
+                "files": _FILES_SCHEMA,
+            }, "required": ["patch"]},
+        ),
+        types.Tool(
+            name="benchmark_runner",
+            description="Run a small benchmark task list through goal_runner, dry-run by default, and write ledger.",
+            inputSchema={"type": "object", "properties": {
+                "tasks": {"type": "array", "items": {"type": "string"}},
+                "mode": {"type": "string", "enum": ["safe", "max"]},
+                "dry_run": {"type": "boolean"},
+            }},
+        ),
+        types.Tool(
+            name="harness_doctor",
+            description="Self-check harness readiness: git, Azure env, rules stamp, runner lock, and agent CLI adapters.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
             name="panel_review",
             description=(
                 "3 model parallel (reviewer/security/tester adversarial) → findings JSON file/line/severity/fix. "
@@ -1276,6 +1341,65 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 dry_run=dry_run,
                 final_prod_gate=final_prod_gate,
             ))
+
+        if name == "goal_runner_control":
+            mode = str(args.get("mode", "max")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            dry_run, dry_run_error = _parse_bool_arg(args, "dry_run")
+            if dry_run_error:
+                return _json_response({"error": "invalid_argument", "detail": dry_run_error})
+            return _json_response(await st.goal_runner_control(
+                action=args.get("action", "status"),
+                prompt=args.get("prompt"),
+                mode=mode,
+                dry_run=dry_run,
+            ))
+
+        if name == "run_ledger":
+            return _json_response(await st.run_ledger(limit=args.get("limit", 20)))
+
+        if name == "policy_profile":
+            return _json_response(await st.policy_profile(profile=args.get("profile", "balanced")))
+
+        if name == "agent_adapters":
+            return _json_response(await st.agent_adapters())
+
+        if name == "context_auditor":
+            return _json_response(await st.context_auditor(
+                question=args.get("question", ""),
+                files=args.get("files"),
+                context=args.get("context"),
+            ))
+
+        if name == "ask_codebase_health":
+            return _json_response(await st.ask_codebase_health(
+                question=args.get("question", "harness codebase health"),
+                files=args.get("files"),
+                context=args.get("context"),
+            ))
+
+        if name == "patch_safety_check":
+            return _json_response(await st.patch_safety_check(
+                patch=args.get("patch", ""),
+                files=args.get("files"),
+            ))
+
+        if name == "benchmark_runner":
+            mode = str(args.get("mode", "safe")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            dry_run, dry_run_error = _parse_bool_arg(args, "dry_run", True)
+            if dry_run_error:
+                return _json_response({"error": "invalid_argument", "detail": dry_run_error})
+            return _json_response(await st.benchmark_runner(
+                tasks=args.get("tasks"),
+                mode=mode,
+                dry_run=dry_run,
+            ))
+
+        if name == "harness_doctor":
+            return _json_response(await st.harness_doctor())
 
         if name == "panel_review":
             staged, staged_error = _parse_bool_arg(args, "staged")

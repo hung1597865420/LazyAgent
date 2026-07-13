@@ -624,6 +624,37 @@ def _is_terminal_state(state: str) -> bool:
     return state in ("completed", "rejected", "failed", "cancelled", "expired")
 
 
+def _normalize_swarm_target_files(files: Optional[list[str]]) -> list[str]:
+    if files is None:
+        return []
+    if not isinstance(files, list):
+        raise ValueError("target_files must be a list")
+    root = os.path.realpath(WORKSPACE_ROOT)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in files:
+        if not isinstance(item, str):
+            raise ValueError("target_files entries must be strings")
+        raw = item.strip().replace("\\", "/")
+        if not raw or re.search(r"[\x00-\x1f]", raw):
+            raise ValueError("target_files entries must be non-empty safe paths")
+        if posixpath.isabs(raw):
+            raise ValueError("target_files must be relative paths")
+        rel = posixpath.normpath(raw)
+        if rel in {"", ".", ".."} or rel.startswith("../"):
+            raise ValueError("target_files cannot escape workspace")
+        parts = {p.lower() for p in rel.split("/")}
+        if parts & {".git", ".hg", ".svn"} or posixpath.basename(rel).lower() == ".env":
+            raise ValueError("target_files cannot include repository metadata or .env")
+        full = os.path.realpath(os.path.join(root, rel.replace("/", os.sep)))
+        if os.path.commonpath([root, full]) != root:
+            raise ValueError("target_files cannot escape workspace")
+        if rel not in seen:
+            normalized.append(rel)
+            seen.add(rel)
+    return normalized
+
+
 def get_swarm_session(swarm_id: str) -> Optional[dict]:
     """Load swarm session; returns None if not found. Expired non-terminal sessions are
     auto-transitioned to 'expired' and backups restored before returning None."""
@@ -638,7 +669,7 @@ def get_swarm_session(swarm_id: str) -> Optional[dict]:
             conn.close()
             return None
         d = dict(row)
-        d["target_files"] = json.loads(d["target_files"]) if d["target_files"] else []
+        d["target_files"] = _normalize_swarm_target_files(json.loads(d["target_files"]) if d["target_files"] else [])
         d["logs"] = json.loads(d["logs"]) if d["logs"] else []
         d["final_result"] = json.loads(d["final_result"]) if d["final_result"] else {}
 
@@ -665,8 +696,8 @@ def get_swarm_session(swarm_id: str) -> Optional[dict]:
             if backup_paths:
                 st._restore_session_backups(backup_paths)
             cursor.execute(
-                "UPDATE swarm_sessions SET state='expired', updated_at=? WHERE swarm_id=?",
-                (now, swarm_id)
+                "UPDATE swarm_sessions SET state='expired', updated_at=? WHERE swarm_id=? AND state=?",
+                (now, swarm_id, d["state"])
             )
             conn.commit()
             conn.close()
@@ -686,12 +717,18 @@ def save_swarm_session(session: dict):
     try:
         # Non-terminal sessions get a fresh TTL window on every save
         state = session["state"]
+        target_files = _normalize_swarm_target_files(session.get("target_files", []))
         expires_at = (
             None if _is_terminal_state(state)
             else _time.time() + SWARM_SESSION_TTL_SECONDS
         )
         conn = sqlite3.connect(FINOPS_DB_PATH)
         cursor = conn.cursor()
+        current = cursor.execute("SELECT state FROM swarm_sessions WHERE swarm_id=?", (session["swarm_id"],)).fetchone()
+        if current and _is_terminal_state(str(current[0])) and str(current[0]) != state:
+            conn.close()
+            print(f"[Harness Server] Refused stale write over terminal swarm session {session['swarm_id']}.")
+            return
         cursor.execute("""
             INSERT OR REPLACE INTO swarm_sessions
                 (swarm_id, state, error_log, target_files, reproducer_code,
@@ -701,7 +738,7 @@ def save_swarm_session(session: dict):
             session["swarm_id"],
             state,
             session["error_log"],
-            json.dumps(session["target_files"]),
+            json.dumps(target_files),
             session.get("reproducer_code", ""),
             session.get("suggested_patch", ""),
             json.dumps(session.get("logs", [])),
@@ -751,19 +788,29 @@ class SwarmInitRequest(BaseModel):
 async def api_swarm_init(req: SwarmInitRequest):
     import support_tools as st
     import uuid
+    try:
+        input_files = _normalize_swarm_target_files(req.files)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     
     swarm_id = f"swarm-{uuid.uuid4().hex[:8]}"
     
     # Run Step 1: Architect
-    arch_res = await st.swarm_step_architect(req.error_log, req.files)
+    arch_res = await st.swarm_step_architect(req.error_log, input_files)
     if "error" in arch_res:
         return arch_res
+    try:
+        target_files = _normalize_swarm_target_files(arch_res["target_files"])
+        if not target_files:
+            raise ValueError("target_files cannot be empty")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
         
     session = {
         "swarm_id": swarm_id,
         "state": "pending_tester",
         "error_log": req.error_log,
-        "target_files": arch_res["target_files"],
+        "target_files": target_files,
         "reproducer_code": "",
         "suggested_patch": "",
         "logs": arch_res["logs"],
@@ -780,7 +827,7 @@ async def api_swarm_init(req: SwarmInitRequest):
         "state": "pending_tester",
         "root_cause": arch_res["root_cause"],
         "suggested_approach": arch_res["suggested_approach"],
-        "target_files": arch_res["target_files"],
+        "target_files": target_files,
         "logs": arch_res["logs"],
         "warnings": arch_res.get("warnings", [])
     }
@@ -808,6 +855,15 @@ async def api_swarm_proceed(swarm_id: str, body: SwarmProceedBody):
 
     state = sess["state"]
     final_result = sess["final_result"]
+    try:
+        if body.target_files is not None:
+            body.target_files = _normalize_swarm_target_files(body.target_files)
+        sess["target_files"] = _normalize_swarm_target_files(sess.get("target_files", []))
+        effective_files = body.target_files if body.target_files is not None else sess["target_files"]
+        if not effective_files:
+            raise ValueError("target_files cannot be empty")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # ── State-transition map for CAS locking ──────────────────────────────────
     _valid_proceed_states = {"pending_tester", "pending_coder", "pending_apply", "pending_review"}
@@ -828,7 +884,7 @@ async def api_swarm_proceed(swarm_id: str, body: SwarmProceedBody):
     save_swarm_session(sess)
     try:
         if state == "pending_tester":
-            t_files = body.target_files if body.target_files is not None else sess["target_files"]
+            t_files = effective_files
             sess["target_files"] = t_files
 
             tester_res = await st.swarm_step_tester(
@@ -972,6 +1028,10 @@ async def api_swarm_cancel(swarm_id: str):
 
     if not isinstance(state, str) or state.startswith("_locking_"):
         raise HTTPException(status_code=409, detail="Cannot cancel: a proceed request is currently in progress. Please retry.")
+    if _is_terminal_state(state):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel terminal session: {state}")
+    if not cas_swarm_state(swarm_id, state, f"_locking_{state}"):
+        raise HTTPException(status_code=409, detail="Cannot cancel: session state changed. Please retry.")
 
     backup_paths = sess["final_result"].get("backup_paths", [])
 

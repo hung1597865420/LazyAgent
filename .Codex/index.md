@@ -6,6 +6,7 @@
 - tools/ — Modular tool implementations for review, security, testing, devops, wiki, analysis, quality.
 - tools/goal.py — Prompt-only goal autopilot state machine and alignment check.
 - tools/runner.py — Direct prompt runner that drives goal, agent CLI, checks, supervisor, and final gate.
+- tools/ops.py — Harness ops tools for doctor, context audit, ledger, profiles, adapters, benchmark, and patch safety.
 - tools/prod.py — Production readiness gate that aggregates final checks into a hard deploy verdict.
 - tools/gap_tools.py — Static-first production gap tools with Azure enrichment in max mode.
 - install.ps1 — Windows installer: dependencies, MCP registration, global Claude config, smoke test.

@@ -5,6 +5,17 @@ from .core import run_in_sandbox
 from .auto import auto_trigger
 from .goal import goal_autopilot, goal_supervisor
 from .runner import goal_runner
+from .ops import (
+    agent_adapters,
+    ask_codebase_health,
+    benchmark_runner,
+    context_auditor,
+    goal_runner_control,
+    harness_doctor,
+    patch_safety_check,
+    policy_profile,
+    run_ledger,
+)
 from .prod import prod_readiness_gate
 from .gap_tools import (
     release_orchestrator,
@@ -56,6 +67,15 @@ __all__ = [
     "goal_autopilot",
     "goal_supervisor",
     "goal_runner",
+    "agent_adapters",
+    "ask_codebase_health",
+    "benchmark_runner",
+    "context_auditor",
+    "goal_runner_control",
+    "harness_doctor",
+    "patch_safety_check",
+    "policy_profile",
+    "run_ledger",
     "prod_readiness_gate",
     "release_orchestrator",
     "provenance_checker",

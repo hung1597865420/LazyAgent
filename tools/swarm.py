@@ -610,6 +610,12 @@ async def ask_codebase(
     ctx = _redact_sensitive_text(ctx)
     ctx, prune_warnings = _prune_context_for_question(question, ctx, _ask_codebase_context_cap())
     warnings.extend(prune_warnings)
+    try:
+        from .ops import context_auditor
+
+        context_health = await context_auditor(question=question, files=None, context=ctx)
+    except Exception as exc:
+        context_health = {"status": "skipped", "error": str(exc)}
 
     timeout_s = _ask_codebase_timeout()
     task = (
@@ -652,12 +658,14 @@ async def ask_codebase(
             "agent": _result_meta(result),
             "fallback": True,
             "warnings": warnings,
+            "context_health": context_health,
         }
 
     return {
         "answer": answer_text,
         "files_loaded": loaded_count,
         "agent": _result_meta(result), "warnings": warnings,
+        "context_health": context_health,
     }
 
 

@@ -186,12 +186,14 @@ check("SYSTEM_PROMPTS đủ 12 role", set(SYSTEM_PROMPTS) == set(AgentRole))
 check("ROLE_TO_MODEL đủ 12 role", set(ROLE_TO_MODEL) == set(AgentRole))
 check("ROLE_TEMPERATURE đủ 12 role", set(ROLE_TEMPERATURE) == set(AgentRole))
 
-# 4. MCP server: list_tools trả đủ 67 tool, schema hợp lệ
+# 4. MCP server: list_tools trả đủ expected tools, schema hợp lệ
 tools = asyncio.run(mcp_server.list_tools())
 tool_names = {t.name for t in tools}
 expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "provenance_checker",
             "auth_matrix_auditor", "harness_trace_viewer", "incremental_refactor_guard",
             "goal_autopilot", "goal_supervisor", "goal_runner", "panel_review", "consult", "alt_implementation", "suggest_fix",
+            "goal_runner_control", "run_ledger", "policy_profile", "agent_adapters", "context_auditor",
+            "ask_codebase_health", "patch_safety_check", "benchmark_runner", "harness_doctor",
             "ask_codebase", "quick_task", "run_single_agent", "list_agents",
             "wiki_ingest", "wiki_query", "wiki_lint", "security_autofix",
             "auto_tester", "visual_reviewer", "benchmarker", "dependency_upgrader",
@@ -207,7 +209,7 @@ expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "prov
             "breaking_change_detector", "flaky_test_detector", "duplicate_code_scanner",
             "container_linter", "dependency_graph_visualizer", "ci_pipeline_validator",
             "mutation_tester", "data_flow_taint_analyzer", "performance_regression_detector"}
-check("MCP đăng ký đủ 67 tool", tool_names == expected,
+check(f"MCP đăng ký đủ {len(expected)} tool", tool_names == expected,
       f"thiếu {expected - tool_names}, thừa {tool_names - expected}")
 for t in tools:
     json.dumps(t.inputSchema)  # schema phải serialize được
@@ -394,6 +396,40 @@ goal_runner_json = json.loads(goal_runner_res[0].text)
 check("goal_runner dry-run init/supervise không cần client rules",
       goal_runner_json.get("status") == "blocked_needs_agent",
       str(goal_runner_json))
+check("goal_runner tự chạy doctor event",
+      any(e.get("step") == "doctor" for e in goal_runner_json.get("events", [])),
+      str(goal_runner_json))
+ops_calls = {
+    "goal_runner_control": {"action": "status"},
+    "run_ledger": {"limit": 5},
+    "policy_profile": {"profile": "balanced"},
+    "agent_adapters": {},
+    "context_auditor": {"question": "smoke", "files": ["README.md"]},
+    "ask_codebase_health": {"question": "smoke", "files": ["README.md"]},
+    "benchmark_runner": {"tasks": ["smoke benchmark"], "mode": "safe", "dry_run": True},
+    "harness_doctor": {},
+}
+old_project_dir_ops = os.environ.get("CLAUDE_PROJECT_DIR")
+os.environ["CLAUDE_PROJECT_DIR"] = str(RUNNER_WORKSPACE.resolve())
+try:
+    stale_lock = RUNNER_WORKSPACE / ".harness_goal_runner.lock"
+    stale_lock.write_text(json.dumps({"pid": 999999999, "created_at": time.time() - 999}), encoding="utf-8")
+    cancel_res = asyncio.run(mcp_server.call_tool("goal_runner_control", {"action": "cancel_stale"}))
+    cancel_json = json.loads(cancel_res[0].text)
+    check("goal_runner_control cancel_stale xoá lock stale bằng real path",
+          cancel_json.get("status") == "cancelled_stale_lock" and not stale_lock.exists(),
+          str(cancel_json))
+    for tool_name, payload in ops_calls.items():
+        res = asyncio.run(mcp_server.call_tool(tool_name, payload))
+        data = json.loads(res[0].text)
+        check(f"{tool_name} chạy được", data.get("status") == "completed", str(data))
+finally:
+    if old_project_dir_ops is None:
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+    else:
+        os.environ["CLAUDE_PROJECT_DIR"] = old_project_dir_ops
+patch_empty = asyncio.run(mcp_server.call_tool("patch_safety_check", {"patch": ""}))
+check("patch_safety_check thiếu patch → error", "error" in json.loads(patch_empty[0].text))
 auto_bad_mode = asyncio.run(mcp_server.call_tool("auto_trigger", {"mode": "wild"}))
 check("auto_trigger mode invalid → error", "error" in json.loads(auto_bad_mode[0].text))
 auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {
@@ -536,6 +572,14 @@ fallback_answer = _extractive_codebase_answer(
 check("ask_codebase fallback local có citation usable",
       "Kết luận khả dĩ" in fallback_answer and "`app/api.py:10`" in fallback_answer,
       fallback_answer)
+context_audit = asyncio.run(mcp_server.call_tool("context_auditor", {
+    "question": "frontend xuất Excel gọi API nào",
+    "context": "=== FILE: app/api.py ===\n10\tdef export_excel():\n",
+}))
+context_audit_json = json.loads(context_audit[0].text)
+check("ask_codebase/context audit tự đánh giá context inline",
+      context_audit_json.get("status") == "completed" and context_audit_json.get("bytes", 0) > 0,
+      str(context_audit_json))
 
 import auto_watch
 watch_root = SMOKE_DIR / "watch_root"
@@ -1040,6 +1084,14 @@ except Exception as e:
 
 with open(SMOKE_FILE, "w", encoding="utf-8") as f:
     f.write("x = 1\n")
+try:
+    asyncio.run(server.api_swarm_init(server.SwarmInitRequest(error_log="bad", files=["../secret.py"])))
+    invalid_swarm_blocked = False
+except Exception as exc:
+    invalid_swarm_blocked = getattr(exc, "status_code", None) == 422
+check("Interactive Swarm init chặn target_files ngoài workspace",
+      invalid_swarm_blocked,
+      "expected HTTP 422 for path traversal")
 init_req = server.SwarmInitRequest(error_log="KeyError: 'files'", files=[SMOKE_FILE_REL])
 init_res = asyncio.run(server.api_swarm_init(init_req))
 check("Interactive Swarm init trả về swarm_id và state pending_tester", 

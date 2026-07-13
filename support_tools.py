@@ -43,6 +43,17 @@ from tools.goal import (
 from tools.runner import (
     goal_runner
 )
+from tools.ops import (
+    agent_adapters,
+    ask_codebase_health,
+    benchmark_runner,
+    context_auditor,
+    goal_runner_control,
+    harness_doctor,
+    patch_safety_check,
+    policy_profile,
+    run_ledger,
+)
 from tools.prod import (
     prod_readiness_gate
 )

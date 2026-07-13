@@ -306,6 +306,7 @@ async def goal_runner(
     agent_timeout: float = 900.0,
     dry_run: bool = False,
     final_prod_gate: bool = True,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Run a prompt through the goal/supervisor/check loop without relying on client rules."""
     prompt = (prompt or "").strip()
@@ -326,7 +327,14 @@ async def goal_runner(
     if lock is None:
         return {"status": "blocked_goal_busy", "detail": "Another goal_runner is already active in this workspace."}
     try:
-        return await _goal_runner_locked(prompt, max_iterations, mode, agent_command, agent_timeout, dry_run, final_prod_gate)
+        result = await _goal_runner_locked(prompt, max_iterations, mode, agent_command, agent_timeout, dry_run, final_prod_gate, resume)
+        try:
+            from .ops import append_run_ledger
+
+            append_run_ledger({"tool": "goal_runner", "prompt": prompt[:500], "status": result.get("status"), "events": result.get("events", [])})
+        except Exception:
+            pass
+        return result
     finally:
         _release_runner_lock(lock)
 
@@ -339,9 +347,21 @@ async def _goal_runner_locked(
     agent_timeout: float,
     dry_run: bool,
     final_prod_gate: bool,
+    resume: bool,
 ) -> dict[str, Any]:
     events: list[dict[str, Any]] = []
-    init = await goal_autopilot(mode="init", goal=prompt, context="direct goal_runner")
+    try:
+        from .ops import harness_doctor
+
+        doctor = await harness_doctor()
+        events.append({"step": "doctor", "ready": doctor.get("ready"), "problems": doctor.get("problems", [])})
+    except Exception as exc:
+        events.append({"step": "doctor", "ready": False, "error": str(exc)})
+    state = load_goal_state()
+    if resume and state:
+        init = {"status": "resumed", "goal_id": state.goal_id}
+    else:
+        init = await goal_autopilot(mode="init", goal=prompt, context="direct goal_runner")
     events.append({"step": "init", "status": init.get("status"), "goal_id": init.get("goal_id")})
     if init.get("error"):
         return {"status": "failed", "events": events, "init": init}

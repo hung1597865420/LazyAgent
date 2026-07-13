@@ -12,7 +12,7 @@ from pathlib import Path
 CLAUDE_MARKER = "<!-- agent-harness-managed -->"
 GEMINI_MARKER = "<!-- agent-harness -->"
 HOOK_ID = "agent-harness-panel-reminder"
-RULES_VERSION = "2026-07-13-direct-runner-v1"
+RULES_VERSION = "2026-07-13-ops-layer-v1"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -64,6 +64,7 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 
 - Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `mcp__agent-harness__goal_autopilot(mode="init", goal="<nguyên prompt user>")` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `mcp__agent-harness__goal_runner(prompt="<nguyên prompt>", mode="max")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate`.
+- Khi user hỏi "đã nạp chưa", "harness ổn chưa", context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
 - Sau mọi batch Edit/Write đáng kể, gọi `mcp__agent-harness__auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
 - Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `mcp__agent-harness__prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
@@ -396,6 +397,7 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 
 - Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `goal_autopilot` với `mode="init"` và `goal="<nguyên prompt user>"` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `goal_runner(prompt="<nguyên prompt>", mode="max")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate`.
+- Khi user hỏi "đã nạp chưa", "harness ổn chưa", context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
 - Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
 - Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.

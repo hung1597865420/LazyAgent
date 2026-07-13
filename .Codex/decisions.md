@@ -25,3 +25,11 @@
 ### 2026-07-13 — Direct prompt goal runner
 **Decision:** Add `goal_runner` plus `goal_runner.py` so the harness can receive one prompt directly, initialize goal state, delegate implementation to an agent CLI, run Auto-Pilot checks, ask `goal_supervisor`, and finalize through `prod_readiness_gate`.
 **Alternatives bỏ:** Relying only on Claude/Gemini/Codex rules to call `goal_autopilot(init)`; this leaves prompt startup dependent on the client session.
+
+### 2026-07-13 — Harness ops layer
+**Decision:** Add ops tools for context audit, ask_codebase preflight, run ledger, policy profiles, agent adapter inventory, benchmark dry-run, isolated patch safety, and harness doctor/status.
+**Alternatives bỏ:** Keeping these checks as README-only manual steps; user wants the harness to own these lifecycle areas automatically.
+
+### 2026-07-13 — Runtime-auto context and swarm hardening
+**Decision:** Hard-wire lightweight context health into `ask_codebase`, doctor/ledger into `goal_runner`, redact ops paths before persistence/output, and validate swarm `target_files` with CAS-protected cancel.
+**Alternatives bỏ:** Depending only on client-side rules to remember ops tools; allowing swarm sessions to proceed with empty or unsafe file scopes.
