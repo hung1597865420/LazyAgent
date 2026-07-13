@@ -5,6 +5,13 @@ from .core import run_in_sandbox
 from .auto import auto_trigger
 from .goal import goal_autopilot, goal_supervisor
 from .prod import prod_readiness_gate
+from .gap_tools import (
+    release_orchestrator,
+    provenance_checker,
+    auth_matrix_auditor,
+    harness_trace_viewer,
+    incremental_refactor_guard,
+)
 from .review import panel_review, consult, alt_implementation
 from .fix import suggest_fix, security_autofix
 from .wiki import wiki_ingest, wiki_query, wiki_lint, doc_sync
@@ -48,6 +55,11 @@ __all__ = [
     "goal_autopilot",
     "goal_supervisor",
     "prod_readiness_gate",
+    "release_orchestrator",
+    "provenance_checker",
+    "auth_matrix_auditor",
+    "harness_trace_viewer",
+    "incremental_refactor_guard",
     "panel_review",
     "consult",
     "alt_implementation",

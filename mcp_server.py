@@ -169,6 +169,54 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="release_orchestrator",
+            description="Release coordinator: checks git/changelog/SBOM evidence and returns ready/manual_steps/blocked before release.",
+            inputSchema={"type": "object", "properties": {
+                "changed_files": _FILES_SCHEMA,
+                "diff": {"type": "string"},
+                "context": {"type": "string"},
+                "mode": {"type": "string", "enum": ["safe", "max"]},
+            }},
+        ),
+        types.Tool(
+            name="provenance_checker",
+            description="Static build provenance checker: commit, remote, dependency evidence, artifact hashes, suspicious build scripts.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "context": {"type": "string"},
+                "mode": {"type": "string", "enum": ["safe", "max"]},
+            }},
+        ),
+        types.Tool(
+            name="auth_matrix_auditor",
+            description="Build endpoint/auth matrix and flag missing auth or object-level ownership checks.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "diff": {"type": "string"},
+                "context": {"type": "string"},
+                "mode": {"type": "string", "enum": ["safe", "max"]},
+            }},
+        ),
+        types.Tool(
+            name="harness_trace_viewer",
+            description="View recent harness traces/logs from FinOps DB and .harness logs with secret redaction.",
+            inputSchema={"type": "object", "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                "include_logs": {"type": "boolean"},
+                "mode": {"type": "string", "enum": ["safe", "max"]},
+            }},
+        ),
+        types.Tool(
+            name="incremental_refactor_guard",
+            description="Detect public symbol removals/signature changes and syntax errors in refactor diffs.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "diff": {"type": "string"},
+                "since_commit": {"type": "string"},
+                "mode": {"type": "string", "enum": ["safe", "max"]},
+            }},
+        ),
+        types.Tool(
             name="goal_autopilot",
             description=(
                 "Prompt-only goal autopilot: init/check/complete/block/status. "
@@ -283,9 +331,9 @@ async def list_tools() -> list[types.Tool]:
                 "type": "object",
                 "properties": {
                     "instruction": {"type": "string", "description": "Việc cần làm"},
+                    "task": {"type": "string", "description": "Alias tương thích cho instruction"},
                     "context":     {"type": "string", "description": "Input/context nếu cần"},
                 },
-                "required": ["instruction"],
             },
         ),
         types.Tool(
@@ -809,6 +857,8 @@ def _nonempty_str_list(value) -> bool:
 
 
 _wiki_ingest_targets: set[str] = set()
+_wiki_ingest_lock = threading.Lock()
+_lazy_settings_lock = threading.Lock()
 _auto_watch_roots: set[str] = set()
 _auto_watch_lock = threading.Lock()
 
@@ -817,14 +867,17 @@ def _ensure_lazy_settings_merge() -> None:
     global _LAZY_SETTINGS_MERGE_DONE
     if _LAZY_SETTINGS_MERGE_DONE:
         return
-    try:
-        import merge_settings
-        if merge_settings.lazy_merge_if_needed():
-            _log.info("Auto-merged Agent Harness rules version %s", merge_settings.RULES_VERSION)
-    except Exception as e:
-        _log.warning("Auto-merge settings skipped (non-fatal): %s", e)
-    finally:
-        _LAZY_SETTINGS_MERGE_DONE = True
+    with _lazy_settings_lock:
+        if _LAZY_SETTINGS_MERGE_DONE:
+            return
+        try:
+            import merge_settings
+            if merge_settings.lazy_merge_if_needed():
+                _log.info("Auto-merged Agent Harness rules version %s", merge_settings.RULES_VERSION)
+        except Exception as e:
+            _log.warning("Auto-merge settings skipped (non-fatal): %s", e)
+        finally:
+            _LAZY_SETTINGS_MERGE_DONE = True
 
 
 def _active_workspace() -> str:
@@ -975,9 +1028,10 @@ def _kick_auto_wiki_ingest() -> None:
     workspace = _active_workspace()
     for target in targets:
         target_key = f"{target}:{workspace if target == 'local' else 'global'}"
-        if target_key in _wiki_ingest_targets:
-            continue
-        _wiki_ingest_targets.add(target_key)
+        with _wiki_ingest_lock:
+            if target_key in _wiki_ingest_targets:
+                continue
+            _wiki_ingest_targets.add(target_key)
 
         async def _run(target_name: str = target, key: str = target_key) -> None:
             try:
@@ -986,7 +1040,8 @@ def _kick_auto_wiki_ingest() -> None:
             except Exception as e:
                 _log.warning("Auto wiki ingest failed for %s: %s", target_name, e)
             finally:
-                _wiki_ingest_targets.discard(key)
+                with _wiki_ingest_lock:
+                    _wiki_ingest_targets.discard(key)
 
         task = asyncio.create_task(_run(), name=f"wiki-ingest-{target}")
         _background_tasks.add(task)
@@ -1020,8 +1075,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     except asyncio.CancelledError:
         # Yield once then check — catches tasks that finished microseconds before cancel
         await asyncio.sleep(0)
-        if task.done() and not task.cancelled() and not task.exception():
-            return task.result()
+        if task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc is None:
+                return task.result()
         # Try brief harvest window for near-complete tasks
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
@@ -1103,6 +1160,63 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 task=args.get("task"),
             ))
 
+        if name == "release_orchestrator":
+            mode = str(args.get("mode", "safe")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            return _json_response(await st.release_orchestrator(
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+                context=args.get("context"),
+                mode=mode,
+            ))
+
+        if name == "provenance_checker":
+            mode = str(args.get("mode", "safe")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            return _json_response(await st.provenance_checker(
+                files=args.get("files"),
+                context=args.get("context"),
+                mode=mode,
+            ))
+
+        if name == "auth_matrix_auditor":
+            mode = str(args.get("mode", "safe")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            return _json_response(await st.auth_matrix_auditor(
+                files=args.get("files"),
+                diff=args.get("diff"),
+                context=args.get("context"),
+                mode=mode,
+            ))
+
+        if name == "harness_trace_viewer":
+            mode = str(args.get("mode", "safe")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            limit = args.get("limit", 20)
+            try:
+                limit = max(1, min(200, int(limit)))
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "limit must be an integer"})
+            include_logs, include_logs_error = _parse_bool_arg(args, "include_logs")
+            if include_logs_error:
+                return _json_response({"error": "invalid_argument", "detail": include_logs_error})
+            return _json_response(await st.harness_trace_viewer(limit=limit, include_logs=include_logs, mode=mode))
+
+        if name == "incremental_refactor_guard":
+            mode = str(args.get("mode", "safe")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            return _json_response(await st.incremental_refactor_guard(
+                files=args.get("files"),
+                diff=args.get("diff"),
+                since_commit=args.get("since_commit", ""),
+                mode=mode,
+            ))
+
         if name == "goal_supervisor":
             return _json_response(await st.goal_supervisor(
                 changed_files=args.get("changed_files"),
@@ -1148,8 +1262,11 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
             ))
 
         if name == "quick_task":
+            instruction = args.get("instruction") or args.get("task")
+            if not isinstance(instruction, str) or not instruction.strip():
+                return _json_response({"error": "invalid_argument", "detail": "quick_task requires instruction or task"})
             return _json_response(await st.quick_task(
-                instruction=args["instruction"], context=args.get("context"),
+                instruction=instruction, context=args.get("context"),
             ))
 
         if name == "run_single_agent":

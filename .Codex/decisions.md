@@ -17,3 +17,7 @@
 ### 2026-07-13 — Lazy global rules merge
 **Decision:** MCP server calls `merge_settings.lazy_merge_if_needed()` on `list_tools` and first tool call, guarded by `RULES_VERSION` stamp at `~/.claude/.harness_rules_version`, so Claude/Gemini/Codex rules update automatically after harness upgrades.
 **Alternatives bỏ:** Requiring users to run `python merge_settings.py` manually after every tool/rule change; unconditional startup writes that slow or dirty every MCP launch.
+
+### 2026-07-13 — Autonomous gap tools with Azure enrichment
+**Decision:** Add `release_orchestrator`, `provenance_checker`, `auth_matrix_auditor`, `harness_trace_viewer`, and `incremental_refactor_guard` as static-first MCP tools that call Azure enrichment in `mode=max` or when `HARNESS_STATIC_LLM=1`.
+**Alternatives bỏ:** Pure-offline gap tools; user explicitly wants harness to exploit Azure as much as possible while keeping smoke/fallback deterministic.

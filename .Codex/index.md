@@ -6,6 +6,7 @@
 - tools/ — Modular tool implementations for review, security, testing, devops, wiki, analysis, quality.
 - tools/goal.py — Prompt-only goal autopilot state machine and alignment check.
 - tools/prod.py — Production readiness gate that aggregates final checks into a hard deploy verdict.
+- tools/gap_tools.py — Static-first production gap tools with Azure enrichment in max mode.
 - install.ps1 — Windows installer: dependencies, MCP registration, global Claude config, smoke test.
 - merge_settings.py — Global Claude/Gemini/Codex instruction merge with RULES_VERSION stamp.
 - smoke_test.py — Offline smoke checks for MCP registry and support tools.
@@ -15,7 +16,7 @@
 ## Architecture
 Claude/Codex/Gemini MCP client -> mcp_server.py -> tools/* + agents.py -> Azure AI Foundry / static analyzers.
 Goal flow: prompt -> goal_autopilot(init) -> .harness_goal_state.json -> auto_trigger goal_alignment after edits.
-Prod flow: release/prod prompt -> prod_readiness_gate -> final auto/security/review/release checks -> hard verdict.
+Prod flow: release/prod prompt -> prod_readiness_gate -> final auto/security/review/release/provenance checks -> hard verdict.
 
 ## Constraints / Gotchas
 - `.env` contains secrets and must not be committed.
@@ -24,3 +25,4 @@ Prod flow: release/prod prompt -> prod_readiness_gate -> final auto/security/rev
 - `.harness_goal_state.json` is local runtime state for one active workspace goal.
 - Restart MCP clients after adding tools; cached sessions will not see new schemas.
 - MCP server lazy-merges global rules on `list_tools`/first tool call, but existing client sessions may still need restart.
+- Gap tools keep `mode=safe` offline for smoke, but `mode=max` uses Azure enrichment by default.

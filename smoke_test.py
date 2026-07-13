@@ -186,10 +186,12 @@ check("SYSTEM_PROMPTS đủ 12 role", set(SYSTEM_PROMPTS) == set(AgentRole))
 check("ROLE_TO_MODEL đủ 12 role", set(ROLE_TO_MODEL) == set(AgentRole))
 check("ROLE_TEMPERATURE đủ 12 role", set(ROLE_TEMPERATURE) == set(AgentRole))
 
-# 4. MCP server: list_tools trả đủ 61 tool, schema hợp lệ
+# 4. MCP server: list_tools trả đủ 66 tool, schema hợp lệ
 tools = asyncio.run(mcp_server.list_tools())
 tool_names = {t.name for t in tools}
-expected = {"auto_trigger", "prod_readiness_gate", "goal_autopilot", "goal_supervisor", "panel_review", "consult", "alt_implementation", "suggest_fix",
+expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "provenance_checker",
+            "auth_matrix_auditor", "harness_trace_viewer", "incremental_refactor_guard",
+            "goal_autopilot", "goal_supervisor", "panel_review", "consult", "alt_implementation", "suggest_fix",
             "ask_codebase", "quick_task", "run_single_agent", "list_agents",
             "wiki_ingest", "wiki_query", "wiki_lint", "security_autofix",
             "auto_tester", "visual_reviewer", "benchmarker", "dependency_upgrader",
@@ -205,7 +207,7 @@ expected = {"auto_trigger", "prod_readiness_gate", "goal_autopilot", "goal_super
             "breaking_change_detector", "flaky_test_detector", "duplicate_code_scanner",
             "container_linter", "dependency_graph_visualizer", "ci_pipeline_validator",
             "mutation_tester", "data_flow_taint_analyzer", "performance_regression_detector"}
-check("MCP đăng ký đủ 61 tool", tool_names == expected,
+check("MCP đăng ký đủ 66 tool", tool_names == expected,
       f"thiếu {expected - tool_names}, thừa {tool_names - expected}")
 for t in tools:
     json.dumps(t.inputSchema)  # schema phải serialize được
@@ -242,6 +244,66 @@ prod_gate_ref = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {
 check("prod_readiness_gate since_commit non-string không crash",
       json.loads(prod_gate_ref[0].text).get("status") == "completed",
       prod_gate_ref[0].text)
+release_res = asyncio.run(mcp_server.call_tool("release_orchestrator", {
+    "changed_files": ["README.md"],
+    "mode": "safe",
+}))
+release_json = json.loads(release_res[0].text)
+check("release_orchestrator safe chạy được",
+      release_json.get("status") == "completed" and release_json.get("verdict") in {"ready", "manual_steps", "blocked"},
+      str(release_json))
+prov_res = asyncio.run(mcp_server.call_tool("provenance_checker", {
+    "files": ["README.md"],
+    "mode": "safe",
+}))
+prov_json = json.loads(prov_res[0].text)
+check("provenance_checker safe chạy được",
+      prov_json.get("status") == "completed" and "provenance_score" in prov_json,
+      str(prov_json))
+AUTH_ROUTE = SMOKE_DIR / "auth_route.py"
+AUTH_ROUTE.write_text('@router.get("/items/{id}")\ndef get_item(id, current_user=Depends(get_user)):\n    return {"id": id, "user_id": current_user.id}\n', encoding="utf-8")
+auth_res = asyncio.run(mcp_server.call_tool("auth_matrix_auditor", {
+    "files": [AUTH_ROUTE.as_posix()],
+    "mode": "safe",
+}))
+auth_json = json.loads(auth_res[0].text)
+check("auth_matrix_auditor safe chạy được",
+      auth_json.get("status") == "completed" and auth_json.get("endpoints_count", 0) >= 1,
+      str(auth_json))
+trace_res = asyncio.run(mcp_server.call_tool("harness_trace_viewer", {
+    "limit": 5,
+    "mode": "safe",
+}))
+trace_json = json.loads(trace_res[0].text)
+check("harness_trace_viewer safe chạy được",
+      trace_json.get("status") == "completed" and "trace_count" in trace_json,
+      str(trace_json))
+refactor_res = asyncio.run(mcp_server.call_tool("incremental_refactor_guard", {
+    "diff": "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n-def public_api(a):\n+def public_api(a, b):\n",
+    "mode": "safe",
+}))
+refactor_json = json.loads(refactor_res[0].text)
+check("incremental_refactor_guard bắt signature change",
+      refactor_json.get("status") == "completed" and refactor_json.get("guard_verdict") == "breaking",
+      str(refactor_json))
+gap_bad_mode = asyncio.run(mcp_server.call_tool("release_orchestrator", {"mode": "wild"}))
+check("release_orchestrator mode invalid → error", "error" in json.loads(gap_bad_mode[0].text))
+quick_task_alias = asyncio.run(mcp_server.call_tool("quick_task", {"task": "Say OK"}))
+check("quick_task nhận alias task",
+      bool(json.loads(quick_task_alias[0].text).get("output")),
+      quick_task_alias[0].text)
+from tools.gap_tools import _diff_symbol_changes, harness_trace_viewer as _harness_trace_viewer
+multi_file_changes = _diff_symbol_changes(
+    "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n-def public_a(x):\n+def public_a(x, y):\n"
+    "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n-def public_b(x):\n+def public_b(x, y):\n"
+)
+check("incremental_refactor_guard diff multi-file giữ đúng file",
+      {c.get("file") for c in multi_file_changes} == {"a.py", "b.py"},
+      str(multi_file_changes))
+trace_bad_limit = asyncio.run(_harness_trace_viewer(limit="bad", mode="safe"))
+check("harness_trace_viewer direct bad limit không crash",
+      trace_bad_limit.get("status") == "completed",
+      str(trace_bad_limit))
 from tools.prod import _hard_flags
 _blockers, _needs_user, _warnings = _hard_flags([{
     "tool": "panel_review",

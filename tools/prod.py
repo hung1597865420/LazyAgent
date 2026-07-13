@@ -157,6 +157,7 @@ async def prod_readiness_gate(
     )
     from .review import panel_review
     from .security import config_security_audit
+    from .gap_tools import provenance_checker, release_orchestrator
 
     mode = (mode or "safe").strip().lower()
     if mode not in {"safe", "max"}:
@@ -197,6 +198,8 @@ async def prod_readiness_gate(
             since_commit=since_commit,
         ))
     if mode == "max":
+        add("release_orchestrator", release_orchestrator(changed_files=files, diff=diff, context=context or task, mode=mode))
+        add("provenance_checker", provenance_checker(files=files, context=context or task, mode=mode))
         add("sbom_generator", sbom_generator())
         add("breaking_change_detector", breaking_change_detector(base_ref=since_commit or ""))
         if code_files or has_api:

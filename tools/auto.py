@@ -113,6 +113,13 @@ async def auto_trigger(
     from .devops import devops_pipeline
     from .quality import duplicate_code_scanner
     from .security import config_security_audit
+    from .gap_tools import (
+        auth_matrix_auditor,
+        harness_trace_viewer,
+        incremental_refactor_guard,
+        provenance_checker,
+        release_orchestrator,
+    )
 
     files = _norm_files(changed_files)
     mode = (mode or os.getenv("HARNESS_AUTO_MODE", "max")).strip().lower()
@@ -139,6 +146,8 @@ async def auto_trigger(
     has_db = _has_any(text, {"sql", "migration", "alembic", "schema", "transaction", "query", "orm"})
     has_refactor = _has_any(text, {"refactor", "rename", "delete", "remove", "dead code", "duplicate"})
     has_api = _has_any(text, {"route", "endpoint", "api", "request", "response", "pydantic", "openapi"})
+    has_release = _has_any(text, {"release", "deploy", "production", "prod-ready", "tag", "changelog"})
+    has_trace = _has_any(text, {"trace", "stack trace", "timeout", "rate-limit", "latency", "slow", "500", "exception"})
     risky = has_security or has_db or has_api or has_refactor or len(code_files) > 1
 
     selected: list[str] = []
@@ -165,6 +174,15 @@ async def auto_trigger(
     if has_refactor or (mode == "max" and len(code_files) >= 2):
         add("dead_code_scanner", dead_code_scanner())
         add("duplicate_code_scanner", duplicate_code_scanner())
+        add("incremental_refactor_guard", incremental_refactor_guard(files=code_files, diff=diff, mode=mode))
+    if (mode == "max" and has_security and has_api) or _has_any(text, {"auth matrix", "permission matrix", "ownership check"}):
+        add("auth_matrix_auditor", auth_matrix_auditor(files=code_files or files, diff=diff, context=task_with_goal, mode=mode))
+    if has_release or (mode == "max" and stage in {"final", "pre_complete"}):
+        add("release_orchestrator", release_orchestrator(changed_files=files, diff=diff, context=task_with_goal, mode=mode))
+    if has_release and mode == "max":
+        add("provenance_checker", provenance_checker(files=files, context=task_with_goal, mode=mode))
+    if has_trace:
+        add("harness_trace_viewer", harness_trace_viewer(limit=20, mode=mode))
     if panel_files and (mode == "max" or stage in {"final", "pre_complete"} or risky):
         focus_bits = []
         if has_security:

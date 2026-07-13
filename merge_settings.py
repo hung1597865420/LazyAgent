@@ -12,7 +12,7 @@ from pathlib import Path
 CLAUDE_MARKER = "<!-- agent-harness-managed -->"
 GEMINI_MARKER = "<!-- agent-harness -->"
 HOOK_ID = "agent-harness-panel-reminder"
-RULES_VERSION = "2026-07-13-auto-merge-v1"
+RULES_VERSION = "2026-07-13-gap-tools-v1"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -106,6 +106,11 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 - `api_contract_tester` — khi thêm/sửa API endpoint
 - `complexity_analyzer` — sau khi viết logic mới có >2 nhánh hoặc sau refactor lớn
 - `changelog_generator` — khi user đề cập release, version bump, chuẩn bị deploy
+- `release_orchestrator` — khi release/deploy/prod-ready; điều phối checklist release sau prod gate
+- `provenance_checker` — trước release/deploy; kiểm commit/remote/hash/SBOM/lockfile/build provenance
+- `auth_matrix_auditor` — khi sửa auth/permission/API endpoint có ownership/object-level access
+- `incremental_refactor_guard` — sau refactor lớn, rename/delete public symbol, hoặc multi-file refactor
+- `harness_trace_viewer` — khi harness timeout/rate-limit/trace/log bất thường hoặc cần xem bottleneck
 
 **Tier 3:**
 - `flaky_test_detector` — khi CI thỉnh thoảng fail không rõ lý do
@@ -445,6 +450,11 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 - `polyglot_reviewer` — khi codebase có >1 ngôn ngữ và files vừa sửa span nhiều ngôn ngữ
 - `a11y_auditor` — khi có thay đổi HTML/JSX/CSS/template
 - `dependency_graph_visualizer` — khi gặp ImportError, circular import, hoặc thêm module mới
+- `release_orchestrator` — khi release/deploy/prod-ready; điều phối checklist release sau prod gate
+- `provenance_checker` — trước release/deploy; kiểm commit/remote/hash/SBOM/lockfile/build provenance
+- `auth_matrix_auditor` — khi sửa auth/permission/API endpoint có ownership/object-level access
+- `incremental_refactor_guard` — sau refactor lớn, rename/delete public symbol, hoặc multi-file refactor
+- `harness_trace_viewer` — khi harness timeout/rate-limit/trace/log bất thường hoặc cần xem bottleneck
 
 **Tier 3:**
 - `flaky_test_detector` — khi CI thỉnh thoảng fail không rõ lý do

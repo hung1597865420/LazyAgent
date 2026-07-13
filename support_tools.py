@@ -43,6 +43,13 @@ from tools.goal import (
 from tools.prod import (
     prod_readiness_gate
 )
+from tools.gap_tools import (
+    release_orchestrator,
+    provenance_checker,
+    auth_matrix_auditor,
+    harness_trace_viewer,
+    incremental_refactor_guard,
+)
 from tools.review import (
     _SEVERITY_ORDER,
     _FAST_CTX_BYTES,
