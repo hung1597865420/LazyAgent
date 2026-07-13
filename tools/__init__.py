@@ -3,6 +3,8 @@ tools package — Re-exporting all tools.
 """
 from .core import run_in_sandbox
 from .auto import auto_trigger
+from .goal import goal_autopilot, goal_supervisor
+from .prod import prod_readiness_gate
 from .review import panel_review, consult, alt_implementation
 from .fix import suggest_fix, security_autofix
 from .wiki import wiki_ingest, wiki_query, wiki_lint, doc_sync
@@ -43,6 +45,9 @@ from .quality import (
 __all__ = [
     "run_in_sandbox",
     "auto_trigger",
+    "goal_autopilot",
+    "goal_supervisor",
+    "prod_readiness_gate",
     "panel_review",
     "consult",
     "alt_implementation",

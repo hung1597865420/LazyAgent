@@ -9,16 +9,16 @@ import re
 import json
 import subprocess
 import sys
-import shutil
 import uuid
 from pathlib import Path
 
 from agents import AgentRole
-from config import WORKSPACE_ROOT
 from .core import (
     _is_git_repo,
+    _scoped_dirty_status,
     _run_tests,
-    _run_tests_in_dir
+    _run_tests_in_dir,
+    _get_active_workspace,
 )
 
 _log = logging.getLogger("harness.devops")
@@ -41,6 +41,13 @@ def _stream_text(value) -> str:
     return str(value)
 
 
+def _rel_to_repo(repo_path: Path, path: str) -> str:
+    try:
+        return Path(path).resolve().relative_to(repo_path.resolve()).as_posix()
+    except ValueError:
+        return Path(path).name
+
+
 def _optional_llm_enabled() -> bool:
     return os.getenv("HARNESS_STATIC_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -48,7 +55,8 @@ def _optional_llm_enabled() -> bool:
 async def dependency_upgrader(dry_run: bool = True) -> dict:
     """Quét và đề xuất nâng cấp các package lỗi thời trong requirements.txt."""
     warnings = []
-    req_file = os.path.join(WORKSPACE_ROOT, "requirements.txt")
+    workspace = _get_active_workspace()
+    req_file = os.path.join(workspace, "requirements.txt")
     if not os.path.isfile(req_file):
         return {"error": "Không tìm thấy requirements.txt ở thư mục gốc workspace", "warnings": warnings}
         
@@ -75,17 +83,20 @@ async def dependency_upgrader(dry_run: bool = True) -> dict:
         
     parsed_reqs = {}
     for line in req_content.splitlines():
+        raw_line = line
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        m = re.match(r"^([a-zA-Z0-9_.-]+)\s*([<>=!~]+)\s*([^;#\s]+)", line)
+        m = re.match(r"^([a-zA-Z0-9_.-]+)(?:\[[^\]]+\])?\s*([<>=!~]+)\s*([^;#\s]+)", line)
         if m:
             pkg = m.group(1).lower()
             op = m.group(2)
             ver = m.group(3)
             parsed_reqs[pkg] = (op, ver)
         else:
-            parsed_reqs[line.lower()] = ("", "")
+            m_plain = re.match(r"^\s*([a-zA-Z0-9_.-]+)(?:\[[^\]]+\])?(?:\s*(?:[;#].*)?)$", raw_line)
+            if m_plain:
+                parsed_reqs[m_plain.group(1).lower()] = ("", "")
             
     upgrades = []
     for pkg_info in outdated_packages:
@@ -110,11 +121,18 @@ async def dependency_upgrader(dry_run: bool = True) -> dict:
 
     if dry_run:
         # LLM đánh giá breaking change risk cho từng package cần upgrade
+        preview_limit = 50
+        preview_upgrades = upgrades[:preview_limit]
+        omitted = max(0, len(upgrades) - len(preview_upgrades))
         upgrade_ctx = "\n".join(
             f"- {u['package']}: {u['current']} → {u['latest']}"
-            for u in upgrades
+            for u in preview_upgrades
         )
-        llm_risk = {"summary": "Static dry-run only. Set HARNESS_STATIC_LLM=1 to add LLM risk assessment.", "packages": upgrade_ctx.splitlines()}
+        llm_risk = {
+            "summary": "Static dry-run only. Set HARNESS_STATIC_LLM=1 to add LLM risk assessment.",
+            "packages": upgrade_ctx.splitlines(),
+            "omitted_packages": omitted,
+        }
         if _optional_llm_enabled():
             from .core import _llm_analyze, _parse_json_object
             risk_prompt = (
@@ -144,20 +162,21 @@ async def dependency_upgrader(dry_run: bool = True) -> dict:
         if not line_strip or line_strip.startswith("#"):
             new_lines.append(line)
             continue
-        m = re.match(r"^([a-zA-Z0-9_.-]+)\s*([<>=!~]+)\s*([^;#\s]+)", line_strip)
+        m = re.match(r"^(\s*([a-zA-Z0-9_.-]+)(?:\[[^\]]+\])?)\s*([<>=!~]+)\s*([^;#\s]+)(.*)$", line)
         if m:
-            pkg = m.group(1)
+            pkg = m.group(2)
             pkg_lower = pkg.lower()
             matching_upgrade = next((u for u in upgrades if u["package"].lower() == pkg_lower), None)
             if matching_upgrade:
-                new_lines.append(f"{pkg}=={matching_upgrade['latest']}")
+                new_lines.append(f"{m.group(1)}=={matching_upgrade['latest']}{m.group(5)}")
             else:
                 new_lines.append(line)
         else:
-            pkg_lower = line_strip.lower()
+            m_plain = re.match(r"^(\s*([a-zA-Z0-9_.-]+)(?:\[[^\]]+\])?)(\s*(?:[;#].*)?)$", line)
+            pkg_lower = m_plain.group(2).lower() if m_plain else line_strip.lower()
             matching_upgrade = next((u for u in upgrades if u["package"].lower() == pkg_lower), None)
-            if matching_upgrade:
-                new_lines.append(f"{line_strip}=={matching_upgrade['latest']}")
+            if matching_upgrade and m_plain:
+                new_lines.append(f"{m_plain.group(1)}=={matching_upgrade['latest']}{m_plain.group(3)}")
             else:
                 new_lines.append(line)
                  
@@ -199,25 +218,25 @@ async def dependency_upgrader(dry_run: bool = True) -> dict:
             except Exception as e:
                 return {"error": f"Lỗi ghi hoặc cài đặt package: {e}", "warnings": warnings}
             
-    repo_path = Path(WORKSPACE_ROOT).resolve()
+    repo_path = Path(workspace).resolve()
 
     async with _dep_upgrade_lock:
         return await asyncio.to_thread(_dependency_upgrader_apply, repo_path, req_file, req_content, new_req_content, upgrades, warnings)
 
 
 def _dependency_upgrader_apply(repo_path, req_file, req_content, new_req_content, upgrades, warnings):
-    try:
-        r_dirty = _run_text(["git", "status", "--porcelain"], cwd=str(repo_path), timeout=15)
-    except subprocess.TimeoutExpired:
-        return {"success": False, "message": "Timeout khi kiểm tra git status (phase: dirty-check)", "error_code": "GIT_STATUS_TIMEOUT", "warnings": warnings}
-    if r_dirty.returncode != 0:
-        return {"success": False, "message": f"Không thể kiểm tra trạng thái git: {r_dirty.stderr.strip()}", "warnings": warnings}
-    if r_dirty.stdout.strip():
-        return {"success": False, "message": "Workspace chính đang có thay đổi chưa commit — không apply từ worktree", "warnings": warnings}
+    req_rel = _rel_to_repo(repo_path, req_file)
+    dirty = _scoped_dirty_status(repo_path, [req_rel])
+    if dirty["error"]:
+        return {"success": False, "message": f"Không thể kiểm tra trạng thái git: {dirty['error']}", "warnings": warnings}
+    if dirty["scoped_conflicts"]:
+        return {"success": False, "message": "requirements.txt đang có thay đổi chưa commit — không apply từ worktree", "warnings": warnings}
+    warnings.extend(dirty["warnings"])
 
     uid = uuid.uuid4().hex[:8]
     branch = f"orca-dep-{uid}"
     wt_path = repo_path / f".harness_worktree_{uid}"
+    created_branch = False
 
     try:
         # Atomic: tạo branch và worktree trong một lệnh, tránh branch rác khi fail
@@ -227,6 +246,7 @@ def _dependency_upgrader_apply(repo_path, req_file, req_content, new_req_content
         )
         if r_wt.returncode != 0:
             return {"success": False, "message": f"Không thể tạo git worktree: {r_wt.stderr.strip()}", "error_code": "GIT_WORKTREE_FAIL", "warnings": warnings}
+        created_branch = True
 
         wt_req_file = wt_path / "requirements.txt"
         with open(wt_req_file, "w", encoding="utf-8") as f:
@@ -238,7 +258,7 @@ def _dependency_upgrader_apply(repo_path, req_file, req_content, new_req_content
             timeout=60,
         )
         if r_venv.returncode != 0:
-            return {"success": False, "message": f"Không thể tạo venv cô lập: {r_venv.stderr[:400]}", "error_code": "VENV_CREATE_FAIL", "warnings": warnings}
+            return {"success": False, "message": f"Không thể tạo venv cô lập: {_stream_text(r_venv.stderr)[:400]}", "error_code": "VENV_CREATE_FAIL", "warnings": warnings}
         venv_py = str(venv_dir / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python"))
 
         r_pip = _run_text(
@@ -246,7 +266,7 @@ def _dependency_upgrader_apply(repo_path, req_file, req_content, new_req_content
             timeout=300,
         )
         if r_pip.returncode != 0:
-            return {"success": False, "message": f"Cài dependency trong venv worktree thất bại: {r_pip.stderr[:500]}", "error_code": "PIP_INSTALL_FAIL", "warnings": warnings}
+            return {"success": False, "message": f"Cài dependency trong venv worktree thất bại: {_stream_text(r_pip.stderr)[:500]}", "error_code": "PIP_INSTALL_FAIL", "warnings": warnings}
         test_ok, test_log = _run_tests_in_dir(str(wt_path), python_bin=venv_py)
         
         if not test_ok:
@@ -258,11 +278,12 @@ def _dependency_upgrader_apply(repo_path, req_file, req_content, new_req_content
                 "warnings": warnings,
             }
             
-        r_dirty2 = _run_text(["git", "status", "--porcelain"], cwd=str(repo_path), timeout=15)
-        if r_dirty2.returncode != 0:
-            return {"success": False, "message": f"Không thể kiểm tra trạng thái git trước apply: {r_dirty2.stderr.strip()}", "warnings": warnings}
-        if r_dirty2.stdout.strip():
-            return {"success": False, "message": "Workspace chính có thay đổi mới trong lúc kiểm tra — không apply để tránh conflict", "warnings": warnings}
+        dirty2 = _scoped_dirty_status(repo_path, [req_rel])
+        if dirty2["error"]:
+            return {"success": False, "message": f"Không thể kiểm tra trạng thái git trước apply: {dirty2['error']}", "warnings": warnings}
+        if dirty2["scoped_conflicts"]:
+            return {"success": False, "message": "requirements.txt có thay đổi mới trong lúc kiểm tra — không apply để tránh conflict", "warnings": warnings}
+        warnings.extend(w for w in dirty2["warnings"] if w not in warnings)
 
         try:
             current_req = Path(req_file).read_text(encoding="utf-8")
@@ -275,37 +296,6 @@ def _dependency_upgrader_apply(repo_path, req_file, req_content, new_req_content
             f.write(new_req_content)
         warnings.append("requirements.txt đã cập nhật. Chạy `pip install -r requirements.txt` thủ công để đồng bộ môi trường.")
 
-        r_status = subprocess.run(["git", "status", "--porcelain", "-z"], cwd=str(wt_path), capture_output=True, timeout=15)
-        if r_status.returncode == 0:
-            raw = r_status.stdout.decode("utf-8", errors="surrogateescape")
-            tokens = raw.split("\x00")
-            safe_root = repo_path.resolve()
-            i = 0
-            while i < len(tokens):
-                entry = tokens[i]
-                i += 1
-                if not entry or len(entry) < 4:
-                    continue
-                status_code = entry[:2]
-                rel_file = entry[3:]
-                # Rename/copy: next token is the old path (porcelain v1 -z format)
-                if status_code[0] in ("R", "C"):
-                    # skip old path token
-                    if i < len(tokens):
-                        i += 1
-                rel = Path(rel_file)
-                if rel.is_absolute() or ".." in rel.parts:
-                    continue
-                dest_file = (safe_root / rel).resolve()
-                if safe_root not in dest_file.parents and dest_file != safe_root:
-                    continue
-                if dest_file.is_symlink():
-                    continue
-                src_file = wt_path / rel_file
-                if src_file.exists() and not src_file.is_symlink() and rel_file != "requirements.txt":
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_file, dest_file)
-                    
         return {
             "success": True,
             "message": "Nâng cấp thư viện thành công và vượt qua tất cả kiểm thử!",
@@ -323,10 +313,11 @@ def _dependency_upgrader_apply(repo_path, req_file, req_content, new_req_content
                 subprocess.run(["git", "worktree", "remove", "--force", str(wt_path)], cwd=str(repo_path), capture_output=True, timeout=15)
         except Exception:
             pass
-        try:
-            subprocess.run(["git", "branch", "-D", branch], cwd=str(repo_path), capture_output=True, timeout=15)
-        except Exception:
-            pass
+        if created_branch:
+            try:
+                subprocess.run(["git", "branch", "-D", branch], cwd=str(repo_path), capture_output=True, timeout=15)
+            except Exception:
+                pass
 
 
 async def devops_pipeline() -> dict:
@@ -342,15 +333,16 @@ async def devops_pipeline() -> dict:
         "__pycache__", "llmwiki", "node_modules",
     }
     py_files = []
-    for r_dir, dir_names, files_in_dir in os.walk(WORKSPACE_ROOT):
+    workspace = _get_active_workspace()
+    for r_dir, dir_names, files_in_dir in os.walk(workspace):
         dir_names[:] = [d for d in dir_names if d not in _SKIP_DEVOPS and not d.startswith(".harness_worktree")]
-        rel_dir = os.path.relpath(r_dir, WORKSPACE_ROOT)
+        rel_dir = os.path.relpath(r_dir, workspace)
         dir_parts = set(Path(rel_dir).parts)
         if dir_parts & _SKIP_DEVOPS:
             continue
         for f in files_in_dir:
             if f.endswith(".py"):
-                py_files.append(os.path.relpath(os.path.join(r_dir, f), WORKSPACE_ROOT))
+                py_files.append(os.path.relpath(os.path.join(r_dir, f), workspace))
                 
     if not py_files:
         return {
@@ -363,7 +355,7 @@ async def devops_pipeline() -> dict:
         
     has_linter = False
     try:
-        r = _run_text(["ruff", "check", "--output-format", "json"] + py_files, cwd=WORKSPACE_ROOT, timeout=60)
+        r = _run_text(["ruff", "check", "--output-format", "json"] + py_files, cwd=workspace, timeout=60)
         if r.returncode in (0, 1):
             has_linter = True
             tools_used.append("ruff")
@@ -405,7 +397,7 @@ async def devops_pipeline() -> dict:
 
     if not has_linter:
         try:
-            r = _run_text(["ruff", "check", "--format", "json"] + py_files, cwd=WORKSPACE_ROOT, timeout=60)
+            r = _run_text(["ruff", "check", "--format", "json"] + py_files, cwd=workspace, timeout=60)
             if r.returncode in (0, 1):
                 has_linter = True
                 tools_used.append("ruff")
@@ -447,7 +439,7 @@ async def devops_pipeline() -> dict:
 
     if not has_linter:
         try:
-            r = _run_text(["flake8", "--format=default"] + py_files, cwd=WORKSPACE_ROOT, timeout=60)
+            r = _run_text(["flake8", "--format=default"] + py_files, cwd=workspace, timeout=60)
             if r.returncode in (0, 1):
                 has_linter = True
                 tools_used.append("flake8")
@@ -469,7 +461,7 @@ async def devops_pipeline() -> dict:
 
     has_formatter = False
     try:
-        r = _run_text([sys.executable or "python", "-m", "black", "--check"] + py_files, cwd=WORKSPACE_ROOT, timeout=60)
+        r = _run_text([sys.executable or "python", "-m", "black", "--check"] + py_files, cwd=workspace, timeout=60)
         if r.returncode in (0, 1):
             has_formatter = True
             tools_used.append("black")
@@ -481,7 +473,7 @@ async def devops_pipeline() -> dict:
                             fpath = parts[-1]
                             findings.append({
                                 "type": "format",
-                                "file": os.path.relpath(fpath, WORKSPACE_ROOT) if os.path.isabs(fpath) else fpath,
+                                "file": os.path.relpath(fpath, workspace) if os.path.isabs(fpath) else fpath,
                                 "line": 1,
                                 "code": "FMT",
                                 "severity": "low",
@@ -494,7 +486,7 @@ async def devops_pipeline() -> dict:
 
     has_typechecker = False
     try:
-        r = _run_text([sys.executable or "python", "-m", "mypy", "."], cwd=WORKSPACE_ROOT, timeout=120)
+        r = _run_text([sys.executable or "python", "-m", "mypy", "."], cwd=workspace, timeout=120)
         if r.returncode in (0, 1, 2):
             has_typechecker = True
             tools_used.append("mypy")
@@ -520,7 +512,7 @@ async def devops_pipeline() -> dict:
         tools_used.append("fallback_parser")
         
         for rel_path in py_files:
-            abs_path = os.path.join(WORKSPACE_ROOT, rel_path)
+            abs_path = os.path.join(workspace, rel_path)
             try:
                 with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
@@ -805,7 +797,7 @@ def chaos_tester(app_run_command: str, duration: int = 5) -> dict:
     if os.name != "nt":
         kwargs["start_new_session"] = True
     else:
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
     proc_app = None
     try:

@@ -52,7 +52,15 @@ def _cleanup_orphaned_worktrees() -> None:
     """Xóa git worktrees bị bỏ lại từ lần chạy trước bị crash.
     Dùng 'git worktree list --porcelain' để chỉ remove đúng worktrees do harness tạo.
     """
-    repo = Path(WORKSPACE_ROOT)
+    workspace = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
+    if not workspace:
+        meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
+        if meta:
+            try:
+                workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
+            except Exception:
+                workspace = ""
+    repo = Path(workspace or (os.getenv("WORKSPACE_ROOT") or "").strip() or WORKSPACE_ROOT)
     if not repo.is_dir():
         return
     try:
@@ -140,6 +148,60 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="prod_readiness_gate",
+            description=(
+                "Production readiness gate: gom auto_trigger final + security/env/secret/review/release checks "
+                "và trả verdict cứng: ready_to_deploy, fix_required, blocked_needs_user, deploy_then_verify, rollback_required."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "diff": {"type": "string", "description": "Unified diff hoặc summary diff nếu có"},
+                    "task": {"type": "string", "description": "Task/user request hiện tại"},
+                    "context": {"type": "string", "description": "Release/deploy context bổ sung"},
+                    "staged": {"type": "boolean", "description": "True → dùng git diff --cached cho panel_review"},
+                    "since_commit": {"type": "string", "description": "Base ref/SHA cho breaking change detector và review diff"},
+                    "mode": {"type": "string", "enum": ["safe", "max"], "description": "safe=nhẹ/offline hơn; max=full pre-prod gate"},
+                },
+            },
+        ),
+        types.Tool(
+            name="goal_autopilot",
+            description=(
+                "Prompt-only goal autopilot: init/check/complete/block/status. "
+                "Stores one active goal and auto_trigger checks alignment after edits."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["init", "check", "complete", "block", "status"], "description": "Operation mode"},
+                    "goal": {"type": "string", "description": "User goal; required for init"},
+                    "context": {"type": "string", "description": "Progress note or extra context"},
+                    "changed_files": _FILES_SCHEMA,
+                    "diff": {"type": "string", "description": "Unified diff or summary diff if available"},
+                    "task": {"type": "string", "description": "Current task/user request"},
+                },
+                "required": ["mode"],
+            },
+        ),
+        types.Tool(
+            name="goal_supervisor",
+            description=(
+                "Goal supervisor: reads active goal state/checks and returns one hard next_action enum: "
+                "continue_part, run_check, run_final, blocked_ask_user, complete. Call after each edit/check batch."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "diff": {"type": "string", "description": "Unified diff or summary diff if available"},
+                    "context": {"type": "string", "description": "Progress note, user question, or completion summary"},
+                    "last_checks": {"description": "Optional last auto_trigger/panel/check result object/list/string"},
+                },
+            },
+        ),
+        types.Tool(
             name="panel_review",
             description=(
                 "3 model parallel (reviewer/security/tester adversarial) → findings JSON file/line/severity/fix. "
@@ -201,7 +263,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="ask_codebase",
-            description="1M context, nạp ~2.5MB file. Gọi TRƯỚC khi Read nếu task >1 file — nhận summary rồi code, không tự Read từng file. Chỉ Read khi cần edit chính xác từng dòng. Trả lời kèm file:line.",
+            description="Q&A codebase lớn: đọc rộng, relevance-prune trước Azure, fallback local có file:line nếu model timeout/empty. Gọi TRƯỚC khi Read nếu task >1 file.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -750,14 +812,15 @@ _auto_watch_lock = threading.Lock()
 
 
 def _active_workspace() -> str:
-    workspace = os.getenv("WORKSPACE_ROOT") or os.getenv("CLAUDE_PROJECT_DIR")
+    workspace = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
     if not workspace:
         meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
         if meta:
             try:
-                workspace = json.loads(meta).get("tool", {}).get("workspacePath")
+                workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
             except Exception:
                 workspace = None
+    workspace = workspace or (os.getenv("WORKSPACE_ROOT") or "").strip()
     return os.path.abspath(workspace or WORKSPACE_ROOT)
 
 
@@ -991,6 +1054,46 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 mode=mode,
             ))
 
+        if name == "prod_readiness_gate":
+            staged, staged_error = _parse_bool_arg(args, "staged")
+            if staged_error:
+                return _json_response({"error": "invalid_argument", "detail": staged_error})
+            mode = str(args.get("mode", "safe")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            since_commit = args.get("since_commit", "")
+            since_commit = "" if since_commit is None else str(since_commit).strip()
+            return _json_response(await st.prod_readiness_gate(
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+                task=args.get("task"),
+                context=args.get("context"),
+                staged=staged,
+                since_commit=since_commit,
+                mode=mode,
+            ))
+
+        if name == "goal_autopilot":
+            mode = str(args.get("mode", "")).strip().lower()
+            if mode not in {"init", "check", "complete", "block", "status"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: init, check, complete, block, status"})
+            return _json_response(await st.goal_autopilot(
+                mode=mode,
+                goal=args.get("goal"),
+                context=args.get("context"),
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+                task=args.get("task"),
+            ))
+
+        if name == "goal_supervisor":
+            return _json_response(await st.goal_supervisor(
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+                context=args.get("context"),
+                last_checks=args.get("last_checks"),
+            ))
+
         if name == "panel_review":
             staged, staged_error = _parse_bool_arg(args, "staged")
             if staged_error:
@@ -1051,7 +1154,7 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
         if name == "list_agents":
             return _json_response({
                 "toolbox": "12-Agent Support Team cho Claude Code",
-                "workspace_root": WORKSPACE_ROOT,
+                "workspace_root": _active_workspace(),
                 "agents": [
                     {**a, "model": _MODEL_BY_ROLE[a["role"]]} for a in AGENT_INFO
                 ],

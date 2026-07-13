@@ -12,6 +12,6 @@ Panel không tìm thấy issue nào.
 ## Chi tiết cuộc họp Panel
 | Agent Role | Model sử dụng | Trạng thái | Thời gian phản hồi |
 | :--- | :--- | :--- | :--- |
-| REVIEWER | gpt-5.3-codex | ✅ | 3.43s |
-| SECURITY | gpt-5.3-codex-3 | ✅ | 3.28s |
-| TESTER | gpt-5.3-codex-2 | ✅ | 12.21s |
+| REVIEWER | gpt-5.3-codex | ✅ | 2.77s |
+| SECURITY | gpt-5.3-codex-3 | ✅ | 3.11s |
+| TESTER | gpt-5.3-codex-2 | ✅ | 2.21s |

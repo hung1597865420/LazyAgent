@@ -2,14 +2,17 @@
 tools/swarm.py — Multi-Agent Swarm, ask_codebase, and quick_task.
 Ported from support_tools.py.
 """
+import asyncio
 import os
 import re
 import time
 import uuid
 import json
+import unicodedata
+from pathlib import Path
 from typing import Optional
 from config import WORKSPACE_ROOT, get_azure_client
-from agents import Agent, AgentRole
+from agents import Agent, AgentRole, AgentResult
 from .core import (
     read_workspace_files,
     _load_relevant_wiki_context,
@@ -19,6 +22,7 @@ from .core import (
     _restore_session_backups,
     _cleanup_session_backups,
     run_in_sandbox,
+    _get_active_workspace,
     MAX_TOTAL_BYTES_BIG
 )
 
@@ -38,6 +42,15 @@ def _run_reproducer_in_sandbox(reproducer_code: str) -> dict:
     return run_in_sandbox(payload, timeout=30)
 
 
+def _sandbox_failure_kind(result: dict) -> str:
+    if result.get("status") != "success":
+        return "infra"
+    output = ((result.get("stdout") or "") + "\n" + (result.get("stderr") or "")).lower()
+    if "no module named pytest" in output or "module named 'pytest'" in output:
+        return "infra"
+    return "none" if result.get("returncode") == 0 else "test_failed"
+
+
 def _ask_codebase_timeout() -> float:
     try:
         return max(5.0, float(os.getenv("HARNESS_ASK_CODEBASE_TIMEOUT", "45")))
@@ -47,13 +60,20 @@ def _ask_codebase_timeout() -> float:
 
 def _ask_codebase_context_cap() -> int:
     try:
-        return max(20_000, int(os.getenv("HARNESS_ASK_CODEBASE_CONTEXT_BYTES", "250000")))
+        return max(20_000, int(os.getenv("HARNESS_ASK_CODEBASE_CONTEXT_BYTES", "650000")))
     except (TypeError, ValueError):
-        return 250_000
+        return 650_000
+
+
+def _ask_codebase_load_cap() -> int:
+    try:
+        return max(20_000, int(os.getenv("HARNESS_ASK_CODEBASE_LOAD_BYTES", str(MAX_TOTAL_BYTES_BIG))))
+    except (TypeError, ValueError):
+        return MAX_TOTAL_BYTES_BIG
 
 
 def _ask_codebase_use_spares() -> bool:
-    return os.getenv("HARNESS_ASK_CODEBASE_USE_SPARES", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return os.getenv("HARNESS_ASK_CODEBASE_USE_SPARES", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _ask_codebase_timeout_retries() -> int:
@@ -62,6 +82,22 @@ def _ask_codebase_timeout_retries() -> int:
     except (TypeError, ValueError):
         return 0
 
+
+def _ask_codebase_include_wiki() -> bool:
+    return os.getenv("HARNESS_ASK_CODEBASE_INCLUDE_WIKI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_ASK_CODEBASE_MAX_FILES = 15
+_ASK_DIRECT_SKIP_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", ".harness_cache",
+    ".harness_smoke", ".harness_sandbox", ".gemini", ".claude", ".Codex",
+    "llmwiki", "dist", "build", "coverage",
+}
+_ASK_DIRECT_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs", ".rb", ".php",
+    ".cs", ".sql", ".html", ".css", ".json", ".yaml", ".yml", ".toml", ".md",
+}
+_ASK_DIRECT_SCAN_FILE_LIMIT = 5000
 
 _ASK_STOPWORDS = {
     "the", "and", "for", "with", "what", "where", "how", "why", "file", "code",
@@ -72,6 +108,14 @@ _ASK_STOPWORDS = {
     "xem", "check", "thu", "thử", "sao", "nhu", "như", "nao", "nào",
     "dang", "đang", "duoc", "được", "khong", "không", "co", "có",
 }
+
+_SECRET_NAME = r"(?:api[_-]?key|access[_-]?key|secret[_-]?key|token|password|passwd|pwd|authorization)"
+_SENSITIVE_PATTERNS = (
+    re.compile(rf"(?i)\b{_SECRET_NAME}\b\s*[:=]\s*(['\"])[^'\"]{{3,}}\1"),
+    re.compile(rf"(?i)\b{_SECRET_NAME}\b\s*[:=]\s*[^\s,;}}]{{3,}}"),
+    re.compile(r"\b(?:sk_live_|sk_test_|ghp_|github_pat_)[A-Za-z0-9_=-]{12,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+)
 
 
 def _query_terms(question: str) -> set[str]:
@@ -106,15 +150,21 @@ def _score_code_line(path: str, line: str, terms: set[str]) -> tuple[int, list[s
     haystack = f"{path}\n{line}".lower()
     matched = sorted(t for t in terms if t in haystack)
     score = len(matched) * 4
+    if not matched:
+        return 0, []
     stripped = line.strip()
     if re.search(r"\b(class|def|async def|function|const|let|var|export|interface|type)\b", stripped):
-        score += 3
+        score += 10
+    if any("_" in t and t in stripped.lower() for t in matched):
+        score += 8
     if re.search(r"\b(route|router|endpoint|handler|controller|service|repository|schema|model)\b", haystack):
         score += 2
     if re.search(r"\b(todo|fixme|error|raise|except|catch|warning|fallback|timeout)\b", haystack):
         score += 1
     if stripped.startswith(("#", "//", "/*", "*")):
         score -= 1
+    if path.lower().endswith((".md", ".txt", ".rst", ".adoc")):
+        score -= 4
     return score, matched
 
 
@@ -130,6 +180,223 @@ def _context_snippet(rows: list[tuple[str, int, str]], idx: int, radius: int = 1
         prefix = ">" if ln2 == line_no else " "
         snippets.append(f"{prefix}{ln2}: {text.rstrip()[:180]}")
     return "\n".join(snippets)
+
+
+def _truncate_bytes(text: str, max_bytes: int) -> str:
+    return text.encode("utf-8", errors="replace")[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _redact_sensitive_text(text: str) -> str:
+    redacted = unicodedata.normalize("NFKC", text)
+    for pattern in _SENSITIVE_PATTERNS:
+        redacted = pattern.sub("[REDACTED_SECRET]", redacted)
+    return redacted
+
+
+def _direct_workspace_hits(question: str, limit: int = 10) -> list[str]:
+    terms = _query_terms(question)
+    if not terms:
+        return []
+    try:
+        root = Path(_get_active_workspace()).expanduser().resolve()
+    except (OSError, ValueError):
+        return []
+    if not root.is_dir():
+        return []
+    scored: list[tuple[int, str]] = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _ASK_DIRECT_SKIP_DIRS and not d.startswith(".harness_worktree_"))
+        for fname in sorted(filenames):
+            if fname.lower().startswith(".env"):
+                continue
+            path = Path(dirpath) / fname
+            suffix = path.suffix.lower()
+            if suffix not in _ASK_DIRECT_EXTS:
+                continue
+            try:
+                if path.stat().st_size > 250_000:
+                    continue
+                resolved = path.resolve()
+                try:
+                    if os.path.commonpath([str(resolved), str(root)]) != str(root):
+                        continue
+                except ValueError:
+                    continue
+                rel = path.relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            scanned += 1
+            path_lower = rel.lower()
+            score = 0
+            for term in terms:
+                if term in path_lower:
+                    score += 12
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as f:
+                    for line_no, line in enumerate(f, start=1):
+                        lower = line.lower()
+                        for term in terms:
+                            count = lower.count(term)
+                            if count:
+                                score += min(30, count * (8 if "_" in term else 3))
+                        if score >= 60 or line_no >= 1200:
+                            break
+            except OSError:
+                continue
+            if suffix in {".md", ".txt", ".rst", ".adoc"}:
+                score -= 8
+            if "/test" in path_lower or path_lower.startswith("test_") or path_lower.endswith("_test.py"):
+                score -= 6
+            if score > 0:
+                scored.append((score, rel))
+            if scanned >= _ASK_DIRECT_SCAN_FILE_LIMIT:
+                break
+        if scanned >= _ASK_DIRECT_SCAN_FILE_LIMIT:
+            break
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [rel for _score, rel in scored[:limit]]
+
+
+def _skip_auto_selected_file(path: str) -> bool:
+    rel = path.replace("\\", "/").strip("/")
+    first = rel.split("/", 1)[0]
+    name = Path(rel).name.lower()
+    return first in _ASK_DIRECT_SKIP_DIRS or name.startswith(".env") or name.startswith(".harness_")
+
+
+def _sanitize_ask_files(files: list[str] | None) -> tuple[list[str], list[str]]:
+    safe: list[str] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+    raw_files = list(files or [])
+    if len(raw_files) > 1000:
+        warnings.append(f"ask_codebase file list truncated from {len(raw_files)} to 1000 before sanitize")
+        raw_files = raw_files[:1000]
+    for raw in raw_files:
+        if not isinstance(raw, str) or not raw.strip():
+            warnings.append(f"{raw!r}: ask_codebase file path invalid — skipped")
+            continue
+        rel = raw.replace("\\", "/").strip()
+        p = Path(rel)
+        if p.is_absolute() or ".." in p.parts:
+            warnings.append(f"{raw}: ask_codebase rejects absolute/path traversal — skipped")
+            continue
+        normalized = p.as_posix()
+        if _skip_auto_selected_file(normalized):
+            warnings.append(f"{raw}: ask_codebase skips harness/env/wiki artifact — skipped")
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            safe.append(normalized)
+    return safe, warnings
+
+
+def _pack_file_block(path: str, lines: list[tuple[int, str]], budget: int) -> tuple[str, int]:
+    header = f"=== FILE: {path} ==="
+    total = len(header.encode("utf-8", errors="replace"))
+    if total >= budget:
+        return "", 0
+    packed = []
+    for line_no, text in lines:
+        line = f"{line_no}\t{text}"
+        line_bytes = len(("\n" + line).encode("utf-8", errors="replace"))
+        if total + line_bytes > budget:
+            break
+        packed.append(line)
+        total += line_bytes
+    if not packed:
+        return "", 0
+    block = header + "\n" + "\n".join(packed)
+    return block, len(block.encode("utf-8", errors="replace"))
+
+
+def _narrow_files_for_question(question: str, files: list[str]) -> tuple[list[str], list[str]]:
+    if len(files) <= _ASK_CODEBASE_MAX_FILES:
+        return files, []
+    warnings = []
+    original = list(dict.fromkeys(files))
+    allowed = set(original)
+    terms = _query_terms(question)
+    narrowed = [path for path in original if any(term in path.lower() for term in terms)]
+    narrowed = narrowed[:_ASK_CODEBASE_MAX_FILES]
+    try:
+        from .codebase_index import get_index
+        hits = get_index().search(question, top_k=60)
+        for hit in hits:
+            path = hit.get("path", "")
+            if path in allowed and path not in narrowed:
+                narrowed.append(path)
+            if len(narrowed) >= _ASK_CODEBASE_MAX_FILES:
+                break
+        if narrowed:
+            warnings.append(f"ask_codebase narrowed {len(original)} provided file(s) to {len(narrowed)} via CodebaseIndex")
+            return narrowed, warnings
+    except Exception as e:
+        warnings.append(f"ask_codebase file narrowing skipped: {e}")
+
+    scored = []
+    for path in original:
+        score = sum(1 for term in terms if term in path.lower())
+        if score:
+            scored.append((score, path))
+    if scored:
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        narrowed = [path for _score, path in scored[:_ASK_CODEBASE_MAX_FILES]]
+        warnings.append(f"ask_codebase narrowed {len(original)} provided file(s) to {len(narrowed)} by path keywords")
+        return narrowed, warnings
+    fallback = original[:_ASK_CODEBASE_MAX_FILES]
+    warnings.append(f"ask_codebase narrowing found no matches; using first {len(fallback)} provided file(s)")
+    return fallback, warnings
+
+
+def _prune_context_for_question(question: str, context: str, max_bytes: int) -> tuple[str, list[str]]:
+    terms = _query_terms(question)
+    rows = _iter_file_lines(context)
+    if not terms or not rows or len(context.encode("utf-8", errors="replace")) <= max_bytes:
+        return context, []
+
+    ranked: list[tuple[int, str, int, int]] = []
+    for idx, (path, line_no, text) in enumerate(rows):
+        score, _matched = _score_code_line(path, text, terms)
+        if score > 0:
+            ranked.append((score, path, line_no, idx))
+    if not ranked:
+        return _truncate_bytes(context, max_bytes), [f"ask_codebase context truncated to {max_bytes} bytes; no relevance matches found"]
+
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+    keep: dict[str, set[int]] = {}
+    for _score, path, _line_no, idx in ranked[:160]:
+        bucket = keep.setdefault(path, set())
+        for j in range(max(0, idx - 3), min(len(rows), idx + 4)):
+            p2, ln2, _text = rows[j]
+            if p2 == path:
+                bucket.add(ln2)
+
+    by_file: dict[str, list[tuple[int, str]]] = {}
+    for path, line_no, text in rows:
+        if line_no in keep.get(path, set()):
+            by_file.setdefault(path, []).append((line_no, text))
+
+    file_scores: dict[str, int] = {}
+    for score, path, _line_no, _idx in ranked:
+        file_scores[path] = file_scores.get(path, 0) + score
+    blocks = []
+    total = 0
+    for path in sorted(by_file, key=lambda p: (-file_scores.get(p, 0), p)):
+        lines = sorted(by_file[path])
+        block, block_bytes = _pack_file_block(path, lines, max_bytes - total)
+        if not block:
+            continue
+        blocks.append(block)
+        total += block_bytes
+
+    if not blocks:
+        return _truncate_bytes(context, max_bytes), [f"ask_codebase context truncated to {max_bytes} bytes; relevance blocks exceeded cap"]
+    original = len(context.encode("utf-8", errors="replace"))
+    pruned = "\n\n".join(blocks)
+    kept_files = ", ".join(sorted(by_file)[:8])
+    return pruned, [f"ask_codebase pruned context {original} -> {len(pruned.encode('utf-8', errors='replace'))} bytes; top files: {kept_files}"]
 
 
 def _extract_wiki_hits(context: str, terms: set[str]) -> list[str]:
@@ -156,7 +423,17 @@ def _extractive_codebase_answer(question: str, context: str, files: Optional[lis
             ranked.append((score, path, line_no, text.strip(), matched, idx))
 
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-    selected = ranked[:10]
+    selected = []
+    per_file: dict[str, int] = {}
+    for item in ranked:
+        path = item[1]
+        limit = 2 if path.lower().endswith((".md", ".txt", ".rst", ".adoc")) else 3
+        if per_file.get(path, 0) >= limit:
+            continue
+        selected.append(item)
+        per_file[path] = per_file.get(path, 0) + 1
+        if len(selected) >= 10:
+            break
     file_scores: dict[str, int] = {}
     for score, path, *_rest in ranked[:80]:
         file_scores[path] = file_scores.get(path, 0) + score
@@ -234,8 +511,6 @@ def _normalize_manager_answer(raw: str) -> str:
 
 def _manager_answer_usable(answer: str) -> bool:
     text = (answer or "").strip()
-    if len(text) < 40:
-        return False
     low = text.lower()
     weak_markers = (
         "không đủ ngữ cảnh",
@@ -247,7 +522,17 @@ def _manager_answer_usable(answer: str) -> bool:
     )
     if any(marker in low for marker in weak_markers):
         return False
-    return bool(re.search(r"`?[\w./\\-]+:\d+`?", text))
+    if "không tìm thấy trong context đã cung cấp" in low or "khong tim thay trong context da cung cap" in low:
+        return True
+    citation_patterns = (
+        r"`?[\w./\\() -]+\.\w+:\d+`?",
+        r"`?[\w./\\() -]+\.\w+\s+line\s+\d+`?",
+        r"`?[\w./\\() -]+\.\w+#L\d+`?",
+        r"\[[^\]]+\]\([^)]+\.\w+(?::\d+|#L\d+)[^)]*\)",
+    )
+    if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in citation_patterns):
+        return True
+    return False
 
 
 async def ask_codebase(
@@ -260,35 +545,56 @@ async def ask_codebase(
     Khi `files` không được cung cấp, tự động dùng CodebaseIndex để tìm các file liên quan nhất.
     """
     warnings = []
+    if files is not None and not isinstance(files, list):
+        return {"error": "files must be a list of relative paths", "warnings": warnings}
+    if files:
+        files, sanitize_warnings = _sanitize_ask_files(files)
+        warnings.extend(sanitize_warnings)
     if not files and not index_md:
+        seen: dict[str, float] = {}
+        direct_hits = _direct_workspace_hits(question, limit=6)
+        for p in direct_hits:
+            seen[p] = 1.0
+        if direct_hits:
+            warnings.append(f"Direct symbol scan selected {len(direct_hits)} file(s) for: {question[:80]}")
         try:
             from .codebase_index import get_index
             idx = get_index()
             hits = idx.search(question, top_k=20)
-            seen: dict[str, float] = {}
             for h in hits:
                 p = h.get("path", "")
-                if p and p not in seen:
+                if p and p not in seen and not _skip_auto_selected_file(p):
                     seen[p] = h.get("score", 0.0)
-            files = list(seen.keys())[:10]
+            files = list(seen.keys())[:_ASK_CODEBASE_MAX_FILES]
             if files:
-                warnings.append(f"Auto-selected {len(files)} file(s) via CodebaseIndex for: {question[:80]}")
+                warnings.append(f"Auto-selected {len(files)} file(s) via direct scan/CodebaseIndex for: {question[:80]}")
         except Exception as e:
             warnings.append(f"CodebaseIndex lookup failed: {e}")
+            files = list(seen.keys())[:_ASK_CODEBASE_MAX_FILES]
     if not files and not index_md:
         return {"error": "Cần cung cấp danh sách file qua `files` hoặc nội dung điều hướng qua `index_md`", "warnings": warnings}
         
     ctx_blocks = []
     loaded_count = 0
+    try:
+        from .goal import goal_progress_summary
+        goal_summary = goal_progress_summary()
+    except Exception:
+        goal_summary = ""
+    if goal_summary:
+        ctx_blocks.append(f"=== GOAL PROGRESS ===\n{goal_summary}")
 
-    wiki_ctx = _load_relevant_wiki_context("\n".join([question, "\n".join(files or []), index_md or ""]))
-    if wiki_ctx:
-        ctx_blocks.append(f"=== PROJECT WIKI CONTEXT (SELECTIVE) ===\n{wiki_ctx}")
+    if _ask_codebase_include_wiki():
+        wiki_ctx = _load_relevant_wiki_context("\n".join([question, "\n".join(files or []), index_md or ""]))
+        if wiki_ctx:
+            ctx_blocks.append(f"=== PROJECT WIKI CONTEXT (SELECTIVE) ===\n{wiki_ctx}")
     
     if files:
+        files, narrow_warnings = _narrow_files_for_question(question, files)
+        warnings.extend(narrow_warnings)
         file_ctx, file_warns, file_loaded = read_workspace_files(
             files,
-            total_cap=min(MAX_TOTAL_BYTES_BIG, _ask_codebase_context_cap()),
+            total_cap=min(MAX_TOTAL_BYTES_BIG, _ask_codebase_load_cap()),
         )
         warnings.extend(file_warns)
         if file_ctx:
@@ -301,18 +607,37 @@ async def ask_codebase(
     ctx = "\n\n".join(ctx_blocks)
     if not ctx:
         return {"error": "Không đọc được dữ liệu ngữ cảnh nào từ files hoặc index_md", "warnings": warnings}
+    ctx = _redact_sensitive_text(ctx)
+    ctx, prune_warnings = _prune_context_for_question(question, ctx, _ask_codebase_context_cap())
+    warnings.extend(prune_warnings)
 
     timeout_s = _ask_codebase_timeout()
     task = (
         f"{question}\n\n"
-        "Trả lời trực tiếp bằng Markdown tiếng Việt. Bắt buộc trích dẫn `file:line` cho claim về code. "
+        "Trả lời trực tiếp bằng Markdown tiếng Việt. BẮT BUỘC trích dẫn `file:line` cụ thể cho mọi claim về code. "
+        "Nếu không thấy bằng chứng trong context, nói rõ `Không tìm thấy trong context đã cung cấp`. "
         "Không trả JSON wrapper trừ khi user hỏi rõ JSON."
     )
-    result = await Agent(AgentRole.MANAGER, get_azure_client()).run_async(
-        task, ctx, max_output_tokens=4096, timeout=timeout_s,
-        timeout_retries=_ask_codebase_timeout_retries(),
-        use_spares=_ask_codebase_use_spares(),
-    )
+    try:
+        result = await asyncio.wait_for(
+            Agent(AgentRole.MANAGER, get_azure_client()).run_async(
+                task, ctx, max_output_tokens=4096, timeout=timeout_s,
+                timeout_retries=_ask_codebase_timeout_retries(),
+                use_spares=_ask_codebase_use_spares(),
+            ),
+            timeout=timeout_s + 10,
+        )
+    except asyncio.TimeoutError:
+        result = AgentResult(
+            agent_id="manager-timeout",
+            agent_role=AgentRole.MANAGER,
+            model_used="manager",
+            task=task,
+            result="",
+            duration_ms=int((timeout_s + 10) * 1000),
+            status="error",
+            error=f"ask_codebase hard timeout after {timeout_s + 10:.0f}s",
+        )
 
     answer_text = _normalize_manager_answer(result.result)
     if result.status != "success" or not _manager_answer_usable(answer_text):
@@ -353,11 +678,12 @@ async def swarm_step_architect(error_log: str, files: Optional[list[str]] = None
     warnings = []
     
     ctx_files = files if files else []
+    workspace = os.path.realpath(_get_active_workspace())
     if not ctx_files:
         matches = re.findall(r"file\s+\"([^\"]+\.py)\",\s+line\s+(\d+)", error_log.lower())
         for fpath, line in matches:
-            rel_p = os.path.relpath(fpath, WORKSPACE_ROOT)
-            if not rel_p.startswith("..") and os.path.exists(os.path.join(WORKSPACE_ROOT, rel_p)):
+            rel_p = os.path.relpath(fpath, workspace)
+            if not rel_p.startswith("..") and os.path.exists(os.path.join(workspace, rel_p)):
                 ctx_files.append(rel_p)
         ctx_files = list(set(ctx_files))
         
@@ -397,9 +723,9 @@ async def swarm_step_architect(error_log: str, files: Optional[list[str]] = None
         valid_targets = []
         for tf in target_files:
             tf_str = str(tf).strip()
-            full_tf = os.path.realpath(os.path.join(WORKSPACE_ROOT, tf_str))
+            full_tf = os.path.realpath(os.path.join(workspace, tf_str))
             try:
-                outside = os.path.commonpath([full_tf, os.path.realpath(WORKSPACE_ROOT)]) != os.path.realpath(WORKSPACE_ROOT)
+                outside = os.path.commonpath([full_tf, workspace]) != workspace
             except ValueError:
                 outside = True
             if not outside:
@@ -451,15 +777,19 @@ async def swarm_step_tester(error_log: str, root_cause: str, target_files: list[
             return {"error": f"Tester Agent lỗi: {res_test.error}", "logs": swarm_logs}
             
         reproducer_code = res_test.result.strip()
-        m_code = re.search(r"```python\s*(.*?)\s*```", reproducer_code, re.DOTALL)
+        m_code = re.search(r"```(?:python)?\s*(.*?)\s*```", reproducer_code, re.DOTALL)
         if m_code:
             reproducer_code = m_code.group(1).strip()
             
     sandbox_res = _run_reproducer_in_sandbox(reproducer_code)
-    reproducer_failed = sandbox_res["status"] == "success" and "failed" in (sandbox_res["stdout"] + sandbox_res["stderr"]).lower()
+    failure_kind = _sandbox_failure_kind(sandbox_res)
+    reproducer_failed = failure_kind == "test_failed"
     
     if reproducer_failed:
         swarm_logs.append({"role": "tester", "message": "Xác nhận: File test reproducer đã kích hoạt lỗi thành công (FAIL as expected).", "timestamp": time.time()})
+    elif failure_kind == "infra":
+        warnings.append("Reproducer sandbox lỗi hạ tầng, không coi là bug reproduced.")
+        swarm_logs.append({"role": "tester", "message": "Cảnh báo: Sandbox không chạy được reproducer do lỗi hạ tầng. Vẫn tiếp tục quy trình vá lỗi.", "timestamp": time.time()})
     else:
         swarm_logs.append({"role": "tester", "message": "Cảnh báo: File test reproducer không fail trên code hiện tại. Vẫn tiếp tục quy trình vá lỗi.", "timestamp": time.time()})
         
@@ -467,6 +797,7 @@ async def swarm_step_tester(error_log: str, root_cause: str, target_files: list[
         "status": "success",
         "reproducer_code": reproducer_code,
         "reproducer_failed": reproducer_failed,
+        "failure_kind": failure_kind,
         "sandbox_output": sandbox_res,
         "logs": swarm_logs,
         "warnings": warnings
@@ -515,22 +846,25 @@ def swarm_step_apply_and_test(target_files: list[str], patch: str, reproducer_co
     """Bước 4: Áp dụng bản vá thử nghiệm và chạy lại reproducer test."""
     swarm_logs = [{"role": "coder", "message": "Bắt đầu chặng 4: Áp dụng và chạy thử bản vá.", "timestamp": time.time()}]
     
-    success, msg, backup_path = _extract_and_apply_patch(target_files, patch)
+    success, msg, backup_path = _extract_and_apply_patch(files=target_files, fix_text=patch)
     backup_paths = [backup_path] if backup_path else []
     
     patch_applied_successfully = success
     test_passed_after_patch = False
+    failure_kind = "not_run"
     sandbox_res2 = {}
     
     if success:
         swarm_logs.append({"role": "coder", "message": "Bản vá đã được áp dụng. Đang chạy lại reproducer test trong sandbox...", "timestamp": time.time()})
         sandbox_res2 = _run_reproducer_in_sandbox(reproducer_code or "def test_placeholder():\n    assert True\n")
-        test_passed_after_patch = (sandbox_res2["status"] == "success" and "failed" not in (sandbox_res2["stdout"] + sandbox_res2["stderr"]).lower() and "passed" in (sandbox_res2["stdout"] + sandbox_res2["stderr"]).lower())
+        failure_kind = _sandbox_failure_kind(sandbox_res2)
+        test_passed_after_patch = failure_kind == "none"
         
         if test_passed_after_patch:
             swarm_logs.append({"role": "coder", "message": "Chúc mừng! File test reproducer đã PASS thành công sau khi áp dụng bản vá.", "timestamp": time.time()})
         else:
-            swarm_logs.append({"role": "coder", "message": f"Thất bại: Test reproducer vẫn không pass. Chi tiết:\n{sandbox_res2.get('stdout','')}\n{sandbox_res2.get('stderr','')}", "timestamp": time.time()})
+            label = "lỗi hạ tầng sandbox" if failure_kind == "infra" else "test reproducer vẫn không pass"
+            swarm_logs.append({"role": "coder", "message": f"Thất bại: {label}. Chi tiết:\n{sandbox_res2.get('stdout','')}\n{sandbox_res2.get('stderr','')}", "timestamp": time.time()})
             _restore_session_backups(backup_paths)
             swarm_logs.append({"role": "coder", "message": "Đã rollback bản vá lỗi thử nghiệm.", "timestamp": time.time()})
     else:
@@ -540,6 +874,7 @@ def swarm_step_apply_and_test(target_files: list[str], patch: str, reproducer_co
         "status": "success" if (patch_applied_successfully and test_passed_after_patch) else "failed",
         "patch_applied_successfully": patch_applied_successfully,
         "test_passed_after_patch": test_passed_after_patch,
+        "failure_kind": failure_kind,
         "backup_paths": backup_paths,
         "sandbox_output": sandbox_res2,
         "logs": swarm_logs,
@@ -578,7 +913,10 @@ async def swarm_step_reviewer(target_files: list[str], patch: str) -> dict:
     
     if res_rev.status == "success":
         rev_data = _parse_json_object(res_rev.result)
-        reviewer_verdict = rev_data.get("verdict", "reject")
+        reviewer_verdict = str(rev_data.get("verdict", "reject")).strip().lower()
+        if reviewer_verdict not in {"approve", "reject"}:
+            warnings.append(f"Reviewer verdict không hợp lệ: {reviewer_verdict!r}; mặc định reject")
+            reviewer_verdict = "reject"
         reviewer_summary = rev_data.get("summary", "No summary")
         swarm_logs.append({"role": "reviewer", "message": f"Kết quả thẩm định: {reviewer_verdict.upper()}. Nhận xét: {reviewer_summary}", "timestamp": time.time()})
     else:
@@ -613,6 +951,13 @@ async def swarm_debug(error_log: str, files: Optional[list[str]] = None) -> dict
         return tester_res
     swarm_logs.extend(tester_res["logs"])
     warnings.extend(tester_res.get("warnings", []))
+    if tester_res.get("failure_kind") == "infra":
+        return {
+            "error": "Reproducer sandbox lỗi hạ tầng; dừng swarm_debug để tránh apply/rollback sai.",
+            "logs": swarm_logs,
+            "warnings": warnings,
+            "tester_result": tester_res,
+        }
     
     reproducer_code = tester_res["reproducer_code"]
     

@@ -186,10 +186,10 @@ check("SYSTEM_PROMPTS đủ 12 role", set(SYSTEM_PROMPTS) == set(AgentRole))
 check("ROLE_TO_MODEL đủ 12 role", set(ROLE_TO_MODEL) == set(AgentRole))
 check("ROLE_TEMPERATURE đủ 12 role", set(ROLE_TEMPERATURE) == set(AgentRole))
 
-# 4. MCP server: list_tools trả đủ 58 tool, schema hợp lệ
+# 4. MCP server: list_tools trả đủ 61 tool, schema hợp lệ
 tools = asyncio.run(mcp_server.list_tools())
 tool_names = {t.name for t in tools}
-expected = {"auto_trigger", "panel_review", "consult", "alt_implementation", "suggest_fix",
+expected = {"auto_trigger", "prod_readiness_gate", "goal_autopilot", "goal_supervisor", "panel_review", "consult", "alt_implementation", "suggest_fix",
             "ask_codebase", "quick_task", "run_single_agent", "list_agents",
             "wiki_ingest", "wiki_query", "wiki_lint", "security_autofix",
             "auto_tester", "visual_reviewer", "benchmarker", "dependency_upgrader",
@@ -205,7 +205,7 @@ expected = {"auto_trigger", "panel_review", "consult", "alt_implementation", "su
             "breaking_change_detector", "flaky_test_detector", "duplicate_code_scanner",
             "container_linter", "dependency_graph_visualizer", "ci_pipeline_validator",
             "mutation_tester", "data_flow_taint_analyzer", "performance_regression_detector"}
-check("MCP đăng ký đủ 58 tool", tool_names == expected,
+check("MCP đăng ký đủ 61 tool", tool_names == expected,
       f"thiếu {expected - tool_names}, thừa {tool_names - expected}")
 for t in tools:
     json.dumps(t.inputSchema)  # schema phải serialize được
@@ -221,8 +221,47 @@ auto_res = asyncio.run(mcp_server.call_tool("auto_trigger", {
     "mode": "safe",
 }))
 check("auto_trigger docs-only safe skip", json.loads(auto_res[0].text).get("status") == "skipped")
+prod_gate = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {
+    "changed_files": ["README.md"],
+    "task": "ready for production deploy?",
+    "mode": "safe",
+}))
+prod_gate_json = json.loads(prod_gate[0].text)
+check("prod_readiness_gate docs-only safe trả verdict hợp lệ",
+      prod_gate_json.get("status") == "completed" and prod_gate_json.get("verdict") in {
+          "ready_to_deploy", "fix_required", "blocked_needs_user", "deploy_then_verify", "rollback_required",
+      },
+      str(prod_gate_json))
+prod_gate_bad = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {"mode": "wild"}))
+check("prod_readiness_gate mode invalid → error", "error" in json.loads(prod_gate_bad[0].text))
+prod_gate_ref = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {
+    "changed_files": ["README.md"],
+    "mode": "safe",
+    "since_commit": 123,
+}))
+check("prod_readiness_gate since_commit non-string không crash",
+      json.loads(prod_gate_ref[0].text).get("status") == "completed",
+      prod_gate_ref[0].text)
+from tools.prod import _hard_flags
+_blockers, _needs_user, _warnings = _hard_flags([{
+    "tool": "panel_review",
+    "ok": True,
+    "raw": {"findings": [{"file": "x.py", "line": 1, "severity": "low", "triage": "ask_user"}]},
+}])
+check("prod_readiness_gate ask_user finding chặn decision",
+      bool(_needs_user) and not _blockers,
+      f"blockers={_blockers}, needs_user={_needs_user}, warnings={_warnings}")
+_fix_blockers, _, _ = _hard_flags([{"tool": "auto_trigger", "ok": True, "raw": {"verdict": "fix_required"}}])
+check("prod_readiness_gate fix_required verdict là blocker", bool(_fix_blockers), str(_fix_blockers))
 auto_bad_stage = asyncio.run(mcp_server.call_tool("auto_trigger", {"stage": "done"}))
 check("auto_trigger stage invalid → error", "error" in json.loads(auto_bad_stage[0].text))
+goal_status = asyncio.run(mcp_server.call_tool("goal_autopilot", {"mode": "status"}))
+check("goal_autopilot status không cần Azure", json.loads(goal_status[0].text).get("status") in {"idle", "ok"})
+goal_supervisor = asyncio.run(mcp_server.call_tool("goal_supervisor", {}))
+goal_supervisor_json = json.loads(goal_supervisor[0].text)
+check("goal_supervisor trả next_action không cần Azure",
+      goal_supervisor_json.get("next_action") in {"continue_part", "run_check", "run_final", "blocked_ask_user", "complete"},
+      str(goal_supervisor_json))
 auto_bad_mode = asyncio.run(mcp_server.call_tool("auto_trigger", {"mode": "wild"}))
 check("auto_trigger mode invalid → error", "error" in json.loads(auto_bad_mode[0].text))
 auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {
@@ -241,13 +280,120 @@ check("auto_trigger nhận diện .ENV.EXAMPLE không phân biệt hoa thường
       auto_env_case_json.get("status") == "completed" and "env_parity_checker" in auto_env_case_json.get("selected_tools", []),
       str(auto_env_case_json))
 
-from tools.swarm import _extractive_codebase_answer, _manager_answer_usable, _normalize_manager_answer
+from tools.swarm import (
+    _extractive_codebase_answer,
+    _direct_workspace_hits,
+    _manager_answer_usable,
+    _narrow_files_for_question,
+    _normalize_manager_answer,
+    _prune_context_for_question,
+    _redact_sensitive_text,
+    _sanitize_ask_files,
+    _skip_auto_selected_file,
+)
+import tools.swarm as swarm_mod
 check("ask_codebase unwrap JSON answer",
       _normalize_manager_answer('{"answer": "Có dùng app/api.py:10"}') == "Có dùng app/api.py:10")
 check("ask_codebase reject generic manager answer",
       not _manager_answer_usable("Tôi không đủ ngữ cảnh để kết luận, nên cần đọc thêm file."))
 check("ask_codebase accept cited manager answer",
       _manager_answer_usable("Flow export nằm ở app/api.py:10 và frontend gọi từ web/page.tsx:4."))
+check("ask_codebase accept cited path with spaces",
+      _manager_answer_usable("Flow nằm ở `New folder (11)/app/api.py:10`."))
+check("ask_codebase accept line/hash citations",
+      _manager_answer_usable("Flow nằm ở app/api.py line 10 và web/page.tsx#L4."))
+check("ask_codebase accept short cited manager answer",
+      _manager_answer_usable("Xem app.py:1"))
+check("ask_codebase accept explicit no-evidence answer",
+      _manager_answer_usable("Không tìm thấy trong context đã cung cấp."))
+direct_hits = _direct_workspace_hits("goal_supervisor next_action enum", limit=5)
+check("ask_codebase direct symbol scan ưu tiên source mới",
+      "tools/goal.py" in direct_hits,
+      str(direct_hits))
+check("ask_codebase auto-select lọc wiki/env artifacts",
+      _skip_auto_selected_file("llmwiki/wiki/entities/x.md")
+      and _skip_auto_selected_file(".ENV")
+      and _skip_auto_selected_file(".Env")
+      and _skip_auto_selected_file(".ENV.LOCAL")
+      and _skip_auto_selected_file(".env.example")
+      and _skip_auto_selected_file("config/.Env.Prod")
+      and _skip_auto_selected_file(".harness_ast_graph.json"),
+      "filter failed")
+safe_files, unsafe_warnings = _sanitize_ask_files(["tools/swarm.py", "../secret.txt", "C:/tmp/x.py", ".ENV", "llmwiki/wiki/x.md"])
+check("ask_codebase sanitize user files",
+      safe_files == ["tools/swarm.py"] and len(unsafe_warnings) == 4,
+      f"safe={safe_files}, warnings={unsafe_warnings}")
+direct_scan_root = SMOKE_DIR / "direct_scan"
+direct_scan_root.mkdir(exist_ok=True)
+(direct_scan_root / ".ENV").write_text("unique_direct_secret_symbol=1\n", encoding="utf-8")
+(direct_scan_root / ".Env.local").write_text("unique_direct_secret_symbol=2\n", encoding="utf-8")
+(direct_scan_root / "source.py").write_text("def unique_direct_source_symbol(): pass\n", encoding="utf-8")
+outside_target = SMOKE_DIR / "outside_target.py"
+outside_target.write_text("def unique_outside_symbol(): pass\n", encoding="utf-8")
+old_workspace_env = os.environ.get("WORKSPACE_ROOT")
+try:
+    os.environ["WORKSPACE_ROOT"] = str(direct_scan_root.resolve())
+    env_hits = swarm_mod._direct_workspace_hits("unique_direct_secret_symbol", limit=5)
+    source_hits = swarm_mod._direct_workspace_hits("unique_direct_source_symbol", limit=5)
+    check("ask_codebase direct scan bỏ qua .ENV hoa thường",
+          ".ENV" not in env_hits and ".Env.local" not in env_hits and source_hits == ["source.py"],
+          f"env={env_hits}, source={source_hits}")
+    many_dir = direct_scan_root / "many"
+    many_dir.mkdir(exist_ok=True)
+    for i in range(1005):
+        (many_dir / f"zz_{i:04d}.py").write_text("pass\n", encoding="utf-8")
+    (many_dir / "zz_1004.py").write_text("def unique_late_direct_symbol(): pass\n", encoding="utf-8")
+    late_hits = swarm_mod._direct_workspace_hits("unique_late_direct_symbol", limit=3)
+    check("ask_codebase direct scan deterministic >1000 files",
+          "many/zz_1004.py" in late_hits,
+          str(late_hits))
+    link_path = direct_scan_root / "outside_link.py"
+    try:
+        os.symlink(outside_target.resolve(), link_path)
+        outside_hits = swarm_mod._direct_workspace_hits("unique_outside_symbol", limit=5)
+        check("ask_codebase direct scan chặn symlink out-of-root",
+              "outside_link.py" not in outside_hits,
+              str(outside_hits))
+    except (OSError, NotImplementedError):
+        check("ask_codebase direct scan symlink test skipped", True)
+finally:
+    if old_workspace_env is None:
+        os.environ.pop("WORKSPACE_ROOT", None)
+    else:
+        os.environ["WORKSPACE_ROOT"] = old_workspace_env
+large_ctx = "\n\n".join(
+    f"=== FILE: file{i}.py ===\n1\tdef unrelated_{i}():\n2\t    return {i}"
+    for i in range(30)
+) + "\n\n=== FILE: src/exporter.py ===\n10\tdef export_excel():\n11\t    return workbook\n"
+pruned_ctx, prune_warns = _prune_context_for_question("frontend xuất Excel gọi API nào", large_ctx, 1200)
+check("ask_codebase relevance prune giữ file match sau",
+      "src/exporter.py" in pruned_ctx and "export_excel" in pruned_ctx and prune_warns,
+      pruned_ctx)
+large_block_ctx = "=== FILE: big.py ===\n" + "\n".join(
+    [f"{i}\tfiller filler filler filler filler" for i in range(1, 100)]
+    + [f"{i}\tdef export_excel_{i}(): return workbook" for i in range(100, 180)]
+)
+large_block_pruned, _large_block_warns = _prune_context_for_question("export excel workbook", large_block_ctx, 500)
+check("ask_codebase prune slices oversized relevant block",
+      "big.py" in large_block_pruned and "export_excel" in large_block_pruned,
+      large_block_pruned)
+many_files = [f"src/other_{i}.py" for i in range(20)] + ["src/export_excel_api.py"]
+narrowed_files, narrow_warns = _narrow_files_for_question("export excel api", many_files)
+check("ask_codebase narrows large provided file list",
+      "src/export_excel_api.py" in narrowed_files and len(narrowed_files) <= 15 and narrow_warns,
+      str(narrowed_files))
+check("ask_codebase redacts secrets from fallback context",
+      "supersecret" not in _redact_sensitive_text("API_KEY='supersecretvalue1234567890'"),
+      _redact_sensitive_text("API_KEY='supersecretvalue1234567890'"))
+check("ask_codebase redacts quoted secrets with spaces",
+      "secret with spaces" not in _redact_sensitive_text('password = "secret with spaces"'),
+      _redact_sensitive_text('password = "secret with spaces"'))
+check("ask_codebase redacts short token/password",
+      "abc123" not in _redact_sensitive_text("token=abc123\npassword='hunter2'"),
+      _redact_sensitive_text("token=abc123\npassword='hunter2'"))
+check("ask_codebase redacts authorization assignment",
+      "Bearer x" not in _redact_sensitive_text("authorization='Bearer x'"),
+      _redact_sensitive_text("authorization='Bearer x'"))
 fallback_answer = _extractive_codebase_answer(
     "frontend xuất Excel gọi API nào",
     "=== FILE: app/api.py ===\n10\tdef export_excel():\n11\t    return workbook\n"
@@ -275,21 +421,17 @@ check("auto_watch ignore .git và detect file đổi",
       "src/app.py" in watch_changed and ".git/config" not in snap1,
       str(watch_changed))
 lock_path = watch_root / auto_watch.LOCK_FILE
-lock1 = auto_watch._acquire_lock(lock_path)
-fd1 = lock1[0] if lock1 else None
-token1 = lock1[1] if lock1 else ""
+token1 = auto_watch._acquire_lock(lock_path)
 lock2 = auto_watch._acquire_lock(lock_path)
 try:
-    check("auto_watch lock acquire atomic", fd1 is not None and lock2 is None)
-    if fd1 is not None:
+    check("auto_watch lock acquire atomic", token1 is not None and lock2 is None)
+    if token1 is not None:
         lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
         check("auto_watch lock ghi PID metadata", lock_payload.get("pid") == os.getpid() and lock_payload.get("token"), str(lock_payload))
         lock_path.write_text(json.dumps({"pid": os.getpid(), "ts": time.time(), "token": "other"}), encoding="utf-8")
         auto_watch._release_lock(lock_path, token1)
         check("auto_watch release không xóa lock owner khác", lock_path.exists())
 finally:
-    if fd1 is not None:
-        os.close(fd1)
     lock_path.unlink(missing_ok=True)
 lock_path.mkdir()
 try:
@@ -334,9 +476,9 @@ check("loaded_count đúng", loaded == 1)
 # dùng path tương đối ra ngoài workspace — portable trên mọi OS
 outside_paths = ["../outside.txt", "../../another.txt"]
 ctx2, warns2, loaded2 = st.read_workspace_files(outside_paths)
-check("chặn path ngoài WORKSPACE_ROOT",
+check("chặn path ngoài workspace runtime",
       ctx2 == "" and loaded2 == 0 and
-      all("ngoài WORKSPACE_ROOT" in w for w in warns2),
+      all("ngoài workspace" in w for w in warns2),
       f"workspace={WORKSPACE_ROOT} warns={warns2}")
 ctx3, warns3, _ = st.read_workspace_files(["khong_ton_tai.py"])
 check("file không tồn tại → warning", ctx3 == "" and any("không tồn tại" in w for w in warns3))
@@ -446,6 +588,44 @@ if diff_err:
     check("_git_diff() lỗi có error message rõ ràng", len(diff_err) > 0, diff_err)
 else:
     check("_git_diff() trả về diff hoặc error", len(diff_text) > 0 or len(diff_err) > 0)
+
+import tools.core as core_mod
+old_core_run = core_mod.subprocess.run
+def fake_git_status(args, *other_args, **kwargs):
+    if list(args[:3]) == ["git", "status", "--porcelain"]:
+        raw = (
+            " M src/app.py\x00"
+            "?? README.md\x00"
+            "R  renamed_new.py\x00renamed_old.py\x00"
+            " D deleted.py\x00"
+            " T type_changed.py\x00"
+            " M dir/file with space.py\x00"
+            " M REVIEW_REPORT.md\x00"
+            " M .env\x00"
+            "?? llmwiki/raw/note.md\x00"
+        ).encode("utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout=raw, stderr=b"")
+    return old_core_run(args, *other_args, **kwargs)
+try:
+    core_mod.subprocess.run = fake_git_status
+    dirty_status = core_mod._scoped_dirty_status(Path("."), ["src/app.py"])
+    check("dirty status scoped conflict chỉ đúng file trong scope",
+          dirty_status["scoped_conflicts"] == ["src/app.py"],
+          str(dirty_status))
+    check("dirty status phân loại artifact/sensitive",
+          "REVIEW_REPORT.md" in dirty_status["harness_artifacts"]
+          and "llmwiki/raw/note.md" in dirty_status["harness_artifacts"]
+          and ".env" in dirty_status["sensitive_ignored"],
+          str(dirty_status))
+    check("dirty status parse rename/delete/typechange/space path",
+          "renamed_new.py" in dirty_status["user_changes"]
+          and "renamed_old.py" not in dirty_status["user_changes"]
+          and "deleted.py" in dirty_status["user_changes"]
+          and "type_changed.py" in dirty_status["user_changes"]
+          and "dir/file with space.py" in dirty_status["user_changes"],
+          str(dirty_status))
+finally:
+    core_mod.subprocess.run = old_core_run
 
 # 15. panel_review nhận staged=True → không cần files (auto git diff hoặc error từ git)
 r3 = asyncio.run(st.panel_review(staged=True))
@@ -600,9 +780,53 @@ check("telemetry_debugger chạy được với log rỗng", "fix_result" in r_t
 
 # 26. run_in_sandbox test
 r_sb = st.run_in_sandbox("print('hello')", timeout=2.0)
-check("run_in_sandbox chạy thành công", r_sb["status"] == "success" and "hello" in r_sb["stdout"], str(r_sb))
+check("run_in_sandbox chạy thành công", r_sb["status"] == "success" and r_sb.get("returncode") == 0 and "hello" in r_sb["stdout"], str(r_sb))
 r_sb_timeout = st.run_in_sandbox("import time; time.sleep(10)", timeout=1.0)
-check("run_in_sandbox timeout", r_sb_timeout["status"] == "timeout", str(r_sb_timeout))
+check("run_in_sandbox timeout", r_sb_timeout["status"] == "timeout" and r_sb_timeout.get("returncode") is not None, str(r_sb_timeout))
+
+runtime_cwd = (SMOKE_DIR / "runtime-cwd").resolve()
+runtime_cwd.mkdir(parents=True, exist_ok=True)
+old_runtime_env = {k: os.environ.get(k) for k in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA")}
+try:
+    os.environ.pop("WORKSPACE_ROOT", None)
+    os.environ["CLAUDE_PROJECT_DIR"] = str(runtime_cwd)
+    os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
+    rc_cwd, out_cwd, err_cwd = st._run_cmd_safe([sys.executable, "-c", "import os; print(os.getcwd())"])
+finally:
+    for key, value in old_runtime_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+check("_run_cmd_safe dùng runtime workspace",
+      rc_cwd == 0 and Path(out_cwd.strip()).resolve() == runtime_cwd,
+      f"rc={rc_cwd} out={out_cwd!r} err={err_cwd!r}")
+
+ws_a = (SMOKE_DIR / "runtime-a").resolve()
+ws_b = (SMOKE_DIR / "runtime-b").resolve()
+ws_a.mkdir(parents=True, exist_ok=True)
+ws_b.mkdir(parents=True, exist_ok=True)
+(ws_a / "same.py").write_text("MARKER_A = True\n", encoding="utf-8")
+(ws_b / "same.py").write_text("MARKER_B = True\n", encoding="utf-8")
+old_runtime_env = {k: os.environ.get(k) for k in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA")}
+try:
+    os.environ.pop("WORKSPACE_ROOT", None)
+    os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
+    os.environ["CLAUDE_PROJECT_DIR"] = str(ws_a)
+    block_a, _, _ = st.read_workspace_files(["same.py"])
+    hash_a = st._calculate_review_hash(["same.py"], None, None, None, False, "")
+    os.environ["CLAUDE_PROJECT_DIR"] = str(ws_b)
+    block_b, _, _ = st.read_workspace_files(["same.py"])
+    hash_b = st._calculate_review_hash(["same.py"], None, None, None, False, "")
+finally:
+    for key, value in old_runtime_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+check("core file reads dùng runtime workspace",
+      "MARKER_A" in block_a and "MARKER_B" in block_b and "MARKER_B" not in block_a and hash_a != hash_b,
+      f"block_a={block_a!r} block_b={block_b!r} hash_a={hash_a} hash_b={hash_b}")
 
 # 27. semantic_search test
 r_search = asyncio.run(st.semantic_search(query="test", top_k=2))

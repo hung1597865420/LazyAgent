@@ -41,7 +41,7 @@ def _local_wiki_dirs() -> tuple[str, str]:
     process reuse qua nhiều project (--scope user).
     """
     # CLAUDE_PROJECT_DIR được Claude Code inject vào env MCP server mỗi session
-    workspace = os.getenv("WORKSPACE_ROOT") or os.getenv("CLAUDE_PROJECT_DIR") or CONFIG_WORKSPACE_ROOT
+    workspace = os.getenv("WORKSPACE_ROOT") or os.getenv("CLAUDE_PROJECT_DIR")
     if not workspace:
         meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
         if meta:
@@ -49,6 +49,7 @@ def _local_wiki_dirs() -> tuple[str, str]:
                 workspace = json.loads(meta).get("tool", {}).get("workspacePath")
             except Exception:
                 workspace = None
+    workspace = workspace or CONFIG_WORKSPACE_ROOT
     if not workspace:
         raise RuntimeError("Không xác định được workspace active để bootstrap local llmwiki")
     wiki_root = os.path.join(workspace, "llmwiki")

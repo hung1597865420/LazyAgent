@@ -36,6 +36,13 @@ from tools.core import (
 from tools.auto import (
     auto_trigger
 )
+from tools.goal import (
+    goal_autopilot,
+    goal_supervisor
+)
+from tools.prod import (
+    prod_readiness_gate
+)
 from tools.review import (
     _SEVERITY_ORDER,
     _FAST_CTX_BYTES,

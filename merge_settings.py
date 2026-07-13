@@ -33,8 +33,12 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 
 ## Auto-Pilot — mặc định bật
 
+- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `mcp__agent-harness__goal_autopilot(mode="init", goal="<nguyên prompt user>")` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
+- Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
 - Sau mọi batch Edit/Write đáng kể, gọi `mcp__agent-harness__auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
-- Trước khi báo hoàn thành, gọi lại `mcp__agent-harness__auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `mcp__agent-harness__prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
+- Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi `mcp__agent-harness__auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Goal progress summary được harness tự prepend vào context của `consult`/`panel_review`/`ask_codebase`/checks liên quan: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` sẽ tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
 
@@ -98,9 +102,10 @@ Nếu tool agent-harness lỗi (server không chạy, Azure timeout/rate-limit):
 HOOK_REMINDER_CMD = (
     'echo \'{"hookSpecificOutput":{"hookEventName":"PostToolUse",'
     '"additionalContext":"Code da thay doi trong turn nay. Neu day la coding task: '
-    'hay goi mcp__agent-harness__auto_trigger voi changed_files/task/stage=post_edit/mode=max. '
+    'neu co active goal thi auto_trigger se tu check goal alignment. Hay goi mcp__agent-harness__auto_trigger voi changed_files/task/stage=post_edit/mode=max, roi goi goal_supervisor de lay next_action. '
+    'Neu task hoi deploy/release/production-ready thi goi prod_readiness_gate mode=max; chi claim prod-ready khi verdict=ready_to_deploy. '
     'Truoc khi bao hoan thanh, goi auto_trigger stage=final mode=max hoac panel_review MOT LAN tren '
-    'toan bo files da sua. Khong gui .env that vao panel_review."}}\'' 
+    'toan bo files da sua; neu supervisor tra run_final thi goi goal_autopilot mode=complete, neu tra complete moi bao xong. Khong gui .env that vao panel_review."}}\''
 )
 
 
@@ -354,8 +359,12 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 
 ## Auto-Pilot — mặc định bật
 
+- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `goal_autopilot` với `mode="init"` và `goal="<nguyên prompt user>"` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
+- Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
 - Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
-- Trước khi báo hoàn thành, gọi lại `auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
+- Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi lại `auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Goal progress summary được harness tự prepend vào context của `consult`/`panel_review`/`ask_codebase`/checks liên quan: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
 

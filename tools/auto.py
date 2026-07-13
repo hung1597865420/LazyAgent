@@ -39,7 +39,7 @@ def _ext(path: str) -> str:
         return name
     if "." not in name:
         return ""
-    return "." + name.rsplit(".", 1)[-1]
+    return "." + name.rsplit(".", 1)[-1].lower()
 
 
 def _basename(path: str) -> str:
@@ -68,7 +68,7 @@ def _summarize_result(result: Any) -> dict:
         return {"ok": True, "result_type": type(result).__name__}
     summary: dict[str, Any] = {"ok": "error" not in result}
     for key in (
-        "error", "verdict", "summary", "score", "findings_count", "errors_count",
+        "error", "status", "message", "verdict", "part_status", "summary", "score", "findings_count", "errors_count",
         "dead_symbols_count", "issues_count", "secrets_found", "warnings",
     ):
         if key in result:
@@ -102,6 +102,7 @@ async def auto_trigger(
     if not _auto_enabled():
         return {"status": "skipped", "reason": "HARNESS_AUTO_PILOT=0"}
 
+    from .goal import check_goal, get_active_goal, goal_progress_summary
     from .review import panel_review
     from .analysis import (
         complexity_analyzer,
@@ -116,9 +117,13 @@ async def auto_trigger(
     files = _norm_files(changed_files)
     mode = (mode or os.getenv("HARNESS_AUTO_MODE", "max")).strip().lower()
     stage = (stage or "post_edit").strip().lower()
-    text = "\n".join([task or "", diff or "", "\n".join(files)])
+    active_goal = get_active_goal()
+    goal_text = active_goal.goal if active_goal else ""
+    goal_summary = goal_progress_summary(active_goal) if active_goal else ""
+    task_with_goal = f"{goal_summary}\n\n{task or ''}".strip() if goal_summary else task
+    text = "\n".join([goal_text, task or "", diff or "", "\n".join(files)])
 
-    if _docs_only(files) and mode != "max":
+    if _docs_only(files) and mode != "max" and not active_goal:
         return {"status": "skipped", "reason": "docs-only change", "files": files}
 
     code_files = [f for f in files if _ext(f) in CODE_EXTS]
@@ -145,6 +150,8 @@ async def auto_trigger(
 
     scan_files = _safe_scan_files(files)
 
+    if active_goal:
+        add("goal_alignment", check_goal(changed_files=files, diff=diff, task=task_with_goal))
     if (mode == "max" or has_config or has_security) and scan_files:
         add("secret_scanner", secret_scanner(paths=scan_files))
     if mode == "max" or has_env:
@@ -166,25 +173,39 @@ async def auto_trigger(
             focus_bits.append("data integrity / database")
         if has_api:
             focus_bits.append("API contract")
+        if active_goal:
+            focus_bits.append(f"goal alignment: {goal_summary or goal_text}")
         add("panel_review", panel_review(files=panel_files, focus=", ".join(focus_bits) or None))
 
     if not jobs:
         return {"status": "skipped", "reason": "no matching automatic checks", "files": files}
 
     results = await asyncio.gather(*jobs)
+    goal_changed_mid_run = any(
+        r.get("tool") == "goal_alignment" and r.get("status") == "idle"
+        for r in results
+    )
+    if goal_changed_mid_run:
+        results = [r for r in results if r.get("tool") != "goal_alignment"]
+        selected = [name for name in selected if name != "goal_alignment"]
     blockers = [
         r for r in results
         if r.get("ok") is False or str(r.get("verdict", "")).lower() == "fix_first"
     ]
+    warnings = []
+    if panel_files != (code_files or files) or scan_files != files:
+        warnings.append(".env-like files were kept out of content scanners/review to avoid exposing secret values")
+    if goal_changed_mid_run:
+        warnings.append("active goal changed or completed while auto_trigger was running; dropped stale goal_alignment result")
     return {
         "status": "completed",
         "mode": mode,
         "stage": stage,
         "files": files,
+        "goal_active": bool(active_goal),
+        "goal": goal_text or None,
         "selected_tools": selected,
         "results": results,
         "blockers_count": len(blockers),
-        "warnings": [
-            ".env-like files were kept out of content scanners/review to avoid exposing secret values"
-        ] if panel_files != (code_files or files) or scan_files != files else [],
+        "warnings": warnings,
     }

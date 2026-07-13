@@ -23,11 +23,12 @@ _log = logging.getLogger("harness.core")
 
 # ── Helper functions for CLI execution and LLM analysis ────────────────────────
 
-def _run_cmd_safe(cmd: list[str], timeout: float = 15.0, cwd: str = WORKSPACE_ROOT) -> tuple[int, str, str]:
+def _run_cmd_safe(cmd: list[str], timeout: float = 15.0, cwd: str | None = None) -> tuple[int, str, str]:
     """Chạy câu lệnh CLI an toàn, bắt timeout."""
     try:
+        workdir = os.path.abspath(cwd or _get_active_workspace())
         r = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout
+            cmd, cwd=workdir, capture_output=True, text=True, encoding="utf-8", timeout=timeout
         )
         return r.returncode, r.stdout or "", r.stderr or ""
     except subprocess.TimeoutExpired:
@@ -54,11 +55,13 @@ MAX_TOTAL_BYTES_BIG   = 2_500_000   # ask_codebase — manager có 1M context
 def _git_diff(
     staged: bool = False,
     since_commit: str = "",
-    cwd: str = WORKSPACE_ROOT,
+    cwd: str | None = None,
 ) -> tuple[str, str]:
     """Chạy git diff và trả về (diff_text, error_msg)."""
+    workdir = os.path.abspath(cwd or _get_active_workspace())
     if since_commit:
-        cmd = ["git", "diff", f"{since_commit}..HEAD", "--unified=5"]
+        revspec = since_commit if ".." in since_commit else f"{since_commit}..HEAD"
+        cmd = ["git", "diff", revspec, "--unified=5"]
     elif staged:
         cmd = ["git", "diff", "--cached", "--unified=5"]
     else:
@@ -66,7 +69,7 @@ def _git_diff(
 
     try:
         r = subprocess.run(
-            cmd, cwd=cwd, capture_output=True,
+            cmd, cwd=workdir, capture_output=True,
             text=True, encoding="utf-8", timeout=15,
         )
     except FileNotFoundError:
@@ -102,7 +105,7 @@ def read_workspace_files(
     total_cap: int = MAX_TOTAL_BYTES,
     number_lines: bool = True,
 ) -> tuple[str, list[str], int]:
-    """Đọc files theo path tương đối từ WORKSPACE_ROOT."""
+    """Đọc files theo path tương đối từ workspace runtime."""
     if isinstance(paths, str):
         paths = [paths]
     elif not isinstance(paths, (list, tuple)):
@@ -112,22 +115,23 @@ def read_workspace_files(
     warnings: list[str] = []
     total = 0
     loaded = 0
+    root = os.path.realpath(_get_active_workspace())
 
     for p in paths:
         if not p or not isinstance(p, str) or not p.strip():
             warnings.append(f"{p!r}: path không hợp lệ — bỏ qua")
             continue
         try:
-            full = os.path.realpath(os.path.join(WORKSPACE_ROOT, p))
+            full = os.path.realpath(os.path.join(root, p))
         except (ValueError, OSError) as e:
             warnings.append(f"{p}: không thể resolve path — {e}")
             continue
         try:
-            outside = os.path.commonpath([full, os.path.realpath(WORKSPACE_ROOT)]) != os.path.realpath(WORKSPACE_ROOT)
+            outside = os.path.commonpath([full, root]) != root
         except ValueError:
             outside = True  # different drives on Windows
         if outside:
-            warnings.append(f"{p}: nằm ngoài WORKSPACE_ROOT — bỏ qua")
+            warnings.append(f"{p}: nằm ngoài workspace runtime — bỏ qua")
             continue
         if not os.path.isfile(full):
             warnings.append(f"{p}: không tồn tại")
@@ -163,11 +167,16 @@ def read_workspace_files(
 
 def _get_active_workspace() -> str:
     """Runtime workspace — không freeze theo project đầu tiên khi MCP reuse process."""
-    return os.path.abspath(
-        os.getenv("WORKSPACE_ROOT")
-        or os.getenv("CLAUDE_PROJECT_DIR")
-        or "."
-    )
+    workspace = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
+    if not workspace:
+        meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
+        if meta:
+            try:
+                workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
+            except Exception:
+                workspace = None
+    workspace = workspace or (os.getenv("WORKSPACE_ROOT") or "").strip()
+    return os.path.abspath(str(workspace or WORKSPACE_ROOT or os.getcwd()))
 
 
 def _wiki_roots() -> list[tuple[str, str]]:
@@ -286,6 +295,13 @@ def _assemble_context(
 ) -> tuple[str, list[str]]:
     parts: list[str] = []
     warnings: list[str] = []
+    try:
+        from .goal import goal_progress_summary
+        goal_summary = goal_progress_summary()
+    except Exception:
+        goal_summary = ""
+    if goal_summary:
+        parts.append(f"=== GOAL PROGRESS ===\n{goal_summary}")
     
     # Collect text to match wiki keywords
     target_text_parts = []
@@ -297,14 +313,25 @@ def _assemble_context(
         target_text_parts.append(context)
     if files:
         target_text_parts.extend(files)
+        root = os.path.realpath(_get_active_workspace())
         for fpath in files[:3]:
             try:
-                full_path = os.path.realpath(os.path.join(WORKSPACE_ROOT, fpath))
-                if os.path.isfile(full_path):
-                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-                        target_text_parts.append(f.read(1000))
-            except Exception:
-                pass
+                full_path = os.path.realpath(os.path.join(root, fpath))
+                if os.path.commonpath([full_path, root]) != root:
+                    warnings.append(f"{fpath}: wiki pre-read outside workspace — skipped")
+                    continue
+                path_obj = Path(full_path)
+                try:
+                    stat_before = path_obj.stat()
+                    if path_obj.is_symlink() or not path_obj.is_file():
+                        warnings.append(f"{fpath}: wiki pre-read non-regular file — skipped")
+                        continue
+                    with path_obj.open("r", encoding="utf-8", errors="replace") as f:
+                        target_text_parts.append(f.read(min(1000, stat_before.st_size)))
+                except OSError as e:
+                    warnings.append(f"{fpath}: wiki pre-read skipped — {e}")
+            except ValueError as e:
+                warnings.append(f"{fpath}: wiki pre-read invalid path — {e}")
     target_text = "\n".join(target_text_parts)
     
     # Auto-inject Wiki Context selectively
@@ -314,7 +341,7 @@ def _assemble_context(
         
     if files:
         file_block, file_warns, _ = read_workspace_files(files, total_cap)
-        warnings = file_warns
+        warnings.extend(file_warns)
         if file_block:
             parts.append(file_block)
     if diff:
@@ -389,11 +416,15 @@ def _calculate_review_hash(
     since_commit: str,
 ) -> str:
     hasher = hashlib.sha256()
+    root = os.path.realpath(_get_active_workspace())
+    hasher.update(root.encode(errors="replace"))
     if files:
         for fpath in sorted(files):
             hasher.update(fpath.encode(errors="replace"))
             try:
-                full_path = os.path.realpath(os.path.join(WORKSPACE_ROOT, fpath))
+                full_path = os.path.realpath(os.path.join(root, fpath))
+                if os.path.commonpath([full_path, root]) != root:
+                    continue
                 if os.path.isfile(full_path):
                     with open(full_path, "rb") as f:
                         while chunk := f.read(8192):
@@ -408,7 +439,7 @@ def _calculate_review_hash(
 
 
 def _export_review_report(result: dict) -> None:
-    report_path = os.path.join(WORKSPACE_ROOT, "REVIEW_REPORT.md")
+    report_path = os.path.join(_get_active_workspace(), "REVIEW_REPORT.md")
     verdict = result.get("verdict", "unknown").upper()
     summary = result.get("summary", "Không có tóm tắt.")
     findings = result.get("findings", [])
@@ -464,7 +495,9 @@ def _extract_and_apply_patch(files: Optional[list[str]], fix_text: str) -> tuple
     if not diff_content:
         return False, "Block diff rỗng", None
         
+    root = os.path.realpath(_get_active_workspace())
     target_file = None
+    patch_targets: list[str] = []
     for line in diff_content.splitlines():
         if line.startswith("--- ") or line.startswith("+++ "):
             parts = line.split()
@@ -474,20 +507,24 @@ def _extract_and_apply_patch(files: Optional[list[str]], fix_text: str) -> tuple
                     fpath = fpath[2:]
                 if fpath in ("dev/null", "/dev/null"):
                     continue
-                full = os.path.realpath(os.path.join(WORKSPACE_ROOT, fpath))
+                full = os.path.realpath(os.path.join(root, fpath))
                 try:
-                    outside = os.path.commonpath([full, os.path.realpath(WORKSPACE_ROOT)]) != os.path.realpath(WORKSPACE_ROOT)
+                    outside = os.path.commonpath([full, root]) != root
                 except ValueError:
                     outside = True
                 if not outside:
-                    target_file = fpath
-                    break
+                    if fpath not in patch_targets:
+                        patch_targets.append(fpath)
+    if len(patch_targets) > 1:
+        return False, "Patch đa file chưa được hỗ trợ bởi apply helper single-file", None
+    if patch_targets:
+        target_file = patch_targets[0]
                         
     if not target_file and files:
         for f in files:
-            full = os.path.realpath(os.path.join(WORKSPACE_ROOT, f))
+            full = os.path.realpath(os.path.join(root, f))
             try:
-                outside = os.path.commonpath([full, os.path.realpath(WORKSPACE_ROOT)]) != os.path.realpath(WORKSPACE_ROOT)
+                outside = os.path.commonpath([full, root]) != root
             except ValueError:
                 outside = True
             if not outside and os.path.isfile(full):
@@ -497,7 +534,7 @@ def _extract_and_apply_patch(files: Optional[list[str]], fix_text: str) -> tuple
     if not target_file:
         return False, "Không xác định được file đích cần vá (patch)", None
         
-    full_target_path = os.path.realpath(os.path.join(WORKSPACE_ROOT, target_file))
+    full_target_path = os.path.realpath(os.path.join(root, target_file))
     is_new_file = not os.path.exists(full_target_path)
     
     if is_new_file:
@@ -628,21 +665,125 @@ def _is_git_repo() -> bool:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=WORKSPACE_ROOT, capture_output=True, text=True
+            cwd=_get_active_workspace(), capture_output=True, text=True
         )
         return r.returncode == 0 and r.stdout.strip() == "true"
     except Exception:
         return False
 
 
+_DIRTY_ARTIFACT_PREFIXES = (
+    ".harness_",
+    ".Codex/",
+    "llmwiki/",
+)
+_DIRTY_ARTIFACT_FILES = {
+    "REVIEW_REPORT.md",
+    ".harness_goal_state.json",
+}
+
+
+def _norm_git_rel(path: str) -> str:
+    return path.replace("\\", "/").strip("/")
+
+
+def _is_sensitive_dirty_path(path: str) -> bool:
+    name = Path(path).name.lower()
+    return name == ".env" or (name.startswith(".env.") and not name.endswith(".example"))
+
+
+def _is_harness_dirty_artifact(path: str) -> bool:
+    rel = _norm_git_rel(path)
+    return (
+        rel in _DIRTY_ARTIFACT_FILES
+        or any(rel.startswith(prefix) for prefix in _DIRTY_ARTIFACT_PREFIXES)
+        or any(part.startswith(".harness_worktree_") for part in rel.split("/"))
+    )
+
+
+def _git_status_paths(repo_path: Path) -> tuple[list[str], str]:
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "-z"],
+            cwd=str(repo_path),
+            capture_output=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return [], "git status timeout (>15s)"
+    except FileNotFoundError:
+        return [], "git không có trên PATH"
+    if r.returncode != 0:
+        return [], r.stderr.decode("utf-8", errors="replace").strip() or f"git status exit {r.returncode}"
+
+    paths: list[str] = []
+    tokens = r.stdout.decode("utf-8", errors="surrogateescape").split("\x00")
+    i = 0
+    while i < len(tokens):
+        entry = tokens[i]
+        i += 1
+        if not entry or len(entry) < 4:
+            continue
+        status_code = entry[:2]
+        rel_file = entry[3:]
+        if status_code[0] in ("R", "C") and i < len(tokens):
+            i += 1
+        paths.append(_norm_git_rel(rel_file))
+    return paths, ""
+
+
+def _scoped_dirty_status(repo_path: Path, scope_files: Optional[list[str]] = None) -> dict:
+    paths, error = _git_status_paths(repo_path)
+    scope = {_norm_git_rel(p) for p in (scope_files or []) if p}
+    user_changes: list[str] = []
+    scoped_conflicts: list[str] = []
+    harness_artifacts: list[str] = []
+    sensitive_ignored: list[str] = []
+
+    for path in sorted(dict.fromkeys(paths)):
+        if _is_sensitive_dirty_path(path):
+            sensitive_ignored.append(path)
+        elif _is_harness_dirty_artifact(path):
+            harness_artifacts.append(path)
+        else:
+            user_changes.append(path)
+            if scope and path in scope:
+                scoped_conflicts.append(path)
+
+    warnings = []
+    if user_changes or harness_artifacts or sensitive_ignored:
+        warnings.append(
+            "Dirty worktree scoped summary: "
+            f"user_changes={len(user_changes)}, "
+            f"harness_artifacts={len(harness_artifacts)}, "
+            f"sensitive_ignored={len(sensitive_ignored)}"
+        )
+    return {
+        "dirty": bool(paths),
+        "error": error,
+        "user_changes": user_changes,
+        "scoped_conflicts": scoped_conflicts,
+        "harness_artifacts": harness_artifacts,
+        "sensitive_ignored": sensitive_ignored,
+        "warnings": warnings,
+        "summary": (
+            "No dirty worktree changes"
+            if not paths else
+            f"{len(user_changes)} user change(s), {len(harness_artifacts)} harness artifact(s), "
+            f"{len(sensitive_ignored)} sensitive file(s) ignored"
+        ),
+    }
+
+
 def _run_tests() -> tuple[bool, str]:
-    test_script = os.path.join(WORKSPACE_ROOT, "smoke_test.py")
+    workspace = _get_active_workspace()
+    test_script = os.path.join(workspace, "smoke_test.py")
     if not os.path.isfile(test_script):
         return True, "Không tìm thấy smoke_test.py để chạy thử, mặc định pass"
     try:
         r = subprocess.run(
             [sys.executable or "python", "smoke_test.py"],
-            cwd=WORKSPACE_ROOT,
+            cwd=workspace,
             capture_output=True,
             text=True,
             timeout=30
@@ -689,33 +830,96 @@ def _apply_patch_in_dir(target_dir: str, patch_content: str, files: Optional[lis
     if not diff_content:
         return False, "Block diff rỗng"
         
-    patch_file = os.path.join(target_dir, "patch.diff")
-    try:
-        with open(patch_file, "w", encoding="utf-8") as f:
-            f.write(diff_content)
-    except Exception as e:
-        return False, f"Không thể ghi file diff tạm thời: {e}"
-        
     try:
         r = subprocess.run(
-            ["git", "apply", "--ignore-whitespace", "patch.diff"],
-            cwd=target_dir, capture_output=True, text=True
+            ["git", "-c", "i18n.commitEncoding=utf-8", "-c", "core.quotepath=false", "apply", "--ignore-whitespace", "-"],
+            cwd=target_dir, input=diff_content.encode("utf-8"),
+            capture_output=True,
         )
-        if os.path.exists(patch_file):
-            os.remove(patch_file)
-            
         if r.returncode == 0:
             return True, "Áp dụng bản vá thành công"
         else:
-            return False, f"git apply thất bại: {r.stderr.strip()}"
+            return False, f"git apply thất bại: {r.stderr.decode('utf-8', errors='replace').strip()}"
     except Exception as e:
-        if os.path.exists(patch_file):
-            os.remove(patch_file)
         return False, f"Lỗi khi chạy git apply: {e}"
 
 
+def _copy_regular_file_atomic(src_file: Path, dest_file: Path) -> tuple[bool, str]:
+    if src_file.is_symlink():
+        return False, f"Refuse to copy symlink from isolated worktree: {src_file.name}"
+    if not src_file.is_file():
+        return False, f"Source is not a regular file in isolated worktree: {src_file.name}"
+    dest_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = dest_file.with_name(f".{dest_file.name}.harness_tmp_{uuid.uuid4().hex[:8]}")
+    try:
+        shutil.copy2(src_file, tmp_file)
+        if dest_file.is_symlink():
+            dest_file.unlink()
+        os.replace(tmp_file, dest_file)
+        return True, ""
+    except Exception as e:
+        try:
+            if tmp_file.exists() or tmp_file.is_symlink():
+                tmp_file.unlink()
+        except Exception:
+            pass
+        return False, f"Copy-back failed for {dest_file.name}: {e}"
+
+
+def _porcelain_status_path(xy: str, first_path: str, second_path: str | None, root: Path) -> str:
+    if xy[:1] not in {"R", "C"} or not second_path:
+        return first_path
+    candidates = [second_path, first_path]
+    for candidate in candidates:
+        p = root / candidate
+        if p.exists() or p.is_symlink():
+            return candidate
+    return second_path
+
+
+def _path_fingerprint(path: Path) -> tuple:
+    try:
+        try:
+            stat = path.lstat()
+        except FileNotFoundError:
+            return ("missing",)
+        if path.is_symlink():
+            return ("symlink", stat.st_mtime_ns, getattr(stat, "st_ino", 0), os.readlink(path))
+        if path.is_dir():
+            return ("dir", stat.st_mtime_ns, getattr(stat, "st_ino", 0))
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            while chunk := f.read(8192):
+                h.update(chunk)
+        return ("file", stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ino", 0), h.hexdigest())
+    except Exception as e:
+        return ("error", str(e))
+
+
+def _has_symlink_parent(root: Path, path: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    cur = root
+    for part in rel.parent.parts:
+        cur = cur / part
+        if cur.is_symlink():
+            return True
+    return False
+
+
 def _apply_and_test_isolated(patch_content: str, files: Optional[list[str]]) -> tuple[bool, str, str]:
-    repo_path = Path(WORKSPACE_ROOT).resolve()
+    repo_path = Path(_get_active_workspace()).resolve()
+    try:
+        git_check = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(repo_path), capture_output=True, text=True, timeout=10,
+        )
+    except Exception as e:
+        return False, f"not_git_repo: {e}", ""
+    if git_check.returncode != 0 or git_check.stdout.strip() != "true":
+        return False, "not_git_repo: isolated apply requires a git repository", ""
     uid = uuid.uuid4().hex[:8]
     branch = f"orca-fix-{uid}"
     wt_path = repo_path / f".harness_worktree_{uid}"
@@ -741,50 +945,153 @@ def _apply_and_test_isolated(patch_content: str, files: Optional[list[str]]) -> 
         patch_ok, patch_msg = _apply_patch_in_dir(str(wt_path), patch_content, files)
         if not patch_ok:
             return False, f"Vá lỗi thất bại trong worktree cô lập: {patch_msg}", ""
-            
+
+        r_symlink = subprocess.run(
+            ["git", "status", "--porcelain", "-z"],
+            cwd=str(wt_path), capture_output=True, timeout=15,
+        )
+        if r_symlink.returncode == 0:
+            entries = r_symlink.stdout.decode("utf-8", errors="surrogateescape").split("\x00")
+            i = 0
+            while i < len(entries):
+                entry = entries[i]
+                i += 1
+                if not entry.strip() or len(entry) < 4:
+                    continue
+                xy = entry[:2]
+                rel_file = entry[3:]
+                alt_file = None
+                if xy[:1] in ("R", "C") and i < len(entries):
+                    alt_file = entries[i]
+                    i += 1
+                rel_file = _porcelain_status_path(xy, rel_file, alt_file, wt_path)
+                if " -> " in rel_file:
+                    rel_file = rel_file.rsplit(" -> ", 1)[1]
+                rel = Path(rel_file)
+                if not rel.is_absolute() and ".." not in rel.parts and (wt_path / rel).is_symlink():
+                    return False, f"unsupported_symlink_change: {rel_file}", ""
+             
         test_ok, test_log = _run_tests_in_dir(str(wt_path))
         if not test_ok:
             msg = "Vá lỗi thành công nhưng không pass test suite"
             return False, msg, test_log
             
-        r_main_dirty = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(repo_path), capture_output=True, text=True
-        )
-        if r_main_dirty.returncode == 0 and r_main_dirty.stdout.strip():
-            return False, "Workspace chính đang dirty — không copy từ worktree để tránh ghi đè thay đổi local", test_log
-
         r_status = subprocess.run(
             ["git", "status", "--porcelain", "-z"],
             cwd=str(wt_path), capture_output=True
         )
+        changed_rels: list[str] = []
         if r_status.returncode == 0:
             raw = r_status.stdout.decode("utf-8", errors="surrogateescape")
             entries = raw.split("\x00")
-            safe_root = repo_path.resolve()
-            for entry in entries:
+            i = 0
+            while i < len(entries):
+                entry = entries[i]
+                i += 1
                 if not entry.strip() or len(entry) < 4:
                     continue
                 xy = entry[:2]
-                rel_file = entry[3:].strip()
+                rel_file = entry[3:]
+                alt_file = None
+                if xy[:1] in ("R", "C") and i < len(entries):
+                    alt_file = entries[i]
+                    i += 1
+                rel_file = _porcelain_status_path(xy, rel_file, alt_file, wt_path)
+                if " -> " in rel_file:
+                    rel_file = rel_file.rsplit(" -> ", 1)[1]
                 rel = Path(rel_file)
                 if rel.is_absolute() or ".." in rel.parts:
                     continue
-                dest_file = (safe_root / rel).resolve()
-                if safe_root not in dest_file.parents and dest_file != safe_root:
+                changed_rels.append(_norm_git_rel(rel_file))
+
+            dirty = _scoped_dirty_status(repo_path, changed_rels)
+            if dirty["error"]:
+                return False, f"Không thể kiểm tra dirty worktree scoped: {dirty['error']}", test_log
+            if dirty["scoped_conflicts"]:
+                return False, (
+                    "Workspace chính có thay đổi trên đúng file sắp copy từ worktree — abort để tránh ghi đè: "
+                    + ", ".join(f"`{p}`" for p in dirty["scoped_conflicts"][:8])
+                ), test_log
+
+            safe_root = repo_path.resolve()
+            copy_snapshot = {
+                rel: _path_fingerprint(safe_root / rel)
+                for rel in changed_rels
+            }
+            copy_errors: list[str] = []
+            i = 0
+            while i < len(entries):
+                entry = entries[i]
+                i += 1
+                if not entry.strip() or len(entry) < 4:
+                    continue
+                xy = entry[:2]
+                rel_file = entry[3:]
+                alt_file = None
+                if xy[:1] in ("R", "C") and i < len(entries):
+                    alt_file = entries[i]
+                    i += 1
+                rel_file = _porcelain_status_path(xy, rel_file, alt_file, wt_path)
+                if " -> " in rel_file:
+                    rel_file = rel_file.rsplit(" -> ", 1)[1]
+                rel = Path(rel_file)
+                if rel.is_absolute() or ".." in rel.parts:
+                    continue
+                dest_entry = safe_root / rel
+                try:
+                    dest_file = dest_entry.resolve(strict=False)
+                except (OSError, RuntimeError) as e:
+                    copy_errors.append(f"{rel_file}: invalid destination path: {e}")
+                    continue
+                try:
+                    outside = os.path.commonpath([str(dest_file), str(safe_root)]) != str(safe_root)
+                except ValueError:
+                    outside = True
+                if outside:
+                    _log.warning("[Harness] Skip copy-back outside workspace: %s", rel_file)
+                    continue
+                rel_norm = _norm_git_rel(rel_file)
+                if rel_norm not in copy_snapshot:
+                    copy_errors.append(f"{rel_file}: missing copy-back snapshot entry")
+                    continue
+                if _path_fingerprint(dest_entry) != copy_snapshot[rel_norm]:
+                    copy_errors.append(f"{rel_file}: changed during isolated apply; abort copy-back")
+                    continue
+                if dest_entry.is_symlink():
+                    copy_errors.append(f"{rel_file}: refusing copy-back over symlink destination")
+                    continue
+                if _has_symlink_parent(safe_root, dest_entry):
+                    copy_errors.append(f"{rel_file}: refusing copy-back through symlink parent")
                     continue
                 src_file = wt_path / rel_file
                 x_code = xy[0].strip()
                 y_code = xy[1].strip()
                 is_delete = (x_code == "D" or y_code == "D")
                 if is_delete:
-                    if dest_file.exists() and not dest_file.is_symlink():
-                        dest_file.unlink()
-                elif src_file.exists() and not src_file.is_symlink() and not dest_file.is_symlink():
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_file, dest_file)
+                    try:
+                        if _path_fingerprint(dest_entry) != copy_snapshot[rel_norm]:
+                            copy_errors.append(f"{rel_file}: changed before delete; abort copy-back")
+                            continue
+                        if dest_file.exists() or dest_file.is_symlink():
+                            if dest_file.is_dir() and not dest_file.is_symlink():
+                                copy_errors.append(f"{rel_file}: refusing to delete directory")
+                            else:
+                                dest_entry.unlink()
+                    except Exception as e:
+                        copy_errors.append(f"{rel_file}: delete failed: {e}")
+                elif src_file.exists() or src_file.is_symlink():
+                    ok, copy_msg = _copy_regular_file_atomic(src_file, dest_entry)
+                    if not ok:
+                        copy_errors.append(f"{rel_file}: {copy_msg}")
+            if copy_errors:
+                return False, "Copy-back từ worktree không hoàn tất: " + "; ".join(copy_errors[:5]), test_log
                         
-        msg = "Vá lỗi thành công và vượt qua bộ kiểm thử trong worktree cô lập"
+        suffix = ""
+        if r_status.returncode == 0:
+            dirty = _scoped_dirty_status(repo_path, changed_rels)
+            if dirty["warnings"] and not dirty["scoped_conflicts"]:
+                suffix = f" ({dirty['summary']}; unrelated dirty changes left untouched)"
+        msg = "Vá lỗi thành công và vượt qua bộ kiểm thử trong worktree cô lập" + suffix
         return True, msg, test_log
         
     except Exception as e:
@@ -797,10 +1104,6 @@ def _apply_and_test_isolated(patch_content: str, files: Optional[list[str]]) -> 
         except Exception:
             pass
             
-        try:
-            subprocess.run(["git", "branch", "-D", branch], cwd=str(repo_path), capture_output=True)
-        except Exception:
-            pass
 
 
 def _restore_session_backups(backup_paths: list[str]):
@@ -815,12 +1118,12 @@ def _restore_session_backups(backup_paths: list[str]):
                 if os.path.isfile(full_path):
                     os.remove(full_path)
                 os.remove(bak_path)
-                rel = os.path.relpath(full_path, WORKSPACE_ROOT)
+                rel = os.path.relpath(full_path, _get_active_workspace())
                 _log.info("[Harness] Removed new file %s created during run", rel)
             else:
                 shutil.copy2(bak_path, full_path)
                 os.remove(bak_path)
-                rel = os.path.relpath(full_path, WORKSPACE_ROOT)
+                rel = os.path.relpath(full_path, _get_active_workspace())
                 _log.info("[Harness] Restored %s from backup", rel)
         except Exception:
             pass
@@ -894,7 +1197,7 @@ async def _extract_and_save_lesson(error: str, files: Optional[list[str]], patch
         if not slug:
             slug = "lesson"
             
-        wiki_root = os.path.join(WORKSPACE_ROOT, "llmwiki", "wiki")
+        wiki_root = os.path.join(_get_active_workspace(), "llmwiki", "wiki")
         concepts_dir = os.path.join(wiki_root, "concepts")
         os.makedirs(concepts_dir, exist_ok=True)
         
@@ -923,7 +1226,9 @@ def run_in_sandbox(code: str, timeout: float = 5.0) -> dict:
     if not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
         return {"status": "error", "stdout": "", "stderr": "timeout must be a positive finite number", "duration_ms": 0}
     
-    temp_dir = tempfile.mkdtemp(prefix=".harness_sandbox_", dir=WORKSPACE_ROOT)
+    workspace = _get_active_workspace()
+    os.makedirs(workspace, exist_ok=True)
+    temp_dir = tempfile.mkdtemp(prefix=".harness_sandbox_", dir=workspace)
     
     with tempfile.NamedTemporaryFile(suffix=".py", dir=temp_dir, mode="w", delete=False, encoding="utf-8") as f:
         f.write(code)
@@ -950,6 +1255,7 @@ def run_in_sandbox(code: str, timeout: float = 5.0) -> dict:
     stdout = ""
     stderr = ""
     status = "success"
+    returncode = None
     
     try:
         proc = subprocess.Popen(
@@ -967,12 +1273,14 @@ def run_in_sandbox(code: str, timeout: float = 5.0) -> dict:
             out, err = proc.communicate(timeout=timeout)
             stdout = out
             stderr = err
+            returncode = proc.returncode
         except subprocess.TimeoutExpired:
             proc.kill()
             out, err = proc.communicate()
             stdout = out
             stderr = err + f"\n[Harness Sandbox Error] Lỗi quá thời gian chờ (Timeout > {timeout}s)"
             status = "timeout"
+            returncode = proc.returncode
             
     except Exception as e:
         status = "error"
@@ -984,16 +1292,22 @@ def run_in_sandbox(code: str, timeout: float = 5.0) -> dict:
                 proc.kill()
         except Exception:
             pass
-        try:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        for attempt in range(5):
+            try:
+                if not os.path.exists(temp_dir):
+                    break
+                shutil.rmtree(temp_dir, ignore_errors=False)
+            except Exception as e:
+                if attempt == 4:
+                    _log.warning("Sandbox cleanup failed for %s: %s", temp_dir, e)
+                    break
+                time.sleep(0.05)
             
     return {
         "status": status,
         "stdout": stdout,
         "stderr": stderr,
+        "returncode": returncode,
         "duration_ms": duration_ms
     }
 
@@ -1111,8 +1425,9 @@ def build_ast_call_graph() -> dict:
                 "type": edge_type
             })
 
+    workspace = _get_active_workspace()
     py_files = []
-    for r_dir, _, files_in_dir in os.walk(WORKSPACE_ROOT):
+    for r_dir, _, files_in_dir in os.walk(workspace):
         if any(p in r_dir for p in [".git", "node_modules", ".harness_worktree", ".gemini", ".claude"]):
             continue
         for f in files_in_dir:
@@ -1120,7 +1435,7 @@ def build_ast_call_graph() -> dict:
                 py_files.append(os.path.join(r_dir, f))
                 
     for fpath in py_files:
-        rel_path = os.path.relpath(fpath, WORKSPACE_ROOT)
+        rel_path = os.path.relpath(fpath, workspace)
         try:
             with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                 tree = ast.parse(f.read())
@@ -1169,7 +1484,7 @@ def build_ast_call_graph() -> dict:
         CallGraphVisitor().visit(tree)
         
     try:
-        graph_file = os.path.join(WORKSPACE_ROOT, ".harness_ast_graph.json")
+        graph_file = os.path.join(workspace, ".harness_ast_graph.json")
         with open(graph_file, "w", encoding="utf-8") as f:
             json.dump(graph, f, ensure_ascii=False, indent=2)
     except Exception:
