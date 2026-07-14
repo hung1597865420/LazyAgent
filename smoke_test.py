@@ -204,7 +204,7 @@ expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "prov
             "auth_matrix_auditor", "harness_trace_viewer", "incremental_refactor_guard",
             "goal_autopilot", "goal_supervisor", "goal_runner", "panel_review", "consult", "alt_implementation", "suggest_fix",
             "goal_runner_control", "run_ledger", "policy_profile", "agent_adapters", "context_auditor",
-            "ask_codebase_health", "patch_safety_check", "benchmark_runner", "harness_doctor",
+            "ask_codebase_health", "patch_safety_check", "benchmark_runner", "harness_doctor", "lesson_curator",
             "ask_codebase", "quick_task", "run_single_agent", "list_agents",
             "wiki_ingest", "wiki_query", "wiki_lint", "security_autofix",
             "auto_tester", "visual_reviewer", "benchmarker", "dependency_upgrader",
@@ -1591,6 +1591,41 @@ try:
         tags=["power automate", "approval flow"],
         source="smoke",
     )
+    curator_local_promoted = append_lesson({
+        "source": "goal_runner",
+        "lesson_type": "procedure",
+        "title": "Dataverse solution import workflow",
+        "summary": "Import a managed Dataverse solution into a target environment and validate dependencies.",
+        "steps": [
+            "Open the target Power Platform environment.",
+            "Import the managed solution package.",
+            "Verify connection references and environment variables.",
+        ],
+        "tags": ["dataverse", "solution", "workflow"],
+        "lesson_key": "smoke:curator-local-procedure",
+    })
+    curator_untrusted_local = append_lesson({
+        "source": "manual",
+        "lesson_type": "procedure",
+        "title": "Untrusted global promotion workflow",
+        "summary": "This looks procedural but should not auto-promote because the source is not trusted.",
+        "steps": [
+            "Open the untrusted tool.",
+            "Create a reusable workflow.",
+            "Verify the result.",
+        ],
+        "tags": ["workflow"],
+        "lesson_key": "smoke:curator-untrusted-procedure",
+    })
+    curator_noise_blocked = append_lesson({
+        "source": "client_hook",
+        "lesson_type": "edit_event",
+        "title": "Edit local temp file",
+        "summary": "Client hook observed a local edit.",
+        "files": ["tmp/local.py"],
+        "lesson_key": "smoke:curator-noise",
+    })
+    curator_safe_dry_run = asyncio.run(st.lesson_curator(limit=20, promote=True, dry_run=True, mode="safe"))
     duplicate_reordered = record_procedure_lesson(
         title="Power Automate create approval flow",
         summary="Create a cloud flow, choose the trigger, configure approval actions, then save and test the flow.",
@@ -1716,6 +1751,39 @@ Steps:
         concurrent_flags = list(pool.map(lambda _i: append_lesson(concurrent_entry), range(12)))
     lesson_lines_after_concurrency = (lesson_ws / ".harness_lessons.jsonl").read_text(encoding="utf-8").splitlines()
     concurrent_count = sum(1 for line in lesson_lines_after_concurrency if '"lesson_key": "smoke:concurrent-dedupe"' in line)
+    concurrent_global_entry = {
+        "source": "goal_runner",
+        "lesson_type": "procedure",
+        "title": "Concurrent global promotion workflow",
+        "summary": "Create a reusable workflow once even when many appenders race.",
+        "steps": ["Open the workflow tool.", "Create the workflow.", "Verify the workflow."],
+        "tags": ["workflow"],
+        "lesson_key": "smoke:global-concurrent-dedupe",
+    }
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        concurrent_global_flags = list(pool.map(lambda _i: append_lesson(concurrent_global_entry), range(12)))
+    global_lines_after_concurrency = global_lesson_file.read_text(encoding="utf-8").splitlines()
+    concurrent_global_count = sum(1 for line in global_lines_after_concurrency if '"lesson_key": "smoke:global-concurrent-dedupe"' in line)
+    process_global_code = """
+from tools.core import append_lesson
+append_lesson({
+    "source": "goal_runner",
+    "lesson_type": "procedure",
+    "title": "Cross process global promotion workflow",
+    "summary": "Create one reusable global workflow when multiple processes race.",
+    "steps": ["Open the workflow tool.", "Create the workflow.", "Verify the workflow."],
+    "tags": ["workflow"],
+    "lesson_key": "smoke:global-process-dedupe",
+})
+"""
+    process_env = {**os.environ, "WORKSPACE_ROOT": str(lesson_ws), "CLAUDE_PROJECT_DIR": str(lesson_ws), "HARNESS_GLOBAL_LESSONS_FILE": str(global_lesson_file)}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        process_global_runs = list(pool.map(
+            lambda _i: subprocess.run([sys.executable, "-c", process_global_code], cwd=str(Path.cwd()), env=process_env, capture_output=True, text=True, timeout=20),
+            range(8),
+        ))
+    global_lines_after_process = global_lesson_file.read_text(encoding="utf-8").splitlines()
+    process_global_count = sum(1 for line in global_lines_after_process if '"lesson_key": "smoke:global-process-dedupe"' in line)
     lesson_context = load_relevant_lessons_context("ask_codebase timeout model_chain")
     procedure_context = load_relevant_lessons_context("Power Automate tạo flow approval")
     secret_context = load_relevant_lessons_context("secret lesson redaction marker")
@@ -1723,6 +1791,8 @@ Steps:
     global_procedure_context = load_relevant_lessons_context("Power Automate tạo flow approval")
     global_fallback_context = load_relevant_lessons_context("Power Automate environment promotion managed solution")
     global_mcp_tool_context = load_relevant_lessons_context("SharePoint approval routing workflow")
+    global_curator_context = load_relevant_lessons_context("Dataverse solution import workflow")
+    global_curator_untrusted_context = load_relevant_lessons_context("Untrusted global promotion workflow")
     global_only_bug_context = load_relevant_lessons_context("ask_codebase timeout model_chain")
     os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws)
     global_lesson_path_during_test = get_global_lessons_path()
@@ -1899,6 +1969,16 @@ check("procedure lesson global qua project khác, bug/fix vẫn local",
       and "scope=global" in global_procedure_context
       and "ask_codebase model chain timeout" not in global_only_bug_context,
       f"global={global_procedure_context!r} bug={global_only_bug_context!r} path={global_lesson_path_during_test!r}")
+check("lesson curator tự phân loại và promote global đúng loại",
+      curator_local_promoted is True
+      and curator_untrusted_local is True
+      and curator_noise_blocked is True
+      and "Dataverse solution import workflow" in global_curator_context
+      and "scope=global" in global_curator_context
+      and "Untrusted global promotion workflow" not in global_curator_untrusted_context
+      and curator_safe_dry_run.get("counts", {}).get("noise", 0) >= 1
+      and any(d.get("lesson_key") == "smoke:curator-local-procedure" and d.get("promote_global") for d in curator_safe_dry_run.get("decisions", [])),
+      f"promoted={curator_local_promoted} untrusted={curator_untrusted_local} noise={curator_noise_blocked} context={global_curator_context!r} untrusted_ctx={global_curator_untrusted_context!r} dry={curator_safe_dry_run!r}")
 check("procedure lesson parser/dedupe/redaction robust",
       duplicate_reordered.get("status") == "duplicate"
       and any(item.get("status") == "stored" for item in multiline_marker_lessons)
@@ -1909,6 +1989,12 @@ check("procedure lesson parser/dedupe/redaction robust",
 check("lesson append dedupe atomic trong process",
       concurrent_flags.count(True) == 1 and concurrent_count == 1,
       f"flags={concurrent_flags} count={concurrent_count}")
+check("lesson auto-promote global dedupe atomic trong process",
+      concurrent_global_flags.count(True) == 1 and concurrent_global_count == 1,
+      f"flags={concurrent_global_flags} count={concurrent_global_count}")
+check("lesson auto-promote global dedupe atomic đa tiến trình",
+      all(run.returncode == 0 for run in process_global_runs) and process_global_count == 1,
+      f"returncodes={[run.returncode for run in process_global_runs]} count={process_global_count} stderr={[run.stderr[:120] for run in process_global_runs]}")
 check("lesson append dedupe scan full file",
       old_key_first is True and old_key_second is False and old_key_count == 1,
       f"first={old_key_first} second={old_key_second} count={old_key_count}")

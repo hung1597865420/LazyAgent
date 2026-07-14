@@ -26,7 +26,27 @@ _log = logging.getLogger("harness.core")
 LESSON_INDEX_FILE = ".harness_lessons.jsonl"
 GLOBAL_LESSON_INDEX_FILE = ".harness_global_lessons.jsonl"
 LESSON_DB_FILE = ".harness_lessons.db"
-_LESSON_LOCK = threading.Lock()
+_LESSON_LOCK = threading.RLock()
+_LESSON_PROMOTION_LOCK = threading.RLock()
+_LESSON_PROMOTION_LOCAL_TYPES = {"procedure", "workflow", "procedure_candidate"}
+_LESSON_NOISE_TYPES = {"edit_event", "project_seen"}
+_LESSON_LOCAL_ONLY_TYPES = {"checked_edit", "panel_review", "fix", "bug_fix"}
+_LESSON_AUTO_PROMOTE_SOURCES = {"procedure", "goal_runner", "goal_runner_fallback", "mcp_tool_fallback"}
+_LESSON_ACTION_WORDS = {
+    "add", "build", "choose", "configure", "create", "deploy", "export", "import",
+    "install", "open", "run", "save", "select", "set", "test", "update", "verify",
+    "cai", "cấu", "chon", "chọn", "chay", "chạy", "dat", "đặt", "kiem", "kiểm",
+    "luu", "lưu", "mo", "mở", "nhap", "nhập", "tao", "tạo", "them", "thêm",
+    "xuat", "xuất",
+}
+_LESSON_GLOBAL_REJECT_PATTERNS = (
+    r"\[redacted\]",
+    r"(?i)\btraceback\b|\bstack trace\b|\bexception\b|\btimeout\b|\bfailed\b",
+    r"(?i)\bapi[_-]?key\b|\bpassword\b|\bsecret\b|\btoken\b|\bauthorization\b",
+    r"(?i)\b\.env\b|\blocalhost\b|\b127\.0\.0\.1\b",
+    r"(?i)[a-z]:\\users\\|/users/|/home/",
+)
+_LESSON_CURATOR_AZURE_ROLES = (AgentRole.TESTER, AgentRole.SECURITY, AgentRole.REVIEWER)
 
 # ── Helper functions for CLI execution and LLM analysis ────────────────────────
 
@@ -418,8 +438,348 @@ def _lesson_file_lock(path: Path):
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _lesson_text_blob(entry: dict) -> str:
+    parts = []
+    for key in ("source", "lesson_type", "title", "summary", "error_signature", "fix_summary", "tags", "steps", "files", "refs"):
+        value = entry.get(key)
+        if value:
+            parts.append(json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, (dict, list)) else str(value))
+    return "\n".join(parts)
+
+
+def _lesson_actionable_steps(entry: dict) -> list[str]:
+    return [
+        step for step in _clean_lesson_steps(entry.get("steps"))
+        if _lesson_terms(step) & _LESSON_ACTION_WORDS
+    ]
+
+
+def _lesson_auto_promote_allowed(entry: dict) -> bool:
+    source = str(entry.get("source") or "").strip().lower()
+    lesson_type = str(entry.get("lesson_type") or "").strip().lower()
+    return source in _LESSON_AUTO_PROMOTE_SOURCES and lesson_type in _LESSON_PROMOTION_LOCAL_TYPES
+
+
+def _lesson_should_curate(entry: dict) -> bool:
+    lesson_type = str(entry.get("lesson_type") or "").strip().lower()
+    source = str(entry.get("source") or "").strip().lower()
+    return (
+        lesson_type in _LESSON_PROMOTION_LOCAL_TYPES
+        or source in _LESSON_AUTO_PROMOTE_SOURCES
+        or bool(entry.get("steps"))
+    )
+
+
+def curate_lesson(entry: dict) -> dict:
+    """Classify one lesson and decide whether it may be promoted to global."""
+    lesson_type = str(entry.get("lesson_type") or "").strip().lower()
+    source = str(entry.get("source") or "").strip().lower()
+    title = str(entry.get("title") or "").strip()
+    summary = str(entry.get("summary") or entry.get("fix_summary") or "").strip()
+    blob = _lesson_text_blob(entry).lower()
+    steps = _clean_lesson_steps(entry.get("steps"))
+    actionable_steps = _lesson_actionable_steps(entry)
+    tags = [str(tag).lower() for tag in (entry.get("tags") or [])] if isinstance(entry.get("tags"), list) else [str(entry.get("tags") or "").lower()]
+
+    classification = "local_fact"
+    promote = False
+    reason = "local-only lesson"
+    confidence = 0.45
+
+    if lesson_type in _LESSON_NOISE_TYPES or source == "client_hook":
+        classification, reason, confidence = "noise", "client hook trace only", 0.95
+    elif lesson_type in _LESSON_LOCAL_ONLY_TYPES or entry.get("error_signature"):
+        classification, reason, confidence = "local_fact", "project/debug review lesson", 0.8
+    else:
+        looks_procedural = (
+            lesson_type in _LESSON_PROMOTION_LOCAL_TYPES
+            or "workflow" in tags
+            or "procedure" in tags
+            or "quy trình" in blob
+            or "reusable workflow" in blob
+        )
+        reject = next((pat for pat in _LESSON_GLOBAL_REJECT_PATTERNS if re.search(pat, blob)), "")
+        enough_steps = len(actionable_steps) >= 2 or (len(steps) >= 2 and lesson_type in _LESSON_PROMOTION_LOCAL_TYPES)
+        if looks_procedural and title and summary and enough_steps and not reject:
+            classification, promote, reason, confidence = "global_procedure", True, "reusable procedure with actionable steps", 0.9
+        elif looks_procedural:
+            classification, reason, confidence = "procedure_candidate", "missing safe title/summary/actionable steps or contains local/sensitive text", 0.65
+
+    return {
+        "classification": classification,
+        "promote_global": promote,
+        "reason": reason,
+        "confidence": confidence,
+        "actionable_steps": len(actionable_steps),
+    }
+
+
+def _global_lesson_payload(entry: dict, decision: dict) -> dict:
+    steps = _clean_lesson_steps(entry.get("steps"))
+    raw_tags = entry.get("tags") if isinstance(entry.get("tags"), list) else [entry.get("tags")] if isinstance(entry.get("tags"), str) else []
+    tag_list = sorted(set(str(tag).strip().lower()[:80] for tag in raw_tags[:20] if isinstance(tag, str) and tag.strip()) | {"procedure", "workflow", "curated"})
+    lesson_key = str(entry.get("lesson_key") or "")
+    if not lesson_key or lesson_key.startswith("entry:"):
+        key_steps = sorted(re.sub(r"\s+", " ", step.lower()).strip() for step in steps)
+        digest = hashlib.sha256(json.dumps([
+            str(entry.get("title") or "").lower(),
+            str(entry.get("summary") or "").lower(),
+            key_steps,
+        ], ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+        lesson_key = f"procedure:{digest}"
+    return {
+        "source": str(entry.get("source") or "lesson_curator"),
+        "lesson_type": "procedure",
+        "title": str(entry.get("title") or "")[:160],
+        "outcome": str(entry.get("outcome") or "learned"),
+        "summary": str(entry.get("summary") or "")[:1000],
+        "steps": steps,
+        "tags": tag_list,
+        "refs": entry.get("refs") or {},
+        "curation": decision,
+        "lesson_key": lesson_key,
+    }
+
+
+def _lesson_curator_static(
+    limit: int = 100,
+    *,
+    promote: bool = True,
+    dry_run: bool = False,
+    allow_untrusted_promote: bool = False,
+) -> dict:
+    wanted = max(1, min(500, int(limit or 100)))
+    rows = read_lessons(wanted, include_global=False)
+    decisions = []
+    counts: dict[str, int] = {}
+    promoted = 0
+    for item in rows:
+        decision = curate_lesson(item)
+        classification = str(decision.get("classification") or "unknown")
+        counts[classification] = counts.get(classification, 0) + 1
+        stored_global = False
+        final_promote_allowed = _lesson_auto_promote_allowed(item) or allow_untrusted_promote
+        if promote and not dry_run and decision.get("promote_global") and final_promote_allowed:
+            stored_global = append_lesson(_global_lesson_payload(item, decision), global_scope=True)
+            promoted += 1 if stored_global else 0
+        decisions.append({
+            "lesson_key": item.get("lesson_key"),
+            "title": item.get("title"),
+            "lesson_type": item.get("lesson_type"),
+            "classification": classification,
+            "promote_global": bool(decision.get("promote_global")),
+            "final_promote_allowed": final_promote_allowed,
+            "stored_global": stored_global,
+            "reason": decision.get("reason"),
+            "confidence": decision.get("confidence"),
+        })
+    return {
+        "status": "completed",
+        "scanned": len(rows),
+        "promoted": promoted,
+        "dry_run": dry_run,
+        "counts": counts,
+        "decisions": decisions,
+    }
+
+
+def _lesson_curator_candidate(item: dict, decision: dict) -> bool:
+    if decision.get("classification") == "noise":
+        return False
+    blob = _lesson_text_blob(item).lower()
+    return (
+        bool(decision.get("promote_global"))
+        or decision.get("classification") == "procedure_candidate"
+        or "workflow" in blob
+        or "procedure" in blob
+        or "quy trình" in blob
+        or bool(_clean_lesson_steps(item.get("steps")))
+    )
+
+
+async def _azure_curate_one(item: dict, static_decision: dict, *, timeout: float) -> dict:
+    lesson = {
+        "source": item.get("source"),
+        "lesson_type": item.get("lesson_type"),
+        "title": item.get("title"),
+        "outcome": item.get("outcome"),
+        "summary": item.get("summary"),
+        "fix_summary": item.get("fix_summary"),
+        "error_signature": item.get("error_signature"),
+        "steps": _clean_lesson_steps(item.get("steps")),
+        "tags": item.get("tags"),
+        "files": item.get("files"),
+        "refs": item.get("refs"),
+        "static_decision": static_decision,
+    }
+    prompt = (
+        "Classify this harness lesson for long-term memory. Return ONLY JSON with keys: "
+        "classification (noise|local_fact|reusable_fix|procedure_candidate|global_procedure), "
+        "promote_global (boolean), confidence (0..1), reason, normalized_title, normalized_summary, "
+        "tags (array), steps (array). Promote global ONLY for reusable cross-project workflows/procedures. "
+        "Do NOT promote project-specific edits, panel_review findings, tracebacks, timeouts, secrets, local paths, or .env details."
+    )
+    context = json.dumps(lesson, ensure_ascii=False, default=str)[:12000]
+    roles = _LESSON_CURATOR_AZURE_ROLES
+
+    async def run(role: AgentRole) -> dict:
+        try:
+            res = await Agent(role, get_azure_client()).run_async(
+                prompt,
+                context,
+                json_mode=True,
+                timeout=timeout,
+                timeout_retries=0,
+                use_spares=False,
+            )
+            parsed = _parse_json_object(res.result) if res.status == "success" else None
+            if not isinstance(parsed, dict):
+                return {"role": role.value, "status": res.status, "error": res.error or "invalid_json"}
+            parsed["role"] = role.value
+            parsed["status"] = "success"
+            parsed["model"] = res.model_used
+            return parsed
+        except Exception as exc:
+            return {"role": role.value, "status": "error", "error": str(exc)[:240]}
+
+    votes = await asyncio.gather(*(run(role) for role in roles))
+    ok_votes = [vote for vote in votes if vote.get("status") == "success"]
+    promote_votes = [bool(vote.get("promote_global")) for vote in ok_votes]
+    global_votes = [
+        vote for vote in ok_votes
+        if bool(vote.get("promote_global")) and str(vote.get("classification")) == "global_procedure"
+    ]
+    promote = len([v for v in promote_votes if v]) >= 2 and len(global_votes) >= 2
+    chosen = global_votes[0] if global_votes else (ok_votes[0] if ok_votes else {})
+    if len(ok_votes) == len(votes):
+        adjudication_status = "full_success"
+    elif ok_votes:
+        adjudication_status = "partial"
+    else:
+        adjudication_status = "failed"
+    classification = "global_procedure" if promote else str(chosen.get("classification") or static_decision.get("classification") or "local_fact")
+    confidence_values = []
+    for vote in ok_votes:
+        try:
+            confidence_values.append(float(vote.get("confidence")))
+        except (TypeError, ValueError):
+            pass
+    confidence = round(sum(confidence_values) / len(confidence_values), 3) if confidence_values else static_decision.get("confidence", 0.0)
+    return {
+        "classification": classification,
+        "promote_global": promote,
+        "reason": str(chosen.get("reason") or static_decision.get("reason") or "azure adjudicated")[:500],
+        "confidence": confidence,
+        "adjudication_status": adjudication_status,
+        "azure_votes": votes,
+        "normalized_title": chosen.get("normalized_title"),
+        "normalized_summary": chosen.get("normalized_summary"),
+        "tags": chosen.get("tags"),
+        "steps": chosen.get("steps"),
+    }
+
+
+async def lesson_curator(
+    limit: int = 100,
+    *,
+    promote: bool = True,
+    dry_run: bool = False,
+    mode: str = "max",
+    azure_limit: int = 20,
+    timeout: float = 15.0,
+    allow_untrusted_promote: bool = False,
+) -> dict:
+    wanted = max(1, min(500, int(limit or 100)))
+    mode = str(mode or "max").lower()
+    if mode not in {"safe", "max"}:
+        return {"error": "invalid_argument", "detail": "mode must be safe or max"}
+    if mode == "safe":
+        result = _lesson_curator_static(
+            wanted,
+            promote=promote,
+            dry_run=dry_run,
+            allow_untrusted_promote=allow_untrusted_promote,
+        )
+        result["mode"] = "safe"
+        result["azure_used"] = False
+        return result
+
+    rows = read_lessons(wanted, include_global=False)
+    decisions = []
+    counts: dict[str, int] = {}
+    warnings: list[str] = []
+    promoted = 0
+    azure_used = 0
+    azure_cap = max(0, min(100, int(azure_limit or 20)))
+    timeout = max(5.0, min(180.0, float(timeout or 15.0)))
+    for item in rows:
+        static_decision = curate_lesson(item)
+        decision = static_decision
+        if azure_used < azure_cap and _lesson_curator_candidate(item, static_decision):
+            decision = await _azure_curate_one(item, static_decision, timeout=timeout)
+            azure_used += 1
+            if decision.get("adjudication_status") in {"partial", "failed"}:
+                warnings.append(
+                    f"lesson {item.get('lesson_key') or item.get('title')}: Azure adjudication {decision.get('adjudication_status')}"
+                )
+        classification = str(decision.get("classification") or "unknown")
+        counts[classification] = counts.get(classification, 0) + 1
+        stored_global = False
+        final_promote_allowed = _lesson_auto_promote_allowed(item) or allow_untrusted_promote
+        if promote and not dry_run and decision.get("promote_global") and final_promote_allowed:
+            promoted_payload = dict(item)
+            if decision.get("normalized_title"):
+                promoted_payload["title"] = str(decision.get("normalized_title"))[:160]
+            if decision.get("normalized_summary"):
+                promoted_payload["summary"] = str(decision.get("normalized_summary"))[:1000]
+            if isinstance(decision.get("steps"), list) and decision.get("steps"):
+                promoted_payload["steps"] = decision.get("steps")
+            if isinstance(decision.get("tags"), list) and decision.get("tags"):
+                promoted_payload["tags"] = decision.get("tags")
+            stored_global = append_lesson(_global_lesson_payload(promoted_payload, decision), global_scope=True)
+            promoted += 1 if stored_global else 0
+        decisions.append({
+            "lesson_key": item.get("lesson_key"),
+            "title": item.get("title"),
+            "lesson_type": item.get("lesson_type"),
+            "classification": classification,
+            "promote_global": bool(decision.get("promote_global")),
+            "final_promote_allowed": final_promote_allowed,
+            "stored_global": stored_global,
+            "reason": decision.get("reason"),
+            "confidence": decision.get("confidence"),
+            "adjudication_status": decision.get("adjudication_status"),
+            "azure_votes": decision.get("azure_votes"),
+        })
+    return {
+        "status": "completed",
+        "mode": "max",
+        "azure_roles": [role.value for role in _LESSON_CURATOR_AZURE_ROLES],
+        "azure_used": azure_used,
+        "scanned": len(rows),
+        "promoted": promoted,
+        "dry_run": dry_run,
+        "counts": counts,
+        "warnings": warnings,
+        "decisions": decisions,
+    }
+
+
+def _auto_promote_lesson(payload: dict) -> bool:
+    if not _lesson_auto_promote_allowed(payload):
+        return False
+    with _LESSON_PROMOTION_LOCK:
+        decision = payload.get("curation") if isinstance(payload.get("curation"), dict) else curate_lesson(payload)
+        if not decision.get("promote_global"):
+            return False
+        global_payload = _global_lesson_payload(payload, decision)
+        return append_lesson(global_payload, global_scope=True)
+
+
 def append_lesson(entry: dict, *, global_scope: bool = False) -> bool:
     payload = {"ts": time.time(), **_redact_lesson_value(entry)}
+    if not global_scope and _lesson_should_curate(payload):
+        payload.setdefault("curation", curate_lesson(payload))
     path = Path(get_global_lessons_path() if global_scope else get_runtime_path(LESSON_INDEX_FILE))
     db_path = Path(get_lesson_db_path(global_scope=global_scope))
     lesson_key = str(payload.get("lesson_key") or "")
@@ -472,10 +832,15 @@ def append_lesson(entry: dict, *, global_scope: bool = False) -> bool:
                             pass
                         conn = None
                     _quarantine_lesson_db(db_path)
-                    return _append_lesson_jsonl_fallback_unlocked(path, payload, lesson_key)
+                    stored = _append_lesson_jsonl_fallback_unlocked(path, payload, lesson_key)
+                    if stored and not global_scope:
+                        _auto_promote_lesson(payload)
+                    return stored
                 finally:
                     if conn is not None:
                         conn.close()
+        if not global_scope:
+            _auto_promote_lesson(payload)
         return True
     except OSError:
         return False

@@ -1,7 +1,7 @@
 """
 tools package — Re-exporting all tools.
 """
-from .core import run_in_sandbox
+from .core import lesson_curator, run_in_sandbox
 from .auto import auto_trigger
 from .goal import goal_autopilot, goal_supervisor
 from .runner import goal_runner
@@ -63,6 +63,7 @@ from .quality import (
 
 __all__ = [
     "run_in_sandbox",
+    "lesson_curator",
     "auto_trigger",
     "goal_autopilot",
     "goal_supervisor",

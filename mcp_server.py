@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import logging
 import json
+import math
 import os
 import subprocess
 import sys
@@ -377,6 +378,19 @@ async def list_tools() -> list[types.Tool]:
             name="harness_doctor",
             description="Self-check harness readiness: git, Azure env, rules stamp, runner lock, and agent CLI adapters.",
             inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="lesson_curator",
+            description="Classify local lessons, filter noise, and promote safe reusable procedure/workflow lessons to global memory. mode=max uses Azure 3-agent adjudication.",
+            inputSchema={"type": "object", "properties": {
+                "limit": {"type": "integer", "description": "Số local lessons gần nhất cần scan"},
+                "promote": {"type": "boolean", "description": "True để promote lesson đủ điều kiện lên global"},
+                "dry_run": {"type": "boolean", "description": "True chỉ phân loại, không ghi global"},
+                "mode": {"type": "string", "enum": ["safe", "max"], "description": "safe=static rules, max=Azure 3-agent adjudication"},
+                "azure_limit": {"type": "integer", "description": "Số lesson candidate tối đa gửi Azure"},
+                "timeout": {"type": "number", "description": "Timeout mỗi Azure agent, mặc định 15s"},
+                "allow_untrusted_promote": {"type": "boolean", "description": "Mặc định false; true mới cho phép promote source không nằm trong trusted allowlist"},
+            }},
         ),
         types.Tool(
             name="panel_review",
@@ -1642,6 +1656,42 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
         if name == "harness_doctor":
             return _json_response(await st.harness_doctor())
+
+        if name == "lesson_curator":
+            promote, promote_error = _parse_bool_arg(args, "promote", True)
+            if promote_error:
+                return _json_response({"error": "invalid_argument", "detail": promote_error})
+            dry_run, dry_run_error = _parse_bool_arg(args, "dry_run", False)
+            if dry_run_error:
+                return _json_response({"error": "invalid_argument", "detail": dry_run_error})
+            allow_untrusted, allow_untrusted_error = _parse_bool_arg(args, "allow_untrusted_promote", False)
+            if allow_untrusted_error:
+                return _json_response({"error": "invalid_argument", "detail": allow_untrusted_error})
+            mode = str(args.get("mode", "max")).strip().lower()
+            if mode not in {"safe", "max"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
+            try:
+                raw_limit = args.get("limit", 100)
+                raw_azure_limit = args.get("azure_limit", 20)
+                raw_timeout = args.get("timeout", 15.0)
+                if any(isinstance(v, str) and len(v) > 20 for v in (raw_limit, raw_azure_limit, raw_timeout)):
+                    raise ValueError("numeric argument too long")
+                limit = int(raw_limit)
+                azure_limit = int(raw_azure_limit)
+                timeout = float(raw_timeout)
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "limit/azure_limit must be integers and timeout must be numeric"})
+            if limit <= 0 or azure_limit < 0 or timeout < 5.0 or not math.isfinite(timeout):
+                return _json_response({"error": "invalid_argument", "detail": "limit must be > 0, azure_limit >= 0, timeout >= 5"})
+            return _json_response(await st.lesson_curator(
+                limit=limit,
+                promote=promote,
+                dry_run=dry_run,
+                mode=mode,
+                azure_limit=azure_limit,
+                timeout=timeout,
+                allow_untrusted_promote=allow_untrusted,
+            ))
 
         if name == "panel_review":
             staged, staged_error = _parse_bool_arg(args, "staged")

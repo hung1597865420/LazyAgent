@@ -27,6 +27,7 @@ from tools.core import (
     _restore_session_backups,
     _cleanup_session_backups,
     _extract_and_save_lesson,
+    lesson_curator,
     run_in_sandbox,
     SimpleTFIDFSearch,
     build_ast_call_graph,
