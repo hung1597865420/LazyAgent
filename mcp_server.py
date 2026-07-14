@@ -6,6 +6,10 @@ Claude Code gọi các tool này qua MCP protocol.
   claude mcp add agent-harness -- python "đường/dẫn/tới/mcp_server.py"
 """
 import asyncio
+import contextlib
+import contextvars
+import hashlib
+import importlib
 import logging
 import json
 import os
@@ -37,6 +41,32 @@ _background_tasks: set[asyncio.Task] = set()
 # Giới hạn đồng thời để tránh Azure rate-limit khi spam cancel
 _TOOL_SEM = asyncio.Semaphore(8)
 _LAZY_SETTINGS_MERGE_DONE = False
+_HOT_RELOAD_LOCK = asyncio.Lock()
+_TOOL_INFLIGHT_COND = asyncio.Condition()
+_TOOL_INFLIGHT = 0
+_TOOL_CALL_DEPTH = contextvars.ContextVar("harness_tool_call_depth", default=0)
+_HOT_RELOAD_SIGNATURES: dict[str, tuple[float, int, str]] = {}
+
+
+def _module_signature(path: str) -> tuple[float, int, str]:
+    stat = os.stat(path)
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            digest.update(chunk)
+    return stat.st_mtime, stat.st_size, digest.hexdigest()
+
+
+for _name, _module in list(sys.modules.items()):
+    if not (_name == "tools" or _name.startswith("tools.") or _name == "support_tools"):
+        continue
+    _path = getattr(_module, "__file__", None)
+    if not _path:
+        continue
+    try:
+        _HOT_RELOAD_SIGNATURES[_name] = _module_signature(_path)
+    except OSError:
+        pass
 
 
 @app.list_resources()
@@ -118,6 +148,12 @@ AGENT_INFO = [
     {"role": role.value, **_AGENT_METADATA[role]}
     for role in AgentRole
 ]
+
+MCP_LESSON_FALLBACK_TOOLS = {
+    "quick_task", "consult", "alt_implementation", "suggest_fix", "ask_codebase",
+    "context_auditor", "swarm_debug", "incident_responder", "run_single_agent",
+}
+MCP_LESSON_BACKGROUND_LIMIT = 64
 
 _MODEL_BY_ROLE = {role.value: getattr(MODELS, role.value) for role in AgentRole}
 
@@ -920,10 +956,103 @@ async def list_tools() -> list[types.Tool]:
     ]
 
 
-def _json_response(data: dict) -> list[types.TextContent]:
+def _json_response(data) -> list[types.TextContent]:
+    if data is None:
+        data = {"error": "empty_tool_result", "detail": "Tool returned None instead of a JSON object."}
+    if not isinstance(data, dict):
+        data = {"status": "completed", "result": data}
+    try:
+        text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        text = json.dumps({
+            "error": "json_response_serialization_failed",
+            "detail": f"{type(exc).__name__}: {exc}",
+            "repr": repr(data)[:4000],
+        }, ensure_ascii=False, indent=2)
+    if not text.strip():
+        text = json.dumps({"error": "empty_tool_result", "detail": "Serialized response was empty."}, ensure_ascii=False)
+    max_chars = 900_000
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n... [truncated by mcp_server._json_response]"
     return [types.TextContent(
-        type="text", text=json.dumps(data, ensure_ascii=False, indent=2),
+        type="text", text=text,
     )]
+
+
+def _maybe_record_mcp_tool_lesson(name: str, arguments: dict, response: list[types.TextContent]) -> dict:
+    if "/" in name:
+        name = name.split("/", 1)[-1]
+    if name not in MCP_LESSON_FALLBACK_TOOLS:
+        return {"status": "skipped", "reason": "tool not lesson fallback candidate"}
+    try:
+        from tools.core import _redact_lesson_value, record_procedure_lesson
+        from tools.runner import _infer_agent_procedure_lesson
+
+        safe_arguments = _redact_lesson_value(arguments or {})
+        arg_text = _collect_lesson_text(safe_arguments)[:4_000]
+        result_chunks = []
+        for item in (response or []):
+            if getattr(item, "type", "") != "text":
+                continue
+            raw = str(item.text or "")
+            try:
+                result_chunks.append(_collect_lesson_text(_redact_lesson_value(json.loads(raw))))
+            except Exception:
+                result_chunks.append(_collect_lesson_text(_redact_lesson_value(raw)))
+        result_text = "\n".join(chunk[:8_000] for chunk in result_chunks)
+        text = f"{arg_text}\n{result_text}"[:12_000]
+        fallback = _infer_agent_procedure_lesson(f"mcp tool {name}", text)
+        if not fallback:
+            return {"status": "skipped", "reason": "no structured reusable workflow"}
+        record = record_procedure_lesson(
+            title=fallback["title"],
+            summary=fallback["summary"],
+            steps=fallback["steps"],
+            tags=fallback["tags"],
+            source="mcp_tool_fallback",
+            refs={"tool": name},
+        )
+        return {"status": record.get("status"), "lesson_key": record.get("lesson_key"), "title": record.get("title")}
+    except Exception as exc:
+        _log.debug("MCP lesson fallback skipped for %s: %s", name, exc)
+        return {"status": "skipped", "reason": type(exc).__name__}
+
+
+def _collect_lesson_text(value, depth: int = 0) -> str:
+    if depth > 6:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n".join(_collect_lesson_text(v, depth + 1) for v in value.values())
+    if isinstance(value, list):
+        return "\n".join(_collect_lesson_text(v, depth + 1) for v in value[:40])
+    return str(value) if value is not None else ""
+
+
+def _schedule_mcp_tool_lesson(name: str, arguments: dict, response: list[types.TextContent]) -> None:
+    if "/" in name:
+        tool_name = name.split("/", 1)[-1]
+    else:
+        tool_name = name
+    if tool_name not in MCP_LESSON_FALLBACK_TOOLS:
+        return
+    if len(_background_tasks) >= MCP_LESSON_BACKGROUND_LIMIT:
+        _log.debug("MCP lesson fallback skipped for %s: background task cap reached", tool_name)
+        return
+
+    async def _run_lesson_record():
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(_maybe_record_mcp_tool_lesson, tool_name, dict(arguments or {}), list(response or [])),
+                timeout=2.0,
+            )
+        except Exception as exc:
+            _log.debug("MCP lesson fallback background failed for %s: %s", tool_name, exc)
+
+    task = asyncio.create_task(_run_lesson_record(), name=f"mcp-lesson-{tool_name}")
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def _parse_bool_arg(args: dict, name: str, default: bool = False) -> tuple[bool, str | None]:
@@ -969,6 +1098,89 @@ def _ensure_lazy_settings_merge() -> None:
             _log.warning("Auto-merge settings skipped (non-fatal): %s", e)
         finally:
             _LAZY_SETTINGS_MERGE_DONE = True
+
+
+def _reloadable_tool_modules() -> list[str]:
+    names = [
+        name for name in sys.modules
+        if name == "tools" or name.startswith("tools.") or name == "support_tools"
+    ]
+    # Reload dependency providers first, package/shim last so re-exported function refs update.
+    priority = {
+        "tools.core": 0,
+        "tools.codebase_index": 1,
+        "tools.goal": 2,
+        "tools.ops": 3,
+        "tools.swarm": 4,
+        "tools": 98,
+        "support_tools": 99,
+    }
+    return sorted(names, key=lambda item: (priority.get(item, 50), item))
+
+
+async def _ensure_fresh_tool_modules() -> list[str]:
+    async with _HOT_RELOAD_LOCK:
+        return await _ensure_fresh_tool_modules_locked()
+
+
+async def _ensure_fresh_tool_modules_locked() -> list[str]:
+    changed = False
+    for name in _reloadable_tool_modules():
+        module = sys.modules.get(name)
+        path = getattr(module, "__file__", None) if module else None
+        if not path:
+            continue
+        try:
+            signature = _module_signature(path)
+        except OSError:
+            continue
+        old = _HOT_RELOAD_SIGNATURES.setdefault(name, signature)
+        if signature != old:
+            changed = True
+
+    if not changed:
+        return []
+
+    # Caller holds _HOT_RELOAD_LOCK so reload and new tool entry are serialized.
+    async with _TOOL_INFLIGHT_COND:
+        while _TOOL_INFLIGHT:
+            await _TOOL_INFLIGHT_COND.wait()
+
+    # Re-check under lock; another concurrent call may have already refreshed.
+    dirty: list[str] = []
+    for name in _reloadable_tool_modules():
+        module = sys.modules.get(name)
+        path = getattr(module, "__file__", None) if module else None
+        if not path:
+            continue
+        try:
+            signature = _module_signature(path)
+        except OSError:
+            continue
+        if signature != _HOT_RELOAD_SIGNATURES.get(name):
+            dirty.append(name)
+    if not dirty:
+        return []
+
+    reloaded: list[str] = []
+    for name in _reloadable_tool_modules():
+        module = sys.modules.get(name)
+        path = getattr(module, "__file__", None) if module else None
+        if not path:
+            continue
+        try:
+            cached = getattr(module, "__cached__", None)
+            if cached and os.path.exists(cached):
+                with contextlib.suppress(OSError):
+                    os.remove(cached)
+            importlib.reload(module)
+            _HOT_RELOAD_SIGNATURES[name] = _module_signature(path)
+            reloaded.append(name)
+        except Exception as exc:
+            _log.warning("Hot-reload skipped for %s: %s", name, exc)
+    if reloaded:
+        _log.info("Hot-reloaded harness tool modules: %s", ", ".join(reloaded))
+    return reloaded
 
 
 def _active_workspace() -> str:
@@ -1151,17 +1363,39 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     _ensure_lazy_settings_merge()
     _kick_project_auto_watch()
     _kick_auto_wiki_ingest()
+    task: asyncio.Task | None = None
+    tool_context = contextvars.copy_context()
 
     async def _run():
-        async with _TOOL_SEM:
-            return await _execute_tool(name, arguments)
+        global _TOOL_INFLIGHT
+        depth = _TOOL_CALL_DEPTH.get()
+        depth_token = _TOOL_CALL_DEPTH.set(depth + 1)
+        top_level = depth == 0
+        try:
+            async with _TOOL_SEM:
+                if top_level:
+                    async with _HOT_RELOAD_LOCK:
+                        await _ensure_fresh_tool_modules_locked()
+                        async with _TOOL_INFLIGHT_COND:
+                            _TOOL_INFLIGHT += 1
+                try:
+                    return await _execute_tool(name, arguments)
+                finally:
+                    if top_level:
+                        async with _TOOL_INFLIGHT_COND:
+                            _TOOL_INFLIGHT -= 1
+                            _TOOL_INFLIGHT_COND.notify_all()
+        finally:
+            _TOOL_CALL_DEPTH.reset(depth_token)
 
-    task = asyncio.create_task(_run(), name=f"tool-{run_id}")
+    task = asyncio.create_task(_run(), name=f"tool-{run_id}", context=tool_context)
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_background_tasks.discard, context=tool_context)
 
     try:
         res = await asyncio.shield(task)
+        res = res or _json_response({"error": "empty_tool_result", "detail": f"{name} returned no content."})
+        _schedule_mcp_tool_lesson(name, arguments if isinstance(arguments, dict) else {}, res)
         return res
     except asyncio.CancelledError:
         # Yield once then check — catches tasks that finished microseconds before cancel
@@ -1177,17 +1411,25 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             pass
         _log.info("tool %s cancelled by client, running in background", name)
         return _json_response({"error": "cancelled", "detail": "Cancelled by client; tool running in background"})
+    except Exception as exc:
+        _log.exception("tool %s failed before MCP response", name)
+        return _json_response({"error": f"{type(exc).__name__}: {exc}", "tool": name})
     finally:
         current_run_id.reset(run_token)
         if name not in ("list_agents", "finops_stats"):
             def _log_task(t: asyncio.Task, _rid=run_id, _n=name, _s=start_time) -> None:
-                suffix = "_cancelled" if t.cancelled() else ("_error" if t.exception() else "")
-                log_run_to_db(_rid, f"mcp_{_n}{suffix}", int((time.perf_counter() - _s) * 1000))
+                try:
+                    suffix = "_cancelled" if t.cancelled() else ("_error" if t.exception() else "")
+                    log_run_to_db(_rid, f"mcp_{_n}{suffix}", int((time.perf_counter() - _s) * 1000))
+                except Exception as exc:
+                    _log.debug("run ledger logging failed for %s: %s", _n, exc)
 
+            if task is None:
+                return
             if task.done():
                 _log_task(task)
             else:
-                task.add_done_callback(_log_task)
+                task.add_done_callback(_log_task, context=tool_context)
 
 
 async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:

@@ -57,6 +57,9 @@ def _parse_json_result(text: str, fallback: dict) -> dict:
     result = dict(fallback)
     result.setdefault("warnings", [])
     result["warnings"].append("parse_failed: LLM trả về output không phải JSON hợp lệ.")
+    result["fallback"] = True
+    result["degraded"] = True
+    result["fallback_reason"] = "llm_json_parse_failed"
     return result
 
 

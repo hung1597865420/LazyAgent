@@ -1,7 +1,6 @@
 """Operational tools for harness self-management and evaluation."""
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
@@ -9,7 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .core import _assemble_context, _get_active_workspace, _run_cmd_safe
+from .core import LESSON_INDEX_FILE, _assemble_context, _get_active_workspace, _run_cmd_safe, read_lessons
+from .orchestrator import ORCH_FILE, orchestrate
 from .goal import load_goal_state
 from .runner import RUNNER_LOCK_FILE, _read_lock
 
@@ -81,10 +81,43 @@ def _read_ledger(limit: int = 20) -> list[dict[str, Any]]:
     return list(reversed(rows))
 
 
+def _read_orchestrator(limit: int = 20) -> list[dict[str, Any]]:
+    path = _root() / ORCH_FILE
+    if not path.exists():
+        return []
+    try:
+        wanted = max(1, min(200, int(limit)))
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, ValueError):
+        return []
+    rows = []
+    for line in reversed(lines):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+            if len(rows) >= wanted:
+                break
+    return list(reversed(rows))
+
+
 async def run_ledger(limit: int = 20) -> dict[str, Any]:
     """Return recent goal/benchmark runner ledger entries."""
     rows = _read_ledger(limit)
-    return {"status": "completed", "entries": rows, "entries_count": len(rows), "file": _display_path(str(_root() / LEDGER_FILE))}
+    lessons = read_lessons(limit)
+    return {
+        "status": "completed",
+        "entries": rows,
+        "entries_count": len(rows),
+        "file": _display_path(str(_root() / LEDGER_FILE)),
+        "lessons": lessons,
+        "lessons_count": len(lessons),
+        "lessons_file": _display_path(str(_root() / LESSON_INDEX_FILE)),
+        "orchestrator": _read_orchestrator(limit),
+        "orchestrator_file": _display_path(str(_root() / ORCH_FILE)),
+    }
 
 
 async def policy_profile(profile: str = "balanced") -> dict[str, Any]:
@@ -92,7 +125,8 @@ async def policy_profile(profile: str = "balanced") -> dict[str, Any]:
     key = (profile or "balanced").strip().lower()
     if key not in POLICY_PROFILES:
         return {"error": "invalid_argument", "detail": f"profile must be one of: {', '.join(POLICY_PROFILES)}"}
-    return {"status": "completed", "profile": key, "settings": POLICY_PROFILES[key], "profiles": POLICY_PROFILES}
+    intelligence = orchestrate(stage="policy_profile", files=[], diff="", task=f"profile {key}", mode=key)
+    return {"status": "completed", "profile": key, "settings": POLICY_PROFILES[key], "profiles": POLICY_PROFILES, "orchestrator": intelligence}
 
 
 def _lock_status() -> dict[str, Any]:
@@ -232,6 +266,7 @@ async def harness_doctor() -> dict[str, Any]:
         "goal_state": bool(load_goal_state()),
         "runner_lock": _lock_status(),
         "agent_adapters": adapters["adapters"],
+        "orchestrator_recent": _read_orchestrator(3),
     }
     problems = []
     if not checks["git"]["ok"]:

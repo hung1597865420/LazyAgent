@@ -2,10 +2,12 @@
 # ruff: noqa: E402
 import asyncio
 import json
+import sqlite3
 import sys
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 import atexit
 
@@ -17,10 +19,10 @@ if os.environ.get("SMOKE_TEST_SUBRUN") == "1":
 # Đặt biến môi trường cho các tiến trình con để tránh đệ quy
 os.environ["SMOKE_TEST_SUBRUN"] = "1"
 
-SMOKE_DIR = Path(".harness_smoke")
+SMOKE_DIR = Path(".harness_smoke") / f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
 SMOKE_FILE = SMOKE_DIR / "test_panel.py"
 SMOKE_FILE_REL = SMOKE_FILE.as_posix()
-SMOKE_DIR.mkdir(exist_ok=True)
+SMOKE_DIR.mkdir(parents=True, exist_ok=True)
 atexit.register(lambda: shutil.rmtree(SMOKE_DIR, ignore_errors=True))
 
 try:
@@ -55,24 +57,25 @@ def mock_subprocess_run(args, *other_args, **kwargs):
 subprocess.run = mock_subprocess_run
 
 import agents
+from tools.core import _calculate_review_hash, _is_sqlite_busy_error
 
 # Mocking Agent and LLM calls to prevent network activity in smoke tests
-def mock_run(self, task: str, extra_context: str = "", *, json_mode: bool = False, max_output_tokens: int = 4096):
+def mock_run(self, task: str, extra_context: str = "", *, json_mode: bool = False, max_output_tokens: int = 4096, **_kwargs):
     role_responses = {
         agents.AgentRole.DEBUGGER: """## Root cause
 Lỗi do biến chưa định nghĩa ở file:line
 
 ## Patch
 ```diff
---- a/.harness_smoke/test_panel.py
-+++ b/.harness_smoke/test_panel.py
+--- a/{path}
++++ b/{path}
 @@ -1,3 +1,3 @@
 -x = 1
 +x = 2
 ```
 
 ## Lưu ý
-Không có""",
+Không có""".format(path=SMOKE_FILE_REL),
         agents.AgentRole.CODE_A: """```python
 def test_auto_generated():
     assert True
@@ -86,22 +89,24 @@ def test_auto_generated():
         agents.AgentRole.WORKER: """### API Reference
 Here is the public API reference docs.""",
         agents.AgentRole.MANAGER: """{"answer": "dummy manager answer"}""",
-        agents.AgentRole.ANALYZER: '{"root_cause": "KeyError: \'files\'", "suggested_approach": "Check keys", "target_files": [".harness_smoke/test_panel.py"]}',
+        agents.AgentRole.ANALYZER: json.dumps({"root_cause": "KeyError: 'files'", "suggested_approach": "Check keys", "target_files": [SMOKE_FILE_REL]}),
         agents.AgentRole.TESTER: '```python\ndef test_swarm_reproducer():\n    assert True\n```',
         agents.AgentRole.REVIEWER: '{"verdict": "approve", "summary": "Bản vá chất lượng tốt, không lỗi."}'
     }
     
     res_val = role_responses.get(self.role, "Dummy response")
+    if self.role == agents.AgentRole.WORKER and "Trích xuất các khái niệm" in task:
+        res_val = '{"concepts":[{"filename":"smoke-concept.md","title":"Smoke Concept","content":"---\\ntitle: Smoke Concept\\n---\\nSmoke wiki concept"}],"entities":[]}'
     
     if self.role == agents.AgentRole.CODE_A and ("Swarm Debugger" in task or "Coder Agent" in task or "suggested_approach" in task):
         res_val = """## Patch
 ```diff
---- a/.harness_smoke/test_panel.py
-+++ b/.harness_smoke/test_panel.py
+--- a/{path}
++++ b/{path}
 @@ -1,3 +1,3 @@
 -x = 1
 +x = 2
-```"""
+```""".format(path=SMOKE_FILE_REL)
             
     return agents.AgentResult(
         agent_id=self.agent_id,
@@ -113,7 +118,7 @@ Here is the public API reference docs.""",
         status="success"
     )
 
-async def mock_run_async(self, task: str, extra_context: str = "", *, json_mode: bool = False, max_output_tokens: int = 4096):
+async def mock_run_async(self, task: str, extra_context: str = "", *, json_mode: bool = False, max_output_tokens: int = 4096, **_kwargs):
     return self.run(task, extra_context, json_mode=json_mode, max_output_tokens=max_output_tokens)
 
 def mock_chat_completion(*args, **kwargs):
@@ -128,11 +133,11 @@ def mock_chat_completion(*args, **kwargs):
 }""", "mock-model", 120, 30
     if "Swarm Debugger" in system_prompt or "reproducer" in system_prompt:
         if "Architect Agent" in system_prompt:
-            return '{"root_cause": "KeyError", "suggested_approach": "Check keys", "target_files": []}', "mock-model", 100, 10
+            return json.dumps({"root_cause": "KeyError", "suggested_approach": "Check keys", "target_files": [SMOKE_FILE_REL]}), "mock-model", 100, 10
         elif "Tester Agent" in system_prompt:
             return '```python\ndef test_swarm_reproducer():\n    assert False\n```', "mock-model", 100, 10
         elif "Coder Agent" in system_prompt:
-            return '## Patch\n```diff\n--- a/.harness_smoke/test_panel.py\n+++ b/.harness_smoke/test_panel.py\n@@ -1,3 +1,3 @@\n-x = 1\n+x = 2\n```', "mock-model", 100, 10
+            return f'## Patch\n```diff\n--- a/{SMOKE_FILE_REL}\n+++ b/{SMOKE_FILE_REL}\n@@ -1,3 +1,3 @@\n-x = 1\n+x = 2\n```', "mock-model", 100, 10
         elif "Reviewer Agent" in system_prompt:
             return '{"verdict": "approve", "summary": "Looks good"}', "mock-model", 100, 10
     return "Dummy response", "mock-model", 100, 10
@@ -179,6 +184,12 @@ roles = ["manager", "synthesizer", "analyzer", "code_a", "code_b",
 check("ModelConfig đủ 12 role", all(getattr(MODELS, r, None) for r in roles))
 check("SPARE_MODELS load được", isinstance(SPARE_MODELS, list) and len(SPARE_MODELS) > 0,
       str(SPARE_MODELS))
+check("SPARE_MODELS skip model trùng khi failover",
+      agents._next_distinct_spare(iter(["gpt-5.4-pro-2", "gpt-5.4-3"]), "gpt-5.4-pro-2") == "gpt-5.4-3")
+check("Responses queue timeout dùng full budget",
+      agents._responses_queue_timeout(45.0) == 45.0)
+check("Responses queue timeout tôn trọng request nhỏ",
+      agents._responses_queue_timeout(0.2) <= 0.2)
 
 # 3. Mỗi role có system prompt + temperature
 from agents import AgentRole, SYSTEM_PROMPTS, ROLE_TO_MODEL, ROLE_TEMPERATURE
@@ -236,6 +247,9 @@ check("prod_readiness_gate docs-only safe trả verdict hợp lệ",
           "ready_to_deploy", "fix_required", "blocked_needs_user", "deploy_then_verify", "rollback_required",
       },
       str(prod_gate_json))
+check("prod_readiness_gate tự chạy orchestrator",
+      prod_gate_json.get("orchestrator", {}).get("status") == "completed",
+      str(prod_gate_json.get("orchestrator")))
 prod_gate_bad = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {"mode": "wild"}))
 check("prod_readiness_gate mode invalid → error", "error" in json.loads(prod_gate_bad[0].text))
 prod_gate_ref = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {
@@ -262,7 +276,37 @@ finally:
 check("prod_readiness_gate tool timeout trả blocker có kiểm soát",
       prod_timeout.get("ok") is False and prod_timeout.get("raw", {}).get("error") == "timeout",
       str(prod_timeout))
-from tools.auto import _run_named as _auto_run_named
+prod_max_specs = []
+from tools import prod as prod_mod
+async def _capture_prod_adds():
+    original_run_check = prod_mod._run_check
+    async def fake_run_check(name, coro):
+        try:
+            coro.close()
+        except Exception:
+            pass
+        prod_max_specs.append(name)
+        return {"tool": name, "ok": True, "summary": "completed", "raw": {"status": "completed"}}
+    prod_mod._run_check = fake_run_check
+    try:
+        await prod_mod.prod_readiness_gate(changed_files=["tools/prod.py"], mode="max", task="release")
+    finally:
+        prod_mod._run_check = original_run_check
+asyncio.run(_capture_prod_adds())
+check("prod_readiness_gate max không duplicate auto-managed heavy checks",
+      "auto_trigger" in prod_max_specs
+      and "release_orchestrator" not in prod_max_specs
+      and "provenance_checker" not in prod_max_specs,
+      str(prod_max_specs))
+from tools.auto import (
+    _auto_max_tools,
+    _auto_tool_timeout_seconds,
+    _auto_total_timeout_seconds,
+    _parse_subprocess_payload as _auto_parse_subprocess_payload,
+    _record_auto_trigger_lesson as _auto_record_auto_trigger_lesson,
+    _run_named as _auto_run_named,
+    _run_subprocess_job as _auto_run_subprocess_job,
+)
 old_auto_timeout = os.environ.get("HARNESS_AUTO_TOOL_TIMEOUT")
 os.environ["HARNESS_AUTO_TOOL_TIMEOUT"] = "0.01"
 try:
@@ -270,6 +314,24 @@ try:
         await asyncio.sleep(0.05)
         return {"status": "completed"}
     auto_timeout = asyncio.run(_auto_run_named("slow_auto_smoke", _slow_auto_check()))
+    async def _stubborn_probe():
+        loop = asyncio.get_running_loop()
+        errors = []
+        old_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, ctx: errors.append(ctx))
+        async def _stubborn_auto_check():
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.02)
+                raise RuntimeError("late failure after cancel")
+        try:
+            result = await _auto_run_named("stubborn_auto_smoke", _stubborn_auto_check())
+            await asyncio.sleep(0.05)
+            return result, errors
+        finally:
+            loop.set_exception_handler(old_handler)
+    stubborn_timeout, stubborn_errors = asyncio.run(_stubborn_probe())
 finally:
     if old_auto_timeout is None:
         os.environ.pop("HARNESS_AUTO_TOOL_TIMEOUT", None)
@@ -278,6 +340,66 @@ finally:
 check("auto_trigger tool timeout trả lỗi có kiểm soát",
       auto_timeout.get("ok") is False and auto_timeout.get("error") == "timeout",
       str(auto_timeout))
+check("auto_trigger không chờ tool nuốt cancel",
+      stubborn_timeout.get("ok") is False
+      and stubborn_timeout.get("error") == "timeout"
+      and not stubborn_errors,
+      f"result={stubborn_timeout} errors={stubborn_errors}")
+auto_subprocess = asyncio.run(_auto_run_subprocess_job(
+    "harness_doctor_subprocess_smoke",
+    "tools.ops",
+    "harness_doctor",
+    {},
+))
+check("auto_trigger subprocess JSON parse chạy được",
+      auto_subprocess.get("tool") == "harness_doctor_subprocess_smoke"
+      and auto_subprocess.get("ok") is True,
+      str(auto_subprocess))
+check("auto_trigger subprocess parse ngược tìm JSON ok",
+      _auto_parse_subprocess_payload('{"ok": true, "result": {"status": "completed"}}\ndone\n', "")
+      == {"ok": True, "result": {"status": "completed"}},
+      "subprocess payload parser missed earlier JSON line")
+check("auto_trigger subprocess parse stderr fallback",
+      _auto_parse_subprocess_payload("log only\n", '{"ok": true, "result": {"status": "completed"}}\n')
+      == {"ok": True, "result": {"status": "completed"}},
+      "subprocess payload parser missed stderr JSON line")
+auto_subprocess_unicode = asyncio.run(_auto_run_subprocess_job(
+    "unicode_subprocess_smoke",
+    "tools.devops",
+    "incident_responder",
+    {"log_content": ""},
+))
+check("auto_trigger subprocess UTF-8 output chạy được",
+      auto_subprocess_unicode.get("tool") == "unicode_subprocess_smoke"
+      and auto_subprocess_unicode.get("error") != "UnicodeEncodeError",
+      str(auto_subprocess_unicode))
+os.environ["HARNESS_AUTO_TOOL_TIMEOUT"] = "999"
+try:
+    check("auto_trigger timeout cap dưới MCP client",
+          _auto_tool_timeout_seconds() == 240.0,
+          str(_auto_tool_timeout_seconds()))
+finally:
+    if old_auto_timeout is None:
+        os.environ.pop("HARNESS_AUTO_TOOL_TIMEOUT", None)
+    else:
+        os.environ["HARNESS_AUTO_TOOL_TIMEOUT"] = old_auto_timeout
+old_auto_total_timeout = os.environ.get("HARNESS_AUTO_TOTAL_TIMEOUT")
+old_auto_max_tools = os.environ.get("HARNESS_AUTO_MAX_TOOLS")
+os.environ["HARNESS_AUTO_TOTAL_TIMEOUT"] = "999"
+os.environ["HARNESS_AUTO_MAX_TOOLS"] = "999"
+try:
+    check("auto_trigger total budget cap dưới MCP client",
+          _auto_total_timeout_seconds() == 270.0 and _auto_max_tools("max") == 24,
+          f"total={_auto_total_timeout_seconds()} max_tools={_auto_max_tools('max')}")
+finally:
+    if old_auto_total_timeout is None:
+        os.environ.pop("HARNESS_AUTO_TOTAL_TIMEOUT", None)
+    else:
+        os.environ["HARNESS_AUTO_TOTAL_TIMEOUT"] = old_auto_total_timeout
+    if old_auto_max_tools is None:
+        os.environ.pop("HARNESS_AUTO_MAX_TOOLS", None)
+    else:
+        os.environ["HARNESS_AUTO_MAX_TOOLS"] = old_auto_max_tools
 release_res = asyncio.run(mcp_server.call_tool("release_orchestrator", {
     "changed_files": ["README.md"],
     "mode": "safe",
@@ -327,7 +449,8 @@ check("quick_task nhận alias task",
       bool(json.loads(quick_task_alias[0].text).get("output")),
       quick_task_alias[0].text)
 from tools.gap_tools import _diff_symbol_changes, harness_trace_viewer as _harness_trace_viewer
-from tools.runner import _acquire_runner_lock, _parse_porcelain_z, _parse_porcelain_z_bytes, _prod_gate_ok, _release_runner_lock
+from tools.goal import GoalState
+from tools.runner import _acquire_runner_lock, _agent_prompt, _parse_porcelain_z, _parse_porcelain_z_bytes, _prod_gate_ok, _release_runner_lock
 RUNNER_WORKSPACE = SMOKE_DIR / "runner_workspace"
 RUNNER_WORKSPACE.mkdir(exist_ok=True)
 (RUNNER_WORKSPACE / "README.md").write_text("# runner smoke\n", encoding="utf-8")
@@ -348,6 +471,10 @@ check("goal_runner parse porcelain -z bytes surrogateescape",
       _parse_porcelain_z_bytes(b" M bad-\xff.py\0")[0].startswith("bad-"))
 check("goal_runner prod gate malformed blockers fail-closed",
       not _prod_gate_ok({"verdict": "ready_to_deploy", "blockers_count": "bad"}))
+legacy_budget_goal = GoalState.from_dict({"goal": "legacy", "status": "budget_limited"})
+check("goal state bỏ legacy budget_limited",
+      legacy_budget_goal is not None and legacy_budget_goal.status == "blocked",
+      str(legacy_budget_goal))
 old_project_dir_for_lock = os.environ.get("CLAUDE_PROJECT_DIR")
 os.environ["CLAUDE_PROJECT_DIR"] = str(RUNNER_WORKSPACE.resolve())
 runner_lock = _acquire_runner_lock()
@@ -486,6 +613,33 @@ auto_env_case_json = json.loads(auto_env_case[0].text)
 check("auto_trigger nhận diện .ENV.EXAMPLE không phân biệt hoa thường",
       auto_env_case_json.get("status") == "completed" and "env_parity_checker" in auto_env_case_json.get("selected_tools", []),
       str(auto_env_case_json))
+old_auto_max_tools = os.environ.get("HARNESS_AUTO_MAX_TOOLS")
+os.environ["HARNESS_AUTO_MAX_TOOLS"] = "3"
+try:
+    auto_bounded = asyncio.run(mcp_server.call_tool("auto_trigger", {
+        "changed_files": [
+            ".env.example",
+            "src/api.py",
+            "web/App.tsx",
+            "requirements.txt",
+            "Dockerfile",
+            ".github/workflows/ci.yml",
+        ],
+        "task": "final deploy api db ui deps ci timeout",
+        "stage": "final",
+        "mode": "max",
+    }))
+finally:
+    if old_auto_max_tools is None:
+        os.environ.pop("HARNESS_AUTO_MAX_TOOLS", None)
+    else:
+        os.environ["HARNESS_AUTO_MAX_TOOLS"] = old_auto_max_tools
+auto_bounded_json = json.loads(auto_bounded[0].text)
+check("auto_trigger max tự bound check để tránh MCP timeout",
+      auto_bounded_json.get("status") == "degraded"
+      and len(auto_bounded_json.get("selected_tools", [])) <= 3
+      and bool(auto_bounded_json.get("skipped_tools")),
+      str(auto_bounded_json))
 from tools.auto import (
     _ci_files,
     _container_files,
@@ -534,12 +688,15 @@ check("prod_readiness_gate cảnh báo sensitive-only change",
 from tools.swarm import (
     _extractive_codebase_answer,
     _direct_workspace_hits,
+    _local_context_pack,
+    _manager_answer_appears_truncated,
     _manager_answer_usable,
     _narrow_files_for_question,
     _normalize_manager_answer,
     _prune_context_for_question,
     _redact_sensitive_text,
     _sanitize_ask_files,
+    _safe_warn_value,
     _skip_auto_selected_file,
 )
 import tools.swarm as swarm_mod
@@ -555,8 +712,17 @@ check("ask_codebase accept line/hash citations",
       _manager_answer_usable("Flow nằm ở app/api.py line 10 và web/page.tsx#L4."))
 check("ask_codebase accept short cited manager answer",
       _manager_answer_usable("Xem app.py:1"))
+check("ask_codebase accept expanded citation formats",
+      _manager_answer_usable("Flow in app/api.py:L10 and web/page.tsx (line=4)."))
 check("ask_codebase accept explicit no-evidence answer",
       _manager_answer_usable("Không tìm thấy trong context đã cung cấp."))
+check("ask_codebase detect truncated cited answer",
+      _manager_answer_appears_truncated("Có route ở `src/app.py:12` nhưng dở dang `", 4096)
+      and not _manager_answer_appears_truncated("Có route ở `src/app.py:12`.", 4096)
+      and not _manager_answer_appears_truncated("khong tim thay trong context da cung cap", 1)
+      and not _manager_answer_appears_truncated("Danh sách hợp lệ:", 4096)
+      and not _manager_answer_appears_truncated(("Có route ở `src/app.py:12`. " * 300), 64),
+      "truncation heuristic failed")
 direct_hits = _direct_workspace_hits("goal_supervisor next_action enum", limit=5)
 check("ask_codebase direct symbol scan ưu tiên source mới",
       "tools/goal.py" in direct_hits,
@@ -574,6 +740,10 @@ safe_files, unsafe_warnings = _sanitize_ask_files(["tools/swarm.py", "../secret.
 check("ask_codebase sanitize user files",
       safe_files == ["tools/swarm.py"] and len(unsafe_warnings) == 4,
       f"safe={safe_files}, warnings={unsafe_warnings}")
+bounded_warn = _safe_warn_value("x" * 500)
+check("ask_codebase warning value bounded",
+      len(bounded_warn) < 150 and "truncated" in bounded_warn,
+      bounded_warn)
 direct_scan_root = SMOKE_DIR / "direct_scan"
 direct_scan_root.mkdir(exist_ok=True)
 (direct_scan_root / ".ENV").write_text("unique_direct_secret_symbol=1\n", encoding="utf-8")
@@ -628,6 +798,10 @@ large_block_pruned, _large_block_warns = _prune_context_for_question("export exc
 check("ask_codebase prune slices oversized relevant block",
       "big.py" in large_block_pruned and "export_excel" in large_block_pruned,
       large_block_pruned)
+tiny_pruned, tiny_warns = _prune_context_for_question("export excel workbook", large_block_ctx, 50)
+check("ask_codebase prune cap quá nhỏ có warning",
+      tiny_warns and "too small" in tiny_warns[0],
+      str(tiny_warns))
 many_files = [f"src/other_{i}.py" for i in range(20)] + ["src/export_excel_api.py"]
 narrowed_files, narrow_warns = _narrow_files_for_question("export excel api", many_files)
 check("ask_codebase narrows large provided file list",
@@ -655,6 +829,48 @@ fallback_answer = _extractive_codebase_answer(
 check("ask_codebase fallback local có citation usable",
       "Kết luận khả dĩ" in fallback_answer and "`app/api.py:10`" in fallback_answer,
       fallback_answer)
+fallback_pack = _local_context_pack(
+    "frontend xuất Excel gọi API nào",
+    "=== FILE: app/api.py ===\n10\tdef export_excel():\n11\t    return workbook\n"
+    "=== FILE: web/page.tsx ===\n4\tconst onExport = () => api.exportExcel()\n",
+    ["app/api.py", "web/page.tsx"],
+)
+check("ask_codebase fallback local trả context_pack",
+      fallback_pack["relevant_files"]
+      and fallback_pack["snippets"]
+      and "`app/api.py:10`" in fallback_pack["markdown"],
+      str(fallback_pack))
+fallback_schema = asyncio.run(swarm_mod.ask_codebase("ask_codebase docs", files=["README.md"]))
+check("ask_codebase relevant_files giữ list path string",
+      isinstance(fallback_schema.get("relevant_files"), list)
+      and all(isinstance(path, str) for path in fallback_schema.get("relevant_files", []))
+      and "relevant_files_scored" in fallback_schema,
+      str(fallback_schema))
+early_error = asyncio.run(swarm_mod.ask_codebase("no context", files="config.py"))
+check("ask_codebase early error schema ổn định",
+      early_error.get("error")
+      and early_error.get("fallback") is False
+      and "context_pack" in early_error
+      and "config" in early_error,
+      str(early_error))
+ask_mcp = asyncio.run(mcp_server.call_tool("ask_codebase", {
+    "question": "ask_codebase docs",
+    "files": ["README.md"],
+}))
+ask_mcp_text = ask_mcp[0].text if ask_mcp else ""
+ask_mcp_json = json.loads(ask_mcp_text) if ask_mcp_text else {}
+check("ask_codebase MCP không trả no-content",
+      bool(ask_mcp_text.strip())
+      and ("answer" in ask_mcp_json or "error" in ask_mcp_json)
+      and "context_pack" in ask_mcp_json,
+      ask_mcp_text[:1000])
+none_response_text = mcp_server._json_response(None)[0].text
+list_response_text = mcp_server._json_response(["ok"])[0].text
+check("MCP json response không bao giờ rỗng",
+      bool(none_response_text.strip())
+      and json.loads(none_response_text).get("error") == "empty_tool_result"
+      and json.loads(list_response_text).get("result") == ["ok"],
+      f"none={none_response_text!r} list={list_response_text!r}")
 context_audit = asyncio.run(mcp_server.call_tool("context_auditor", {
     "question": "frontend xuất Excel gọi API nào",
     "context": "=== FILE: app/api.py ===\n10\tdef export_excel():\n",
@@ -714,6 +930,28 @@ managed_new, managed_replaced = merge_settings._replace_managed_section(
 )
 check("managed section replace giữ nội dung ngoài block",
       managed_replaced and "before" in managed_new and "after" in managed_new and "old" not in managed_new)
+managed_corrupt, corrupt_replaced = merge_settings._replace_managed_section(
+    "before\n<!-- agent-harness-managed -->\nold duplicated rule\n",
+    merge_settings.CLAUDE_MARKER,
+    "<!-- agent-harness-managed -->\nnew\n<!-- /agent-harness-managed -->",
+)
+check("managed section corrupt marker replace tới EOF",
+      corrupt_replaced
+      and managed_corrupt.count(merge_settings.CLAUDE_MARKER) == 1
+      and managed_corrupt.count(merge_settings._end_marker_for(merge_settings.CLAUDE_MARKER)) == 1
+      and "old duplicated rule" not in managed_corrupt,
+      managed_corrupt)
+fenced_marker_sample = "before\n```md\n<!-- agent-harness-managed -->\n```\nafter\n"
+fenced_marker_new, fenced_marker_replaced = merge_settings._replace_managed_section(
+    fenced_marker_sample,
+    merge_settings.CLAUDE_MARKER,
+    "<!-- agent-harness-managed -->\nnew\n<!-- /agent-harness-managed -->",
+)
+check("managed section bỏ qua marker trong code fence",
+      not fenced_marker_replaced
+      and "after" in fenced_marker_new
+      and fenced_marker_new.count(merge_settings.CLAUDE_MARKER) == 2,
+      fenced_marker_new)
 codex_sample = '  [mcp_servers.agent-harness]\ncommand = "old"\n\n[mcp_servers.other]\ncommand = "x"\n'
 codex_block = '[mcp_servers.agent-harness]\ncommand = "python"\nargs = [ "server.py" ]\n'
 import re
@@ -743,7 +981,7 @@ old_lazy_merge = merge_settings.lazy_merge_if_needed
 lazy_calls = []
 try:
     mcp_server._LAZY_SETTINGS_MERGE_DONE = False
-    def _fake_lazy_merge():
+    def _fake_lazy_merge(*_args, **_kwargs):
         lazy_calls.append("called")
         return False
     merge_settings.lazy_merge_if_needed = _fake_lazy_merge
@@ -755,6 +993,34 @@ try:
 finally:
     merge_settings.lazy_merge_if_needed = old_lazy_merge
     mcp_server._LAZY_SETTINGS_MERGE_DONE = old_lazy_done
+
+hot_mod_path = SMOKE_DIR / "hot_reload_fake.py"
+hot_mod_path.write_text("VALUE = 1\n", encoding="utf-8")
+sys.path.insert(0, str(SMOKE_DIR.resolve()))
+old_reloadable = mcp_server._reloadable_tool_modules
+try:
+    import importlib
+    hot_mod = importlib.import_module("hot_reload_fake")
+    mcp_server._reloadable_tool_modules = lambda: ["hot_reload_fake"]
+    mcp_server._HOT_RELOAD_SIGNATURES.pop("hot_reload_fake", None)
+    baseline_reload = asyncio.run(mcp_server._ensure_fresh_tool_modules())
+    baseline_sig = mcp_server._HOT_RELOAD_SIGNATURES["hot_reload_fake"]
+    hot_mod_path.write_text("VALUE = 2\n", encoding="utf-8")
+    os.utime(hot_mod_path, (baseline_sig[0], baseline_sig[0]))
+    importlib.invalidate_caches()
+    changed_reload = asyncio.run(mcp_server._ensure_fresh_tool_modules())
+    check("MCP hot-reload nạp lại tool module sau khi file đổi",
+          baseline_reload == []
+          and "hot_reload_fake" in changed_reload
+          and getattr(hot_mod, "VALUE", None) == 2,
+          f"baseline={baseline_reload}, changed={changed_reload}, value={getattr(hot_mod, 'VALUE', None)}")
+finally:
+    mcp_server._reloadable_tool_modules = old_reloadable
+    sys.modules.pop("hot_reload_fake", None)
+    try:
+        sys.path.remove(str(SMOKE_DIR.resolve()))
+    except ValueError:
+        pass
 
 # 5. list_agents chạy được không cần API
 out = asyncio.run(mcp_server.call_tool("list_agents", {}))
@@ -782,10 +1048,28 @@ garbage = st._parse_json_findings("hoàn toàn không phải json")
 check("parse JSON thuần", len(clean) == 1)
 check("parse JSON trong markdown fence", len(fenced) == 1)
 check("text rác → findings rỗng", garbage == [])
+import tools.quality as quality_mod
+quality_parse_fallback = quality_mod._parse_json_result("not json", {"findings": [], "summary": ""})
+check("quality parser fallback degraded rõ ràng",
+      quality_parse_fallback.get("degraded") is True
+      and quality_parse_fallback.get("fallback_reason") == "llm_json_parse_failed",
+      str(quality_parse_fallback))
 
 # 8. Tool validation: thiếu input → error message rõ ràng (không gọi API)
 r = asyncio.run(st.panel_review())
 check("panel_review không input → error", "error" in r)
+import tools.review as review_mod
+old_integrity_timeout = os.environ.get("HARNESS_PANEL_INTEGRITY_TIMEOUT")
+os.environ["HARNESS_PANEL_INTEGRITY_TIMEOUT"] = "-1"
+try:
+    check("panel_review integrity timeout clamp invalid",
+          review_mod._panel_integrity_timeout(240.0) == 75.0,
+          str(review_mod._panel_integrity_timeout(240.0)))
+finally:
+    if old_integrity_timeout is None:
+        os.environ.pop("HARNESS_PANEL_INTEGRITY_TIMEOUT", None)
+    else:
+        os.environ["HARNESS_PANEL_INTEGRITY_TIMEOUT"] = old_integrity_timeout
 r2 = asyncio.run(st.suggest_fix(error="lỗi gì đó"))
 check("suggest_fix thiếu code/files → error", "error" in r2)
 
@@ -818,12 +1102,10 @@ check("pipeline prompts tồn tại",
 models_resp = asyncio.run(server.get_models())
 check("/api/models đủ 12 model", set(models_resp) == set(roles))
 check("swarm lock state không terminal", server._is_terminal_state("_locking_pending_coder") is False)
-import sqlite3
-import time
 server.init_db()
 stale_id = "smoke-stale-lock"
 now = time.time()
-conn = sqlite3.connect(server.FINOPS_DB_PATH)
+conn = sqlite3.connect(server.get_finops_db_path())
 cur = conn.cursor()
 cur.execute("DELETE FROM swarm_sessions WHERE swarm_id=?", (stale_id,))
 cur.execute(
@@ -838,7 +1120,7 @@ conn.close()
 try:
     stale_sess = server.get_swarm_session(stale_id)
 finally:
-    conn = sqlite3.connect(server.FINOPS_DB_PATH)
+    conn = sqlite3.connect(server.get_finops_db_path())
     conn.execute("DELETE FROM swarm_sessions WHERE swarm_id=?", (stale_id,))
     conn.commit()
     conn.close()
@@ -924,6 +1206,35 @@ r3 = asyncio.run(st.panel_review(staged=True))
 check("panel_review(staged=True) không crash",
       "error" in r3 or "findings" in r3,
       str(r3.get("error", ""))[:120])
+async def _cancelled_tool_keeps_run_context_probe():
+    from agents import current_run_id
+    original_execute_tool = mcp_server._execute_tool
+    started = asyncio.Event()
+    seen_run_ids: list[str] = []
+
+    async def fake_execute_tool(_name, _arguments):
+        started.set()
+        await asyncio.sleep(0.12)
+        seen_run_ids.append(current_run_id.get())
+        return mcp_server._json_response({"ok": True})
+
+    mcp_server._execute_tool = fake_execute_tool
+    try:
+        task = asyncio.create_task(mcp_server.call_tool("context_probe", {}))
+        await started.wait()
+        task.cancel()
+        response = await task
+        await asyncio.sleep(0.15)
+        return seen_run_ids, response
+    finally:
+        mcp_server._execute_tool = original_execute_tool
+
+cancel_seen_run_ids, cancel_response = asyncio.run(_cancelled_tool_keeps_run_context_probe())
+check("MCP cancel background giữ run_id context",
+      bool(cancel_seen_run_ids)
+      and cancel_seen_run_ids[0].startswith("mcp-")
+      and "cancelled" in cancel_response[0].text,
+      f"seen={cancel_seen_run_ids} response={cancel_response[0].text}")
 
 # 16. Wiki API endpoints (static check, không gọi Azure)
 import os
@@ -1031,6 +1342,92 @@ poly_bad = asyncio.run(mcp_server.call_tool("polyglot_reviewer", {"files": "conf
 check("polyglot_reviewer files sai kiểu ở MCP → error", "error" in json.loads(poly_bad[0].text))
 api_bad = asyncio.run(mcp_server.call_tool("api_contract_tester", {"endpoints": "/api/models"}))
 check("api_contract_tester endpoints sai kiểu ở MCP → error", "error" in json.loads(api_bad[0].text))
+import tools.core as core_mod
+old_core_llm = core_mod._llm_analyze
+async def _timeout_llm(*_args, **_kwargs):
+    await asyncio.sleep(0.01)
+    raise asyncio.TimeoutError()
+try:
+    core_mod._llm_analyze = _timeout_llm
+    api_timeout = asyncio.run(st.api_contract_tester(endpoints=[{"path": "/health", "method": "GET"}]))
+finally:
+    core_mod._llm_analyze = old_core_llm
+check("api_contract_tester timeout fallback rõ ràng",
+      api_timeout.get("degraded") is False
+      and api_timeout.get("fallback_reason") == "llm_timeout"
+      and bool(api_timeout.get("test_code"))
+      and api_timeout.get("syntax_valid") is True,
+      str(api_timeout))
+
+# 19b. Unsafe/mutating tools run in isolated workspace, not live repo
+import tools.testing as testing_mod
+import tools.wiki as wiki_mod
+import tools.quality as quality_mod
+unsafe_root = SMOKE_DIR / "unsafe_workspace"
+unsafe_root.mkdir(exist_ok=True)
+(unsafe_root / "README.md").write_text("# Unsafe smoke\n", encoding="utf-8")
+(unsafe_root / "sample.py").write_text(
+    "def is_enabled():\n"
+    "    value = True\n"
+    "    if value:\n"
+    "        return True\n"
+    "    return False\n\n"
+    "def public_api():\n"
+    "    return is_enabled()\n",
+    encoding="utf-8",
+)
+(unsafe_root / "test_sample.py").write_text(
+    "from sample import is_enabled\n\n"
+    "def test_is_enabled():\n"
+    "    assert is_enabled() is True\n",
+    encoding="utf-8",
+)
+(unsafe_root / "llmwiki" / "raw").mkdir(parents=True, exist_ok=True)
+(unsafe_root / "llmwiki" / "raw" / "unsafe.md").write_text("unsafe smoke raw doc", encoding="utf-8")
+old_env_workspace = os.environ.get("WORKSPACE_ROOT")
+old_env_claude = os.environ.get("CLAUDE_PROJECT_DIR")
+old_testing_root = testing_mod.WORKSPACE_ROOT
+old_wiki_root = wiki_mod.WORKSPACE_ROOT
+old_quality_root = quality_mod.WORKSPACE_ROOT
+try:
+    os.environ["WORKSPACE_ROOT"] = str(unsafe_root.resolve())
+    os.environ.pop("CLAUDE_PROJECT_DIR", None)
+    testing_mod.WORKSPACE_ROOT = str(unsafe_root.resolve())
+    wiki_mod.WORKSPACE_ROOT = str(unsafe_root.resolve())
+    quality_mod.WORKSPACE_ROOT = str(unsafe_root.resolve())
+    unsafe_wiki = asyncio.run(st.wiki_ingest(target="local"))
+    unsafe_doc = asyncio.run(st.doc_sync())
+    unsafe_tester = asyncio.run(st.auto_tester(files=["sample.py"], findings=[{"issue": "probe"}]))
+    unsafe_sec = asyncio.run(st.security_autofix(files=["sample.py"]))
+    unsafe_mut = asyncio.run(st.mutation_tester(files=[str((unsafe_root / "sample.py").resolve())], max_mutations=1))
+finally:
+    if old_env_workspace is None:
+        os.environ.pop("WORKSPACE_ROOT", None)
+    else:
+        os.environ["WORKSPACE_ROOT"] = old_env_workspace
+    if old_env_claude is None:
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+    else:
+        os.environ["CLAUDE_PROJECT_DIR"] = old_env_claude
+    testing_mod.WORKSPACE_ROOT = old_testing_root
+    wiki_mod.WORKSPACE_ROOT = old_wiki_root
+    quality_mod.WORKSPACE_ROOT = old_quality_root
+check("unsafe wiki_ingest isolated chạy thật",
+      any(item.get("status") == "success" for item in unsafe_wiki.get("details", [])),
+      str(unsafe_wiki))
+check("unsafe doc_sync isolated chạy thật",
+      unsafe_doc.get("success") is True and "API Reference" in (unsafe_root / "README.md").read_text(encoding="utf-8"),
+      str(unsafe_doc))
+check("unsafe auto_tester isolated chạy thật",
+      unsafe_tester.get("success") is True and (unsafe_root / "test_auto_generated.py").exists(),
+      str(unsafe_tester))
+check("unsafe security_autofix isolated chạy thật",
+      "error" not in unsafe_sec
+      and ("findings_count" in unsafe_sec or "fixed" in unsafe_sec or "applied" in unsafe_sec),
+      str(unsafe_sec))
+check("unsafe mutation_tester isolated chạy thật",
+      "total_mutations" in unsafe_mut and unsafe_mut.get("total_mutations", 0) >= 0,
+      str(unsafe_mut))
 
 # 20. visual_reviewer validation
 r_vis = asyncio.run(st.visual_reviewer(url=None))
@@ -1048,10 +1445,33 @@ check("benchmarker chạy thành công", "code_a_stats" in r_bench and "code_b_s
 # 22. dependency_upgrader dry_run test
 r_dep = asyncio.run(st.dependency_upgrader(dry_run=True))
 check("dependency_upgrader dry run chạy được", "upgrades" in r_dep or "message" in r_dep, str(r_dep))
+import tools.devops as devops_mod
+dep_timeout_root = SMOKE_DIR / "dep_timeout_workspace"
+dep_timeout_root.mkdir(exist_ok=True)
+(dep_timeout_root / "requirements.txt").write_text("example-pkg==1.0.0\n", encoding="utf-8")
+old_dep_env = os.environ.get("WORKSPACE_ROOT")
+old_dep_runner = devops_mod._run_text
+def _timeout_pip(*_args, **_kwargs):
+    raise subprocess.TimeoutExpired("pip list", 30)
+try:
+    os.environ["WORKSPACE_ROOT"] = str(dep_timeout_root.resolve())
+    devops_mod._run_text = _timeout_pip
+    dep_timeout = asyncio.run(st.dependency_upgrader(dry_run=True))
+finally:
+    devops_mod._run_text = old_dep_runner
+    if old_dep_env is None:
+        os.environ.pop("WORKSPACE_ROOT", None)
+    else:
+        os.environ["WORKSPACE_ROOT"] = old_dep_env
+check("dependency_upgrader timeout không báo latest giả",
+      dep_timeout.get("degraded") is True
+      and dep_timeout.get("fallback_reason") == "pip_outdated_check_failed"
+      and dep_timeout.get("upgrades_count") is None,
+      str(dep_timeout))
 
 # 23. schema_drift test
 r_schema = asyncio.run(st.schema_drift())
-check("schema_drift chạy được", "drift" in r_schema, str(r_schema))
+check("schema_drift chạy được", "drift_detected" in r_schema or "drift" in r_schema, str(r_schema))
 
 # 24. doc_sync test
 import tools.wiki as wiki_mod
@@ -1075,6 +1495,9 @@ r_sb = st.run_in_sandbox("print('hello')", timeout=2.0)
 check("run_in_sandbox chạy thành công", r_sb["status"] == "success" and r_sb.get("returncode") == 0 and "hello" in r_sb["stdout"], str(r_sb))
 r_sb_timeout = st.run_in_sandbox("import time; time.sleep(10)", timeout=1.0)
 check("run_in_sandbox timeout", r_sb_timeout["status"] == "timeout" and r_sb_timeout.get("returncode") is not None, str(r_sb_timeout))
+check("run_in_sandbox dùng ignored parent dir",
+      (Path(os.environ["WORKSPACE_ROOT"]) / ".harness_sandbox").exists(),
+      str(Path(os.environ["WORKSPACE_ROOT"]) / ".harness_sandbox"))
 
 runtime_cwd = (SMOKE_DIR / "runtime-cwd").resolve()
 runtime_cwd.mkdir(parents=True, exist_ok=True)
@@ -1107,9 +1530,16 @@ try:
     os.environ["CLAUDE_PROJECT_DIR"] = str(ws_a)
     block_a, _, _ = st.read_workspace_files(["same.py"])
     hash_a = st._calculate_review_hash(["same.py"], None, None, None, False, "")
+    from tools.core import get_runtime_path
+    from agents import get_finops_db_path
+    runtime_path_a = get_runtime_path(".harness_cache")
+    finops_path_a = get_finops_db_path()
+    server.init_db()
     os.environ["CLAUDE_PROJECT_DIR"] = str(ws_b)
     block_b, _, _ = st.read_workspace_files(["same.py"])
     hash_b = st._calculate_review_hash(["same.py"], None, None, None, False, "")
+    runtime_path_b = get_runtime_path(".harness_cache")
+    finops_path_b = get_finops_db_path()
 finally:
     for key, value in old_runtime_env.items():
         if value is None:
@@ -1119,8 +1549,418 @@ finally:
 check("core file reads dùng runtime workspace",
       "MARKER_A" in block_a and "MARKER_B" in block_b and "MARKER_B" not in block_a and hash_a != hash_b,
       f"block_a={block_a!r} block_b={block_b!r} hash_a={hash_a} hash_b={hash_b}")
+check("runtime cache/finops paths isolate theo workspace",
+      runtime_path_a == str(ws_a / ".harness_cache")
+      and runtime_path_b == str(ws_b / ".harness_cache")
+      and finops_path_a == str(ws_a / ".harness_finops.db")
+      and finops_path_b == str(ws_b / ".harness_finops.db")
+      and (ws_a / ".harness_finops.db").exists(),
+      f"cache=({runtime_path_a}, {runtime_path_b}) finops=({finops_path_a}, {finops_path_b})")
+
+lesson_ws = (SMOKE_DIR / "lesson-runtime").resolve()
+lesson_ws.mkdir(parents=True, exist_ok=True)
+lesson_ws_other = (SMOKE_DIR / "lesson-runtime-other").resolve()
+lesson_ws_other.mkdir(parents=True, exist_ok=True)
+global_lesson_file = lesson_ws / "global-lessons.jsonl"
+old_lesson_env = {k: os.environ.get(k) for k in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA", "HARNESS_GLOBAL_LESSONS_FILE")}
+try:
+    os.environ.pop("WORKSPACE_ROOT", None)
+    os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
+    os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws)
+    os.environ["HARNESS_GLOBAL_LESSONS_FILE"] = str(global_lesson_file)
+    from tools.core import append_lesson, get_global_lessons_path, get_lesson_db_path, load_relevant_lessons_context, record_procedure_lesson
+    from tools.runner import _fallback_lesson_tags, _record_agent_lessons
+    append_lesson({
+        "source": "smoke",
+        "title": "ask_codebase model chain timeout",
+        "outcome": "fixed",
+        "files": ["tools/swarm.py"],
+        "error_signature": "ask_codebase gpt-5.4-pro-3 timeout",
+        "fix_summary": "Switch ask_codebase to gpt-5.4-4 model_chain and local fallback.",
+        "tags": ["ask_codebase", "timeout"],
+    })
+    record_procedure_lesson(
+        title="Power Automate create approval flow",
+        summary="Create a cloud flow, choose the trigger, configure approval actions, then save and test the flow.",
+        steps=[
+            "Open Power Automate and choose Create.",
+            "Select Automated cloud flow.",
+            "Configure trigger and approval action.",
+            "Save, test, and verify run history.",
+        ],
+        tags=["power automate", "approval flow"],
+        source="smoke",
+    )
+    duplicate_reordered = record_procedure_lesson(
+        title="Power Automate create approval flow",
+        summary="Create a cloud flow, choose the trigger, configure approval actions, then save and test the flow.",
+        steps=[
+            "Save, test, and verify run history.",
+            "Configure trigger and approval action.",
+            "Select Automated cloud flow.",
+            "Open Power Automate and choose Create.",
+        ],
+        tags="power automate",
+        source="smoke",
+    )
+    marker_lessons = _record_agent_lessons("learn reusable Power Automate flow setup", {
+        "status": "completed",
+        "stdout": (
+            'HARNESS_LESSON_JSON: {"title":"Power Automate scheduled flow",'
+            '"summary":"Create a scheduled cloud flow and configure recurrence before adding actions.",'
+            '"steps":["Open Power Automate Create","Select Scheduled cloud flow","Set recurrence and save"],'
+            '"tags":["power automate","scheduled flow"]}'
+        ),
+        "stderr": "",
+    })
+    multiline_marker_lessons = _record_agent_lessons("learn reusable Power Automate approval flow", {
+        "status": "completed",
+        "stdout": """HARNESS_LESSON_JSON: {
+  "title": "Power Automate approval reassignment",
+  "summary": "Configure approval reassignment steps after creating the flow.",
+  "steps": ["Open approval action", "Set reassignment policy"],
+  "tags": "power automate"
+}""",
+        "stderr": "",
+    })
+    fallback_lessons = _record_agent_lessons("learn reusable Power Automate environment promotion", {
+        "status": "completed",
+        "stdout": """Reusable workflow:
+Title: Power Automate environment promotion
+Summary: Promote a Power Automate flow between environments through a managed solution.
+Steps:
+1. Add the flow to a solution in the source environment.
+2. Export the solution as managed.
+3. Import the solution in the target environment.
+4. Verify connection references and run history.
+""",
+        "stderr": "",
+    })
+    fallback_blocked_lessons = _record_agent_lessons("fix tools/runner.py bug", {
+        "status": "completed",
+        "stdout": "Fixed bug in tools/runner.py after traceback. Steps: 1. patch file 2. rerun tests",
+        "stderr": "",
+    })
+    fallback_missing_status = _record_agent_lessons("learn reusable Power Automate environment promotion", {
+        "stdout": """Reusable workflow:
+Title: Power Automate environment promotion missing status
+Summary: Promote a Power Automate flow between environments through a managed solution.
+Steps:
+1. Add the flow to a solution in the source environment.
+2. Export the solution as managed.
+""",
+        "stderr": "",
+    })
+    fallback_timeline_blocked = _record_agent_lessons("learn incident timeline", {
+        "status": "completed",
+        "stdout": """Lesson learned:
+Title: Payment outage timeline
+Summary: Timeline of the incident.
+Steps:
+1. Alert fired at 10:00.
+2. Error rate rose at 10:03.
+3. Service recovered at 10:30.
+""",
+        "stderr": "",
+    })
+    invalid_marker_no_fallback = _record_agent_lessons("learn reusable deployment workflow", {
+        "status": "completed",
+        "stdout": """HARNESS_LESSON_JSON: {"title":
+Reusable workflow:
+Title: Deployment workflow after invalid marker
+Summary: Deploy through the standard release pipeline.
+Steps:
+1. Build the release artifact.
+2. Deploy the artifact to staging.
+""",
+        "stderr": "",
+    })
+    vietnamese_fallback_tags = _fallback_lesson_tags("tạo quy trình power automate", "Quy trình phê duyệt")
+    mcp_tool_lesson = mcp_server._maybe_record_mcp_tool_lesson("quick_task", {}, mcp_server._json_response({
+        "status": "completed",
+        "notes": """Reusable workflow:
+Title: SharePoint list approval routing
+Summary: Configure a reusable SharePoint approval routing workflow. Authorization: Bearer sharepoint-secret-token
+Steps:
+1. Create the SharePoint list columns.
+2. Configure the approval routing rule.
+3. Test the approval path with a sample item.
+""",
+    }))
+    mcp_tool_non_candidate = mcp_server._maybe_record_mcp_tool_lesson("run_ledger", {}, mcp_server._json_response({
+        "status": "completed",
+        "notes": """Reusable workflow:
+Title: Should not store from run ledger
+Summary: This should be ignored because run_ledger is not a lesson source.
+Steps:
+1. Create a record.
+2. Verify a record.
+""",
+    }))
+    cyclic_ref = {}
+    cyclic_ref["self"] = cyclic_ref
+    append_lesson({
+        "source": "smoke",
+        "title": "secret lesson redaction marker",
+        "summary": "token='abc def' Authorization: Bearer abc123 password=plain",
+        "refs": cyclic_ref,
+    })
+    from concurrent.futures import ThreadPoolExecutor
+    concurrent_entry = {
+        "source": "smoke",
+        "title": "concurrent lesson dedupe",
+        "summary": "only one physical record should be appended",
+        "lesson_key": "smoke:concurrent-dedupe",
+    }
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        concurrent_flags = list(pool.map(lambda _i: append_lesson(concurrent_entry), range(12)))
+    lesson_lines_after_concurrency = (lesson_ws / ".harness_lessons.jsonl").read_text(encoding="utf-8").splitlines()
+    concurrent_count = sum(1 for line in lesson_lines_after_concurrency if '"lesson_key": "smoke:concurrent-dedupe"' in line)
+    lesson_context = load_relevant_lessons_context("ask_codebase timeout model_chain")
+    procedure_context = load_relevant_lessons_context("Power Automate tạo flow approval")
+    secret_context = load_relevant_lessons_context("secret lesson redaction marker")
+    os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws_other)
+    global_procedure_context = load_relevant_lessons_context("Power Automate tạo flow approval")
+    global_fallback_context = load_relevant_lessons_context("Power Automate environment promotion managed solution")
+    global_mcp_tool_context = load_relevant_lessons_context("SharePoint approval routing workflow")
+    global_only_bug_context = load_relevant_lessons_context("ask_codebase timeout model_chain")
+    os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws)
+    global_lesson_path_during_test = get_global_lessons_path()
+    assembled_lesson_ctx, _ = st._assemble_context(context="ask_codebase timeout model_chain")
+    agent_prompt_local_lessons = _agent_prompt("fix ask_codebase timeout model_chain", {"summary": "ask_codebase timeout model_chain"})
+    os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws_other)
+    agent_prompt_global_lessons = _agent_prompt("Power Automate environment promotion managed solution", {"summary": "Power Automate environment promotion"})
+    agent_prompt_pinned_lessons = _agent_prompt("fix ask_codebase timeout model_chain", {"summary": "ask_codebase timeout model_chain"}, root=lesson_ws)
+    os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws)
+    import tools.runner as runner_mod
+    original_runner_lessons = runner_mod.load_relevant_lessons_context
+    try:
+        runner_mod.load_relevant_lessons_context = lambda *_args, **_kwargs: "x" * 20000
+        capped_agent_prompt = runner_mod._agent_prompt("x" * 6000 + "\x01", {"summary": "y" * 6000})
+    finally:
+        runner_mod.load_relevant_lessons_context = original_runner_lessons
+    (lesson_ws / "sample.py").write_text("def sample():\n    return 'ask_codebase timeout model_chain'\n", encoding="utf-8")
+    auto_lesson = asyncio.run(mcp_server.call_tool("auto_trigger", {
+        "changed_files": ["README.md"],
+        "task": "ask_codebase timeout model_chain docs",
+        "stage": "post_edit",
+        "mode": "safe",
+    }))
+    auto_lesson_json = json.loads(auto_lesson[0].text)
+    auto_attr = asyncio.run(mcp_server.call_tool("auto_trigger", {
+        "changed_files": ["sample.py"],
+        "diff": "diff --git a/sample.py b/sample.py\n+ask_codebase timeout model_chain\n",
+        "task": "fix ask_codebase timeout model_chain bug",
+        "stage": "pre_complete",
+        "mode": "safe",
+    }))
+    auto_attr_json = json.loads(auto_attr[0].text)
+    ledger_after_attr = asyncio.run(mcp_server.call_tool("run_ledger", {"limit": 10}))
+    ledger_after_attr_json = json.loads(ledger_after_attr[0].text)
+    clean_lesson_recorded = _auto_record_auto_trigger_lesson(
+        batch_id="smoke-clean-batch",
+        diff_hash="smoke-clean-diff",
+        files=["sample.py"],
+        task="fix ask_codebase timeout model_chain bug",
+        stage="pre_complete",
+        mode="safe",
+        selected=["harness_trace_viewer"],
+        skipped_tools=[],
+        results=[{"tool": "harness_trace_viewer", "ok": True, "status": "completed", "warnings": []}],
+        blockers_count=0,
+        timeout_budget_exceeded=False,
+    )
+    ledger_after_clean = asyncio.run(mcp_server.call_tool("run_ledger", {"limit": 10}))
+    ledger_after_clean_json = json.loads(ledger_after_clean[0].text)
+    old_key_entry = {
+        "source": "smoke",
+        "title": "old lesson key outside tail window",
+        "summary": "dedupe must still find keys older than 200 rows",
+        "lesson_key": "smoke:old-key-window",
+    }
+    old_key_first = append_lesson(old_key_entry)
+    for idx in range(220):
+        append_lesson({
+            "source": "smoke",
+            "title": f"filler lesson {idx}",
+            "summary": "push old lesson key outside the old tail window",
+            "lesson_key": f"smoke:filler-{idx}",
+        })
+    old_key_second = append_lesson(old_key_entry)
+    lesson_lines_after_old_key = (lesson_ws / ".harness_lessons.jsonl").read_text(encoding="utf-8").splitlines()
+    old_key_count = sum(1 for line in lesson_lines_after_old_key if '"lesson_key": "smoke:old-key-window"' in line)
+    lesson_db_path = Path(get_lesson_db_path())
+    lesson_db = sqlite3.connect(str(lesson_db_path))
+    try:
+        db_old_key_count = lesson_db.execute(
+            "SELECT COUNT(*) FROM lesson_keys WHERE lesson_key = ?",
+            ("smoke:old-key-window",),
+        ).fetchone()[0]
+    finally:
+        lesson_db.close()
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(lesson_db_path) + suffix).unlink(missing_ok=True)
+    old_key_after_db_delete = append_lesson(old_key_entry)
+    rebuilt_lesson_db_exists = lesson_db_path.exists()
+    rebuilt_lesson_db = sqlite3.connect(str(lesson_db_path))
+    try:
+        rebuilt_old_key_count = rebuilt_lesson_db.execute(
+            "SELECT COUNT(*) FROM lesson_keys WHERE lesson_key = ?",
+            ("smoke:old-key-window",),
+        ).fetchone()[0]
+    finally:
+        rebuilt_lesson_db.close()
+    for suffix in ("-wal", "-shm"):
+        Path(str(lesson_db_path) + suffix).unlink(missing_ok=True)
+    lesson_db_path.write_bytes(b"not a sqlite database")
+    old_key_after_db_corrupt = append_lesson(old_key_entry)
+    post_corrupt_new_entry = {
+        "source": "smoke",
+        "title": "new lesson after corrupt db",
+        "summary": "index should rebuild after quarantine",
+        "lesson_key": "smoke:after-corrupt-db",
+    }
+    post_corrupt_new_stored = append_lesson(post_corrupt_new_entry)
+    post_corrupt_db = sqlite3.connect(str(lesson_db_path))
+    try:
+        post_corrupt_counts = dict(post_corrupt_db.execute(
+            "SELECT lesson_key, COUNT(*) FROM lesson_keys WHERE lesson_key IN (?, ?) GROUP BY lesson_key",
+            ("smoke:old-key-window", "smoke:after-corrupt-db"),
+        ).fetchall())
+    finally:
+        post_corrupt_db.close()
+    no_key_entry = {
+        "source": "smoke",
+        "title": "no key append-only contract",
+        "summary": "entries without lesson_key are append-only",
+    }
+    no_key_first = append_lesson(no_key_entry)
+    no_key_second = append_lesson(no_key_entry)
+    import tools.core as lesson_core
+    original_fsync = lesson_core.os.fsync
+    try:
+        lesson_core.os.fsync = lambda _fd: (_ for _ in ()).throw(OSError("smoke fsync failure"))
+        fsync_entry = {
+            "source": "smoke",
+            "title": "fsync best effort lesson",
+            "summary": "flushed JSONL write should survive fsync warning",
+            "lesson_key": "smoke:fsync-best-effort",
+        }
+        fsync_stored = append_lesson(fsync_entry)
+    finally:
+        lesson_core.os.fsync = original_fsync
+    lesson_lines_after_fsync = (lesson_ws / ".harness_lessons.jsonl").read_text(encoding="utf-8").splitlines()
+    fsync_line_count = sum(1 for line in lesson_lines_after_fsync if '"lesson_key": "smoke:fsync-best-effort"' in line)
+finally:
+    for key, value in old_lesson_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+check("lesson memory tự inject vào context",
+      "ask_codebase model chain timeout" in lesson_context
+      and "=== PRIOR LESSONS (AUTO-INJECTED) ===" in assembled_lesson_ctx,
+      f"lesson_context={lesson_context!r}")
+check("goal_runner agent prompt inject local/global lessons",
+      "ask_codebase model chain timeout" in agent_prompt_local_lessons
+      and "Power Automate environment promotion" in agent_prompt_global_lessons
+      and "ask_codebase model chain timeout" in agent_prompt_pinned_lessons
+      and "ask_codebase model chain timeout" not in agent_prompt_global_lessons,
+      f"local_prompt={agent_prompt_local_lessons!r} global_prompt={agent_prompt_global_lessons!r} pinned={agent_prompt_pinned_lessons!r}")
+check("goal_runner agent prompt cap prior lessons",
+      len(capped_agent_prompt) < 18000 and "[truncated prior lessons]" in capped_agent_prompt,
+      f"len={len(capped_agent_prompt)} prompt={capped_agent_prompt[:200]!r}")
+check("procedure lesson memory tự học và inject workflow",
+      "Power Automate create approval flow" in procedure_context
+      and "steps:" in procedure_context
+      and any(item.get("status") == "stored" for item in marker_lessons),
+      f"procedure_context={procedure_context!r} marker_lessons={marker_lessons!r}")
+check("procedure fallback tự học khi agent quên marker",
+      any(item.get("status") == "stored" for item in fallback_lessons)
+      and fallback_blocked_lessons == []
+      and fallback_missing_status == []
+      and fallback_timeline_blocked == []
+      and invalid_marker_no_fallback and invalid_marker_no_fallback[0].get("status") == "skipped"
+      and vietnamese_fallback_tags
+      and "Power Automate environment promotion" in global_fallback_context
+      and "scope=global" in global_fallback_context,
+      f"fallback={fallback_lessons!r} blocked={fallback_blocked_lessons!r} missing={fallback_missing_status!r} timeline={fallback_timeline_blocked!r} invalid={invalid_marker_no_fallback!r} tags={vietnamese_fallback_tags!r} context={global_fallback_context!r}")
+check("mcp tool fallback tự học không cần goal_runner",
+      mcp_tool_lesson.get("status") == "stored"
+      and mcp_tool_non_candidate.get("status") == "skipped"
+      and "SharePoint list approval routing" in global_mcp_tool_context
+      and "sharepoint-secret-token" not in global_mcp_tool_context
+      and "scope=global" in global_mcp_tool_context,
+      f"lesson={mcp_tool_lesson!r} non_candidate={mcp_tool_non_candidate!r} context={global_mcp_tool_context!r}")
+check("procedure lesson global qua project khác, bug/fix vẫn local",
+      global_lesson_path_during_test == str(global_lesson_file.resolve())
+      and global_lesson_file.exists()
+      and "Power Automate create approval flow" in global_procedure_context
+      and "scope=global" in global_procedure_context
+      and "ask_codebase model chain timeout" not in global_only_bug_context,
+      f"global={global_procedure_context!r} bug={global_only_bug_context!r} path={global_lesson_path_during_test!r}")
+check("procedure lesson parser/dedupe/redaction robust",
+      duplicate_reordered.get("status") == "duplicate"
+      and any(item.get("status") == "stored" for item in multiline_marker_lessons)
+      and "abc123" not in secret_context
+      and "abc def" not in secret_context
+      and "password=plain" not in secret_context,
+      f"duplicate={duplicate_reordered!r} multiline={multiline_marker_lessons!r} secret={secret_context!r}")
+check("lesson append dedupe atomic trong process",
+      concurrent_flags.count(True) == 1 and concurrent_count == 1,
+      f"flags={concurrent_flags} count={concurrent_count}")
+check("lesson append dedupe scan full file",
+      old_key_first is True and old_key_second is False and old_key_count == 1,
+      f"first={old_key_first} second={old_key_second} count={old_key_count}")
+check("lesson sqlite index tự tạo và rebuild",
+      db_old_key_count == 1 and old_key_after_db_delete is False and rebuilt_lesson_db_exists and rebuilt_old_key_count == 1,
+      f"db_count={db_old_key_count} after_delete={old_key_after_db_delete} rebuilt={rebuilt_lesson_db_exists} rebuilt_count={rebuilt_old_key_count}")
+check("lesson sqlite index tự quarantine corrupt db",
+      old_key_after_db_corrupt is False
+      and post_corrupt_new_stored is True
+      and post_corrupt_counts.get("smoke:old-key-window") == 1
+      and post_corrupt_counts.get("smoke:after-corrupt-db") == 1,
+      f"old_after_corrupt={old_key_after_db_corrupt} new={post_corrupt_new_stored} counts={post_corrupt_counts}")
+busy_error = sqlite3.OperationalError("database is locked")
+check("lesson sqlite busy không bị xem là corrupt",
+      _is_sqlite_busy_error(busy_error) is True,
+      str(busy_error))
+check("lesson không có lesson_key append-only",
+      no_key_first is True and no_key_second is True,
+      f"first={no_key_first} second={no_key_second}")
+review_hash_fast = _calculate_review_hash(files=["a.py"], fast=True, agent_timeout=5, cache_schema=2)
+review_hash_full = _calculate_review_hash(files=["a.py"], fast=False, agent_timeout=90, cache_schema=2)
+check("panel_review cache key tách mode/timeout",
+      review_hash_fast != review_hash_full,
+      f"fast={review_hash_fast} full={review_hash_full}")
+check("lesson fsync best-effort không làm mất write",
+      fsync_stored is True and fsync_line_count == 1,
+      f"stored={fsync_stored} count={fsync_line_count}")
+check("auto_trigger trả prior_lessons dù skip docs-only",
+      "ask_codebase model chain timeout" in auto_lesson_json.get("prior_lessons", ""),
+      str(auto_lesson_json))
+check("auto_trigger gắn attribution cho batch edit",
+      bool(auto_attr_json.get("batch_id"))
+      and bool(auto_attr_json.get("diff_hash"))
+      and "failed_tools" in auto_attr_json
+      and auto_attr_json.get("lessons_recorded", {}).get("status") == "skipped"
+      and auto_attr_json.get("orchestrator", {}).get("status") == "completed"
+      and any(e.get("event") == "edit_batch_checked" and e.get("batch_id") == auto_attr_json.get("batch_id") for e in ledger_after_attr_json.get("entries", [])),
+      f"auto={auto_attr_json} ledger={ledger_after_attr_json}")
+check("auto_trigger tự ghi lesson sau batch pass",
+      clean_lesson_recorded.get("status") in {"stored", "duplicate"}
+      and any(item.get("source") == "auto_trigger" and item.get("lesson_type") == "checked_edit" for item in ledger_after_clean_json.get("lessons", [])),
+      f"recorded={clean_lesson_recorded} lessons={ledger_after_clean_json.get('lessons')}")
+check("orchestrator tự chạy trong auto_trigger skip/check",
+      auto_lesson_json.get("orchestrator", {}).get("status") == "completed"
+      and auto_attr_json.get("orchestrator", {}).get("skill_route", {}).get("recommended_tools"),
+      f"skip={auto_lesson_json.get('orchestrator')} check={auto_attr_json.get('orchestrator')}")
 
 # 27. semantic_search test
+r_index = asyncio.run(st.index_codebase(force=False))
+check("index_codebase chạy được", "status" in r_index, str(r_index))
+r_index_mcp = asyncio.run(mcp_server.call_tool("index_codebase", {"force": False}))
+check("index_codebase MCP dispatch chạy được", "status" in json.loads(r_index_mcp[0].text), r_index_mcp[0].text)
 r_search = asyncio.run(st.semantic_search(query="test", top_k=2))
 check("semantic_search chạy được", "results" in r_search and "warnings" in r_search, str(r_search))
 
@@ -1142,10 +1982,9 @@ r_config = asyncio.run(st.config_security_audit())
 check("config_security_audit chạy thành công", "findings" in r_config and "secrets_found" in r_config, str(r_config))
 
 # 32. Interactive Swarm init & session test
-import sqlite3
-from agents import FINOPS_DB_PATH
+from agents import get_finops_db_path
 try:
-    conn = sqlite3.connect(FINOPS_DB_PATH)
+    conn = sqlite3.connect(get_finops_db_path())
     cursor = conn.cursor()
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS swarm_sessions (

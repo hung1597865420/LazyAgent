@@ -6,13 +6,14 @@ import json
 import os
 import sys
 import tempfile
+import time
 from contextlib import redirect_stdout
 from pathlib import Path
 
 CLAUDE_MARKER = "<!-- agent-harness-managed -->"
 GEMINI_MARKER = "<!-- agent-harness -->"
 HOOK_ID = "agent-harness-panel-reminder"
-RULES_VERSION = "2026-07-13-ops-layer-v1"
+RULES_VERSION = "2026-07-13-docsgate-r11"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -70,6 +71,7 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 - Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `mcp__agent-harness__prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
 - Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi `mcp__agent-harness__auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
 - Goal progress summary được harness tự prepend vào context của `consult`/`panel_review`/`ask_codebase`/checks liên quan: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
+- Docs-gate chỉ được tự ghi backlog hoặc tự cập nhật docs nhẹ khi phù hợp; TUYỆT ĐỐI không hỏi user kiểu "có muốn bổ sung tài liệu cho 5 prompt vừa rồi không?". User chỉ gõ prompt chính, không bị ngắt bởi maintenance docs.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` sẽ tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
 
@@ -172,20 +174,33 @@ def _end_marker_for(marker: str) -> str:
     return marker.replace("<!-- ", "<!-- /", 1)
 
 
+def _find_marker_line(content: str, marker: str, start_at: int = 0) -> int:
+    offset = 0
+    in_fence = False
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+        if offset >= start_at and not in_fence and stripped == marker:
+            return offset
+        offset += len(line)
+    return -1
+
+
 def _replace_managed_section(content: str, marker: str, section: str) -> tuple[str, bool]:
     end_marker = _end_marker_for(marker)
     if end_marker not in section:
         section = section.rstrip() + "\n" + end_marker + "\n"
-    start = content.find(marker)
+    start = _find_marker_line(content, marker)
     if start == -1:
         return content.rstrip() + "\n\n" + section, False
-    end = content.find(end_marker, start + len(marker))
+    end = _find_marker_line(content, end_marker, start + len(marker))
     if end != -1:
         tail_start = end + len(end_marker)
         return content[:start].rstrip() + "\n\n" + section + "\n\n" + content[tail_start:].lstrip(), True
-    # Legacy section had no end marker and was appended by older installers.
-    # Preserve user content instead of guessing a broad prefix boundary.
-    return content.rstrip() + "\n\n" + section, False
+    # Managed block is corrupt/incomplete; replace from marker to EOF to avoid
+    # leaving conflicting duplicated rules in the same memory file.
+    return content[:start].rstrip() + "\n\n" + section, True
 
 
 def merge_claude_md(claude_dir: Path) -> None:
@@ -403,6 +418,7 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 - Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
 - Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi lại `auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
 - Goal progress summary được harness tự prepend vào context của `consult`/`panel_review`/`ask_codebase`/checks liên quan: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
+- Docs-gate chỉ được tự ghi backlog hoặc tự cập nhật docs nhẹ khi phù hợp; TUYỆT ĐỐI không hỏi user kiểu "có muốn bổ sung tài liệu cho 5 prompt vừa rồi không?". User chỉ gõ prompt chính, không bị ngắt bởi maintenance docs.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
 
@@ -538,13 +554,48 @@ def lazy_merge_if_needed(home: Path | None = None) -> bool:
     """Merge global rules once per RULES_VERSION. Never raise."""
     if not needs_update(home=home):
         return False
+    lock_path = _home_dir(home) / ".claude" / ".harness_rules_merge.lock"
+    lock_fd: int | None = None
     try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                meta = {"pid": os.getpid(), "ts": time.time(), "version": RULES_VERSION}
+                os.write(lock_fd, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+                break
+            except FileExistsError:
+                if not needs_update(home=home):
+                    return False
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                    if age > 60:
+                        lock_path.unlink()
+                        continue
+                except OSError:
+                    pass
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.1)
+        if not needs_update(home=home):
+            return False
         # MCP uses stdout for protocol frames; keep setup chatter off stdout.
         with redirect_stdout(sys.stderr):
             return _merge_all(home) == 0
     except Exception as e:
         print(f"[warn] Lazy harness rules merge skipped: {e}", file=sys.stderr)
         return False
+    finally:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
 
 
 def main() -> int:

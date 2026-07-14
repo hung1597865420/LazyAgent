@@ -33,6 +33,75 @@ def _run_text(args, **kwargs):
     return subprocess.run(args, **kwargs)
 
 
+def _normalize_api_contract_endpoints(endpoints: list[dict]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for idx, endpoint in enumerate(endpoints):
+        if not isinstance(endpoint, dict):
+            continue
+        path = str(endpoint.get("path") or endpoint.get("url") or "/").strip() or "/"
+        method = str(endpoint.get("method") or "GET").strip().upper() or "GET"
+        name = re.sub(r"[^a-zA-Z0-9_]+", "_", f"{method}_{path}".strip("/"))[:80].strip("_") or f"endpoint_{idx}"
+        normalized.append({"path": path, "method": method, "name": name.lower()})
+    if not normalized:
+        normalized.append({"path": "/", "method": "GET", "name": "endpoint_0"})
+    return normalized
+
+
+def _static_api_contract_test_code(endpoints: list[dict]) -> str:
+    normalized = _normalize_api_contract_endpoints(endpoints)
+    endpoint_literal = json.dumps(normalized, ensure_ascii=False, indent=4)
+    test_code = f'''"""Generated API contract smoke tests.
+Set API_BASE_URL to run these against a live service.
+"""
+import os
+
+ENDPOINTS = {endpoint_literal}
+
+
+def _request(endpoint):
+    base_url = os.getenv("API_BASE_URL", "").rstrip("/")
+    if not base_url:
+        return None
+    import requests
+    return requests.request(endpoint["method"], base_url + endpoint["path"], timeout=10)
+
+
+def _assert_json_response(response):
+    assert response.status_code < 500
+    content_type = response.headers.get("content-type", "")
+    if response.content and "json" in content_type.lower():
+        assert response.json() is not None
+
+'''
+    for idx, endpoint in enumerate(normalized):
+        test_code += (
+            f"\ndef test_api_contract_{idx}_{endpoint['name']}():\n"
+            f"    response = _request(ENDPOINTS[{idx}])\n"
+            f"    if response is None:\n"
+            f"        return\n"
+            f"    _assert_json_response(response)\n"
+        )
+    return test_code
+
+
+def _static_api_contract_result(endpoints: list[dict], warnings: list[str], reason: str) -> dict:
+    from .core import run_in_sandbox
+
+    test_code = _static_api_contract_test_code(endpoints)
+    sandbox_res = run_in_sandbox(test_code + "\nprint('Syntax OK')", timeout=3.0)
+    return {
+        "test_code": test_code,
+        "syntax_valid": sandbox_res.get("status") in {"success", "ok"},
+        "generation_status": "static_fallback",
+        "execution_status": "syntax_only" if sandbox_res.get("status") in {"success", "ok"} else "sandbox_error",
+        "sandbox_output": sandbox_res,
+        "fallback": True,
+        "degraded": False,
+        "fallback_reason": reason,
+        "warnings": warnings + ["LLM unavailable; generated deterministic contract smoke tests."],
+    }
+
+
 def _stream_text(value) -> str:
     if value is None:
         return ""
@@ -68,11 +137,14 @@ async def dependency_upgrader(dry_run: bool = True) -> dict:
         )
         if r.returncode != 0:
             outdated_packages = []
+            pip_check_ok = False
             warnings.append(f"Không thể kiểm tra package lỗi thời qua pip: {r.stderr.strip()}")
         else:
             outdated_packages = json.loads(r.stdout.strip())
+            pip_check_ok = True
     except Exception as e:
         outdated_packages = []
+        pip_check_ok = False
         warnings.append(f"Lỗi khi chạy pip list: {e}")
         
     try:
@@ -112,6 +184,16 @@ async def dependency_upgrader(dry_run: bool = True) -> dict:
                 })
                 
     if not upgrades:
+        if not pip_check_ok:
+            return {
+                "message": "Không xác định được package outdated vì pip check thất bại; đã parse requirements.txt nhưng không kết luận latest.",
+                "upgrades_count": None,
+                "upgrades": [],
+                "fallback": True,
+                "degraded": True,
+                "fallback_reason": "pip_outdated_check_failed",
+                "warnings": warnings,
+            }
         return {
             "message": "Tất cả thư viện trong requirements.txt đều ở phiên bản mới nhất!",
             "upgrades_count": 0,
@@ -721,10 +803,10 @@ async def api_contract_tester(endpoints: list[dict]) -> dict:
         res_raw = await asyncio.wait_for(_llm_analyze(prompt, role=AgentRole.CODE_A), timeout=45)
     except asyncio.TimeoutError:
         warnings.append("LLM api_contract_tester timeout sau 45s.")
-        return {"test_code": "", "syntax_valid": None, "generation_status": "timeout", "sandbox_output": {}, "warnings": warnings}
+        return _static_api_contract_result(endpoints, warnings, "llm_timeout")
     except Exception as _e:
         warnings.append(f"LLM api_contract_tester lỗi: {_e}")
-        return {"test_code": "", "syntax_valid": None, "generation_status": "error", "sandbox_output": {}, "warnings": warnings}
+        return _static_api_contract_result(endpoints, warnings, "llm_error")
 
     test_code = res_raw.strip()
     m = re.search(r"```python\s*(.*?)\s*```", test_code, re.DOTALL)
@@ -732,7 +814,8 @@ async def api_contract_tester(endpoints: list[dict]) -> dict:
         test_code = m.group(1).strip()
 
     if not test_code:
-        return {"test_code": "", "syntax_valid": None, "generation_status": "empty", "sandbox_output": {}, "warnings": warnings}
+        warnings.append("LLM api_contract_tester trả rỗng.")
+        return _static_api_contract_result(endpoints, warnings, "llm_empty")
 
     import ast as _ast
     syntax_valid = False

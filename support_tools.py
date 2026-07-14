@@ -106,6 +106,7 @@ from tools.analysis import (
     env_parity_checker,
     load_tester,
     complexity_analyzer,
+    index_codebase,
 )
 from tools.quality import (
     migration_validator,

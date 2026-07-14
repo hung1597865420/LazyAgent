@@ -10,8 +10,8 @@ import uuid
 import json
 import unicodedata
 from pathlib import Path
-from typing import Optional
-from config import WORKSPACE_ROOT, get_azure_client
+from typing import Any, Optional
+from config import get_azure_client
 from agents import Agent, AgentRole, AgentResult
 from .core import (
     read_workspace_files,
@@ -23,6 +23,7 @@ from .core import (
     _cleanup_session_backups,
     run_in_sandbox,
     _get_active_workspace,
+    load_relevant_lessons_context,
     MAX_TOTAL_BYTES_BIG
 )
 
@@ -60,9 +61,16 @@ def _ask_codebase_timeout() -> float:
 
 def _ask_codebase_context_cap() -> int:
     try:
-        return max(20_000, int(os.getenv("HARNESS_ASK_CODEBASE_CONTEXT_BYTES", "650000")))
+        return max(20_000, int(os.getenv("HARNESS_ASK_CODEBASE_CONTEXT_BYTES", "220000")))
     except (TypeError, ValueError):
-        return 650_000
+        return 220_000
+
+
+def _ask_codebase_max_output_tokens() -> int:
+    try:
+        return min(32_768, max(1_024, int(os.getenv("HARNESS_ASK_CODEBASE_MAX_OUTPUT_TOKENS", "8192"))))
+    except (TypeError, ValueError):
+        return 8_192
 
 
 def _ask_codebase_load_cap() -> int:
@@ -85,6 +93,23 @@ def _ask_codebase_timeout_retries() -> int:
 
 def _ask_codebase_include_wiki() -> bool:
     return os.getenv("HARNESS_ASK_CODEBASE_INCLUDE_WIKI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ask_codebase_model_chain() -> list[str]:
+    raw = (
+        os.getenv("HARNESS_ASK_CODEBASE_MODEL_CHAIN")
+        or os.getenv("HARNESS_ASK_CODEBASE_MODEL")
+        or "gpt-5.4-4,gpt-5.4-3,gpt-5.3-codex-4"
+    )
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in raw.split(","):
+        model = item.strip()
+        key = model.lower()
+        if model and key not in seen:
+            seen.add(key)
+            models.append(model)
+    return models or ["gpt-5.4-4"]
 
 
 _ASK_CODEBASE_MAX_FILES = 15
@@ -275,21 +300,28 @@ def _sanitize_ask_files(files: list[str] | None) -> tuple[list[str], list[str]]:
         raw_files = raw_files[:1000]
     for raw in raw_files:
         if not isinstance(raw, str) or not raw.strip():
-            warnings.append(f"{raw!r}: ask_codebase file path invalid — skipped")
+            warnings.append(f"{_safe_warn_value(raw)}: ask_codebase file path invalid — skipped")
             continue
         rel = raw.replace("\\", "/").strip()
         p = Path(rel)
         if p.is_absolute() or ".." in p.parts:
-            warnings.append(f"{raw}: ask_codebase rejects absolute/path traversal — skipped")
+            warnings.append(f"{_safe_warn_value(raw)}: ask_codebase rejects absolute/path traversal — skipped")
             continue
         normalized = p.as_posix()
         if _skip_auto_selected_file(normalized):
-            warnings.append(f"{raw}: ask_codebase skips harness/env/wiki artifact — skipped")
+            warnings.append(f"{_safe_warn_value(raw)}: ask_codebase skips harness/env/wiki artifact — skipped")
             continue
         if normalized not in seen:
             seen.add(normalized)
             safe.append(normalized)
     return safe, warnings
+
+
+def _safe_warn_value(value, limit: int = 120) -> str:
+    text = repr(value)
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+    return text
 
 
 def _pack_file_block(path: str, lines: list[tuple[int, str]], budget: int) -> tuple[str, int]:
@@ -353,6 +385,8 @@ def _narrow_files_for_question(question: str, files: list[str]) -> tuple[list[st
 def _prune_context_for_question(question: str, context: str, max_bytes: int) -> tuple[str, list[str]]:
     terms = _query_terms(question)
     rows = _iter_file_lines(context)
+    if max_bytes < 200:
+        return _truncate_bytes(context, max_bytes), [f"ask_codebase context cap too small ({max_bytes} bytes); truncated before relevance prune"]
     if not terms or not rows or len(context.encode("utf-8", errors="replace")) <= max_bytes:
         return context, []
 
@@ -413,7 +447,7 @@ def _extract_wiki_hits(context: str, terms: set[str]) -> list[str]:
     return [text for _score, text in hits[:3]]
 
 
-def _extractive_codebase_answer(question: str, context: str, files: Optional[list[str]], reason: str) -> str:
+def _rank_context_lines(question: str, context: str, limit: int = 10) -> tuple[list[tuple[int, str, int, str, list[str], int]], list[tuple[str, int]]]:
     terms = _query_terms(question)
     rows = _iter_file_lines(context)
     ranked: list[tuple[int, str, int, str, list[str], int]] = []
@@ -427,17 +461,58 @@ def _extractive_codebase_answer(question: str, context: str, files: Optional[lis
     per_file: dict[str, int] = {}
     for item in ranked:
         path = item[1]
-        limit = 2 if path.lower().endswith((".md", ".txt", ".rst", ".adoc")) else 3
-        if per_file.get(path, 0) >= limit:
+        limit_per_file = 2 if path.lower().endswith((".md", ".txt", ".rst", ".adoc")) else 3
+        if per_file.get(path, 0) >= limit_per_file:
             continue
         selected.append(item)
         per_file[path] = per_file.get(path, 0) + 1
-        if len(selected) >= 10:
+        if len(selected) >= limit:
             break
+
     file_scores: dict[str, int] = {}
     for score, path, *_rest in ranked[:80]:
         file_scores[path] = file_scores.get(path, 0) + score
     likely_files = sorted(file_scores.items(), key=lambda item: (-item[1], item[0]))[:6]
+    return selected, likely_files
+
+
+def _local_context_pack(question: str, context: str, files: Optional[list[str]]) -> dict[str, Any]:
+    rows = _iter_file_lines(context)
+    selected, likely_files = _rank_context_lines(question, context, limit=8)
+    snippets = []
+    markdown = []
+    if likely_files:
+        markdown.append("Relevant files:")
+        for path, score in likely_files:
+            markdown.append(f"- `{path}` score={score}")
+        markdown.append("")
+    if selected:
+        markdown.append("Relevant snippets:")
+        for score, path, line_no, _text, matched, idx in selected:
+            snippet = _context_snippet(rows, idx)
+            snippets.append({
+                "path": path,
+                "line": line_no,
+                "score": score,
+                "matched": matched[:8],
+                "snippet": snippet,
+            })
+            markdown.append(f"- `{path}:{line_no}` score={score}")
+            markdown.append("```text")
+            markdown.append(snippet)
+            markdown.append("```")
+    return {
+        "loaded_files": files or [],
+        "relevant_files": [{"path": path, "score": score} for path, score in likely_files],
+        "snippets": snippets,
+        "markdown": "\n".join(markdown).strip(),
+    }
+
+
+def _extractive_codebase_answer(question: str, context: str, files: Optional[list[str]], reason: str) -> str:
+    terms = _query_terms(question)
+    rows = _iter_file_lines(context)
+    selected, likely_files = _rank_context_lines(question, context, limit=10)
     wiki_hits = _extract_wiki_hits(context, terms)
     file_list = ", ".join(files or []) or "index/navigation context"
 
@@ -526,13 +601,34 @@ def _manager_answer_usable(answer: str) -> bool:
         return True
     citation_patterns = (
         r"`?[\w./\\() -]+\.\w+:\d+`?",
+        r"`?[\w./\\() -]+\.\w+:L\d+`?",
         r"`?[\w./\\() -]+\.\w+\s+line\s+\d+`?",
+        r"`?[\w./\\() -]+\.\w+\s*\(line\s*\d+\)`?",
+        r"`?[\w./\\() -]+\.\w+\s*\(line=\d+\)`?",
         r"`?[\w./\\() -]+\.\w+#L\d+`?",
         r"\[[^\]]+\]\([^)]+\.\w+(?::\d+|#L\d+)[^)]*\)",
     )
     if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in citation_patterns):
         return True
     return False
+
+
+def _manager_answer_appears_truncated(answer: str, max_output_tokens: int) -> bool:
+    text = (answer or "").strip()
+    low = text.lower()
+    if not text or "không tìm thấy trong context đã cung cấp" in low or "khong tim thay trong context da cung cap" in low:
+        return False
+    if text.count("```") % 2:
+        return True
+    without_fences = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    if without_fences.count("`") % 2:
+        return True
+    near_limit = len(text.encode("utf-8", errors="replace")) >= int(max_output_tokens * 3.8)
+    if not near_limit:
+        return False
+    if re.search(r"[-:,(\\[{]$", text):
+        return True
+    return text[-1] not in set(".!?…)]}`'\"")
 
 
 async def ask_codebase(
@@ -545,8 +641,34 @@ async def ask_codebase(
     Khi `files` không được cung cấp, tự động dùng CodebaseIndex để tìm các file liên quan nhất.
     """
     warnings = []
+    config_meta = {
+        "timeout_s": _ask_codebase_timeout(),
+        "context_cap": _ask_codebase_context_cap(),
+        "load_cap": _ask_codebase_load_cap(),
+        "use_spares": _ask_codebase_use_spares(),
+        "timeout_retries": _ask_codebase_timeout_retries(),
+        "include_wiki": _ask_codebase_include_wiki(),
+        "model_chain": _ask_codebase_model_chain(),
+        "max_output_tokens": _ask_codebase_max_output_tokens(),
+    }
+    empty_pack = {"loaded_files": [], "relevant_files": [], "snippets": [], "markdown": ""}
+    if files is not None and isinstance(files, set):
+        files = sorted(files, key=lambda item: str(item))
+    elif files is not None and isinstance(files, tuple):
+        files = list(files)
     if files is not None and not isinstance(files, list):
-        return {"error": "files must be a list of relative paths", "warnings": warnings}
+        return {
+            "answer": "",
+            "error": "files must be a list of relative paths",
+            "fallback": False,
+            "relevant_files": [],
+            "context_pack": empty_pack,
+            "files_loaded": 0,
+            "agent": None,
+            "context_health": {"status": "skipped"},
+            "warnings": warnings,
+            "config": config_meta,
+        }
     if files:
         files, sanitize_warnings = _sanitize_ask_files(files)
         warnings.extend(sanitize_warnings)
@@ -572,7 +694,18 @@ async def ask_codebase(
             warnings.append(f"CodebaseIndex lookup failed: {e}")
             files = list(seen.keys())[:_ASK_CODEBASE_MAX_FILES]
     if not files and not index_md:
-        return {"error": "Cần cung cấp danh sách file qua `files` hoặc nội dung điều hướng qua `index_md`", "warnings": warnings}
+        return {
+            "answer": "",
+            "error": "Cần cung cấp danh sách file qua `files` hoặc nội dung điều hướng qua `index_md`",
+            "fallback": False,
+            "relevant_files": [],
+            "context_pack": empty_pack,
+            "files_loaded": 0,
+            "agent": None,
+            "context_health": {"status": "skipped"},
+            "warnings": warnings,
+            "config": config_meta,
+        }
         
     ctx_blocks = []
     loaded_count = 0
@@ -584,7 +717,12 @@ async def ask_codebase(
     if goal_summary:
         ctx_blocks.append(f"=== GOAL PROGRESS ===\n{goal_summary}")
 
-    if _ask_codebase_include_wiki():
+    lessons_ctx = load_relevant_lessons_context("\n".join([question, "\n".join(files or []), index_md or ""]))
+    if lessons_ctx:
+        ctx_blocks.append(f"=== PRIOR LESSONS (AUTO-INJECTED) ===\n{lessons_ctx}")
+        warnings.append("Prior lessons auto-injected for ask_codebase context")
+
+    if config_meta["include_wiki"]:
         wiki_ctx = _load_relevant_wiki_context("\n".join([question, "\n".join(files or []), index_md or ""]))
         if wiki_ctx:
             ctx_blocks.append(f"=== PROJECT WIKI CONTEXT (SELECTIVE) ===\n{wiki_ctx}")
@@ -594,7 +732,7 @@ async def ask_codebase(
         warnings.extend(narrow_warnings)
         file_ctx, file_warns, file_loaded = read_workspace_files(
             files,
-            total_cap=min(MAX_TOTAL_BYTES_BIG, _ask_codebase_load_cap()),
+            total_cap=min(MAX_TOTAL_BYTES_BIG, int(config_meta["load_cap"])),
         )
         warnings.extend(file_warns)
         if file_ctx:
@@ -606,9 +744,20 @@ async def ask_codebase(
         
     ctx = "\n\n".join(ctx_blocks)
     if not ctx:
-        return {"error": "Không đọc được dữ liệu ngữ cảnh nào từ files hoặc index_md", "warnings": warnings}
+        return {
+            "answer": "",
+            "error": "Không đọc được dữ liệu ngữ cảnh nào từ files hoặc index_md",
+            "fallback": False,
+            "relevant_files": [],
+            "context_pack": empty_pack,
+            "files_loaded": loaded_count,
+            "agent": None,
+            "context_health": {"status": "skipped"},
+            "warnings": warnings,
+            "config": config_meta,
+        }
     ctx = _redact_sensitive_text(ctx)
-    ctx, prune_warnings = _prune_context_for_question(question, ctx, _ask_codebase_context_cap())
+    ctx, prune_warnings = _prune_context_for_question(question, ctx, int(config_meta["context_cap"]))
     warnings.extend(prune_warnings)
     try:
         from .ops import context_auditor
@@ -617,38 +766,69 @@ async def ask_codebase(
     except Exception as exc:
         context_health = {"status": "skipped", "error": str(exc)}
 
-    timeout_s = _ask_codebase_timeout()
+    timeout_s = float(config_meta["timeout_s"])
     task = (
         f"{question}\n\n"
         "Trả lời trực tiếp bằng Markdown tiếng Việt. BẮT BUỘC trích dẫn `file:line` cụ thể cho mọi claim về code. "
         "Nếu không thấy bằng chứng trong context, nói rõ `Không tìm thấy trong context đã cung cấp`. "
         "Không trả JSON wrapper trừ khi user hỏi rõ JSON."
     )
-    try:
-        result = await asyncio.wait_for(
-            Agent(AgentRole.MANAGER, get_azure_client()).run_async(
-                task, ctx, max_output_tokens=4096, timeout=timeout_s,
-                timeout_retries=_ask_codebase_timeout_retries(),
-                use_spares=_ask_codebase_use_spares(),
-            ),
-            timeout=timeout_s + 10,
-        )
-    except asyncio.TimeoutError:
+    attempts = []
+    result: AgentResult | None = None
+    answer_text = ""
+    answer_truncated = False
+    for model in config_meta["model_chain"]:
+        agent = Agent(AgentRole.MANAGER, get_azure_client())
+        agent.model = model
+        try:
+            result = await asyncio.wait_for(
+                agent.run_async(
+                    task, ctx, max_output_tokens=int(config_meta["max_output_tokens"]), timeout=timeout_s,
+                    timeout_retries=int(config_meta["timeout_retries"]),
+                    use_spares=bool(config_meta["use_spares"]),
+                ),
+                timeout=timeout_s + 5,
+            )
+        except asyncio.TimeoutError:
+            result = AgentResult(
+                agent_id=f"manager-timeout-{model}",
+                agent_role=AgentRole.MANAGER,
+                model_used=model,
+                task=task,
+                result="",
+                duration_ms=int((timeout_s + 5) * 1000),
+                status="error",
+                error=f"ask_codebase model {model} hard timeout after {timeout_s + 5:.0f}s",
+            )
+        attempts.append(_result_meta(result))
+        answer_text = _normalize_manager_answer(result.result)
+        answer_truncated = _manager_answer_appears_truncated(answer_text, int(config_meta["max_output_tokens"]))
+        if result.status == "success" and _manager_answer_usable(answer_text) and not answer_truncated:
+            break
+        reason = result.error or f"empty result with status={result.status}"
+        if result.status == "success" and answer_text and answer_truncated:
+            reason = "manager answer appears truncated/incomplete"
+        elif result.status == "success" and answer_text:
+            reason = "manager answer missing usable file:line evidence"
+        warnings.append(f"ask_codebase model {model} unusable: {reason}")
+
+    if result is None:
         result = AgentResult(
-            agent_id="manager-timeout",
+            agent_id="manager-no-model",
             agent_role=AgentRole.MANAGER,
-            model_used="manager",
+            model_used="none",
             task=task,
             result="",
-            duration_ms=int((timeout_s + 10) * 1000),
+            duration_ms=0,
             status="error",
-            error=f"ask_codebase hard timeout after {timeout_s + 10:.0f}s",
+            error="no ask_codebase model configured",
         )
-
-    answer_text = _normalize_manager_answer(result.result)
-    if result.status != "success" or not _manager_answer_usable(answer_text):
+    context_pack = _local_context_pack(question, ctx, files)
+    if result.status != "success" or not _manager_answer_usable(answer_text) or answer_truncated:
         reason = result.error or f"empty result with status={result.status}"
-        if result.status == "success" and answer_text:
+        if result.status == "success" and answer_text and answer_truncated:
+            reason = "manager answer appears truncated/incomplete"
+        elif result.status == "success" and answer_text:
             reason = "manager answer missing usable file:line evidence"
         answer = _extractive_codebase_answer(question, ctx, files, reason)
         warnings.append(f"Manager model không trả answer usable: {reason}; dùng fallback extractive.")
@@ -656,16 +836,28 @@ async def ask_codebase(
             "answer": answer,
             "files_loaded": loaded_count,
             "agent": _result_meta(result),
+            "model_attempts": attempts,
             "fallback": True,
             "warnings": warnings,
             "context_health": context_health,
+            "relevant_files": [item["path"] for item in context_pack["relevant_files"]],
+            "relevant_files_scored": context_pack["relevant_files"],
+            "context_pack": context_pack,
+            "config": config_meta,
         }
 
     return {
         "answer": answer_text,
         "files_loaded": loaded_count,
-        "agent": _result_meta(result), "warnings": warnings,
+        "agent": _result_meta(result),
+        "model_attempts": attempts,
+        "warnings": warnings,
         "context_health": context_health,
+        "fallback": False,
+        "relevant_files": [item["path"] for item in context_pack["relevant_files"]],
+        "relevant_files_scored": context_pack["relevant_files"],
+        "context_pack": context_pack,
+        "config": config_meta,
     }
 
 

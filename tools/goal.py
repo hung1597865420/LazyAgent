@@ -113,6 +113,15 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
                 pass
 
 
+def _normalize_goal_status(value: Any) -> str:
+    status = str(value or "active").strip().lower().replace("-", "_").replace(" ", "_")
+    if status in {"budget_limited", "blocked_max_iterations"}:
+        return "blocked"
+    if status in {"active", "completed", "blocked"}:
+        return status
+    return "active"
+
+
 @dataclass
 class GoalState:
     goal: str
@@ -140,7 +149,7 @@ class GoalState:
         return cls(
             goal=goal,
             goal_id=str(data.get("goal_id") or f"goal-{uuid.uuid4().hex[:8]}"),
-            status=str(data.get("status") or "active"),
+            status=_normalize_goal_status(data.get("status")),
             created_at=_safe_float(data.get("created_at"), _now()),
             updated_at=_safe_float(data.get("updated_at"), _now()),
             checks_run=_safe_int(data.get("checks_run"), 0),

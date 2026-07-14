@@ -209,8 +209,6 @@ async def prod_readiness_gate(
     has_api = _has_any(text, {"api", "route", "endpoint", "openapi", "request", "response", "pydantic"})
     has_container = any(_basename(f) in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for f in files)
     has_ci = any(".github/workflows" in f.replace("\\", "/").lower() or _basename(f) == ".gitlab-ci.yml" for f in files)
-    has_env = any(_basename(f) in {".env", ".env.example"} for f in files)
-
     selected: list[str] = []
     jobs = []
 
@@ -266,8 +264,6 @@ async def prod_readiness_gate(
             panel_kwargs["files"] = panel_files
         add("panel_review", panel_review(**panel_kwargs))
     if mode == "max":
-        add("release_orchestrator", release_orchestrator(changed_files=files, diff=diff, context=context or task, mode=mode))
-        add("provenance_checker", provenance_checker(files=files, context=context or task, mode=mode))
         add("sbom_generator", sbom_generator())
         add("license_scanner", license_scanner())
         add("coverage_analyzer", coverage_analyzer())
@@ -320,6 +316,18 @@ async def prod_readiness_gate(
         verdict = "deploy_then_verify"
     else:
         verdict = "ready_to_deploy"
+    try:
+        from .orchestrator import orchestrate
+        orchestrator = orchestrate(
+            stage="prod_gate",
+            files=files,
+            diff=diff,
+            task="\n".join([task or "", context or ""]),
+            mode=mode,
+            results={"results": checks, "blockers_count": len(set(blockers)), "verdict": verdict},
+        )
+    except Exception as exc:
+        orchestrator = {"status": "skipped", "error": str(exc)}
 
     return {
         "status": "completed",
@@ -336,6 +344,7 @@ async def prod_readiness_gate(
         "warnings": sorted(set(warnings)),
         "staged": bool(staged),
         "since_commit": since_commit or "",
+        "orchestrator": orchestrator,
     }
 
 

@@ -326,7 +326,7 @@ async def incremental_refactor_guard(
     for path in _iter_files(files, {".py"}, limit=80):
         text = _read(path, 120_000)
         try:
-            tree = ast.parse(text)
+            ast.parse(text)
         except SyntaxError as exc:
             changes.append({"file": _rel(path), "type": "syntax_error", "symbol": "", "line": exc.lineno or 1, "severity": "high"})
     breaking = [c for c in changes if c.get("severity") == "high"]

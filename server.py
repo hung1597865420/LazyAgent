@@ -18,7 +18,7 @@ from typing import Optional
 from pydantic import BaseModel
 from harness import AgentHarness, HarnessRun
 from config import WORKSPACE_ROOT
-from agents import FINOPS_DB_PATH
+from agents import get_finops_db_path
 
 # File lưu trữ lịch sử
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_history.json")
@@ -69,10 +69,27 @@ SWARM_SESSION_TTL_SECONDS = 3600  # 1 hour idle TTL for pending sessions
 SWARM_LOCK_STALE_SECONDS = 120
 
 
+def _active_workspace() -> str:
+    workspace = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
+    if not workspace:
+        meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
+        if meta:
+            try:
+                workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
+            except Exception:
+                workspace = ""
+    workspace = workspace or (os.getenv("WORKSPACE_ROOT") or "").strip() or WORKSPACE_ROOT
+    return os.path.abspath(workspace)
+
+
+def _wiki_root() -> str:
+    return os.path.join(_active_workspace(), "llmwiki", "wiki")
+
+
 def init_db():
     """Idempotent DB initializer — safe to call multiple times (lifespan + test fixtures)."""
     try:
-        conn = sqlite3.connect(FINOPS_DB_PATH)
+        conn = sqlite3.connect(get_finops_db_path())
         cursor = conn.cursor()
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS swarm_sessions (
@@ -273,9 +290,7 @@ async def run_stream(req: TaskRequest):
 @app.get("/api/wiki/pages")
 async def get_wiki_pages():
     """Liệt kê tất cả wiki pages (concepts + entities)."""
-    import os
-    from config import WORKSPACE_ROOT
-    wiki_root = os.path.join(WORKSPACE_ROOT, "llmwiki", "wiki")
+    wiki_root = _wiki_root()
     pages = []
     for sub in ["concepts", "entities"]:
         subdir = os.path.join(wiki_root, sub)
@@ -302,7 +317,7 @@ async def get_wiki_pages():
 @app.get("/api/wiki/search")
 async def search_wiki(q: str = ""):
     """Tìm kiếm wiki theo keyword."""
-    wiki_root = os.path.join(WORKSPACE_ROOT, "llmwiki", "wiki")
+    wiki_root = _wiki_root()
     if not q.strip():
         return {"results": [], "query": q}
     keywords = set(w.lower() for w in re.findall(r"\b[a-zA-Z0-9_À-ỹ]{2,}\b", q) if len(w) >= 2)
@@ -629,7 +644,7 @@ def _normalize_swarm_target_files(files: Optional[list[str]]) -> list[str]:
         return []
     if not isinstance(files, list):
         raise ValueError("target_files must be a list")
-    root = os.path.realpath(WORKSPACE_ROOT)
+    root = os.path.realpath(_active_workspace())
     normalized: list[str] = []
     seen: set[str] = set()
     for item in files:
@@ -660,7 +675,7 @@ def get_swarm_session(swarm_id: str) -> Optional[dict]:
     auto-transitioned to 'expired' and backups restored before returning None."""
     init_db()  # lazy-init guard for test isolation
     try:
-        conn = sqlite3.connect(FINOPS_DB_PATH)
+        conn = sqlite3.connect(get_finops_db_path())
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM swarm_sessions WHERE swarm_id = ?", (swarm_id,))
@@ -722,7 +737,7 @@ def save_swarm_session(session: dict):
             None if _is_terminal_state(state)
             else _time.time() + SWARM_SESSION_TTL_SECONDS
         )
-        conn = sqlite3.connect(FINOPS_DB_PATH)
+        conn = sqlite3.connect(get_finops_db_path())
         cursor = conn.cursor()
         current = cursor.execute("SELECT state FROM swarm_sessions WHERE swarm_id=?", (session["swarm_id"],)).fetchone()
         if current and _is_terminal_state(str(current[0])) and str(current[0]) != state:
@@ -756,7 +771,7 @@ def cas_swarm_state(swarm_id: str, expected_state: str, new_state: str) -> bool:
     """Atomic Compare-And-Swap on swarm state to prevent concurrent double-proceed.
     Returns True if the update succeeded (exactly 1 row changed), False otherwise."""
     try:
-        conn = sqlite3.connect(FINOPS_DB_PATH)
+        conn = sqlite3.connect(get_finops_db_path())
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE swarm_sessions SET state=?, updated_at=? WHERE swarm_id=? AND state=?",
@@ -1034,6 +1049,8 @@ async def api_swarm_cancel(swarm_id: str):
         raise HTTPException(status_code=409, detail="Cannot cancel: session state changed. Please retry.")
 
     backup_paths = sess["final_result"].get("backup_paths", [])
+    if not cas_swarm_state(swarm_id, f"_locking_{state}", "cancelled"):
+        raise HTTPException(status_code=409, detail="Cannot cancel: session state changed during cancel finalization.")
 
     if state in ("pending_review", "pending_apply"):
         st._restore_session_backups(backup_paths)

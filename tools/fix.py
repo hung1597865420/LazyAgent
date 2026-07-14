@@ -2,14 +2,17 @@
 tools/fix.py — Code fixing and auto-remediation tools.
 Ported from support_tools.py.
 """
+import asyncio
 import logging
 from typing import Optional
 from agents import Agent, AgentRole
 from config import get_azure_client
 from .core import (
     _assemble_context,
+    append_lesson,
     _result_meta,
     _extract_and_apply_patch,
+    _extract_and_save_lesson,
     _run_tests,
     _restore_session_backups,
     _cleanup_session_backups,
@@ -96,6 +99,16 @@ async def suggest_fix(
             _safe_status(f"[Harness] Self-healing succeeded at attempt {attempts}! Test suite passed.")
             patch_applied = True
             patch_msg = f"{msg} (Vá thành công sau {attempts} lần vá và bài test pass)"
+            append_lesson({
+                "source": "suggest_fix",
+                "title": (error or "suggest_fix lesson").splitlines()[0][:160],
+                "outcome": "fixed",
+                "files": files or [],
+                "error_signature": (error or "")[:500],
+                "fix_summary": patch_msg,
+                "tags": ["suggest_fix", "self_healing"],
+            })
+            asyncio.create_task(_extract_and_save_lesson(error, files, result.result or ""))
             _cleanup_session_backups(session_backups)
             break
         else:

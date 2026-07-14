@@ -8,8 +8,10 @@ the existing Auto-Pilot / supervisor / prod gate loop.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -18,12 +20,15 @@ from pathlib import Path
 from typing import Any
 
 from .auto import auto_trigger
-from .core import _get_active_workspace, _git_diff, _run_cmd_safe
+from .core import _get_active_workspace, _git_diff, _run_cmd_safe, load_relevant_lessons_context, record_procedure_lesson
 from .goal import goal_autopilot, goal_supervisor, load_goal_state
 from .prod import prod_readiness_gate
 
 BLOCKING_PROD_VERDICTS = {"fix_required", "blocked_needs_user", "rollback_required"}
 RUNNER_LOCK_FILE = ".harness_goal_runner.lock"
+MAX_AGENT_LESSONS_CHARS = 12_000
+MAX_LESSON_QUERY_CHARS = 4_000
+MAX_AGENT_FIELD_CHARS = 1_500
 
 
 def _root() -> Path:
@@ -46,11 +51,12 @@ def _safe_float(value: Any, default: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, parsed))
 
 
-def _changed_files() -> list[str]:
+def _changed_files(root: Path | None = None) -> list[str]:
+    workspace = root or _root()
     try:
         proc = subprocess.run(
             ["git", "status", "--porcelain", "-z"],
-            cwd=str(_root()),
+            cwd=str(workspace),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=15,
@@ -60,7 +66,7 @@ def _changed_files() -> list[str]:
         proc = None
     if proc and proc.returncode == 0 and b"\0" in proc.stdout:
         return _parse_porcelain_z_bytes(proc.stdout)
-    rc, out, _ = _run_cmd_safe(["git", "status", "--porcelain"], cwd=str(_root()))
+    rc, out, _ = _run_cmd_safe(["git", "status", "--porcelain"], cwd=str(workspace))
     if rc != 0:
         return []
     files: list[str] = []
@@ -219,16 +225,247 @@ def _current_part() -> str:
     return state.goal
 
 
-def _agent_prompt(prompt: str, supervisor: dict[str, Any]) -> str:
+@contextmanager
+def _pinned_workspace(root: Path):
+    old = {key: os.environ.get(key) for key in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA")}
+    try:
+        os.environ["WORKSPACE_ROOT"] = str(root)
+        os.environ["CLAUDE_PROJECT_DIR"] = str(root)
+        os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
+        yield
+    finally:
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _normalize_lesson_query(text: str) -> str:
+    clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text or "")
+    return re.sub(r"\s+", " ", clean).strip()[:MAX_LESSON_QUERY_CHARS]
+
+
+def _cap_lesson_block(text: str) -> str:
+    if len(text) <= MAX_AGENT_LESSONS_CHARS:
+        return text
+    return text[:MAX_AGENT_LESSONS_CHARS].rstrip() + "\n- [truncated prior lessons]"
+
+
+def _cap_agent_field(text: Any) -> str:
+    clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", str(text or ""))
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if len(clean) <= MAX_AGENT_FIELD_CHARS:
+        return clean
+    return clean[:MAX_AGENT_FIELD_CHARS].rstrip() + " [truncated]"
+
+
+def _agent_prompt(prompt: str, supervisor: dict[str, Any], root: Path | None = None) -> str:
     part = _current_part() or str(supervisor.get("goal") or prompt)
+    lesson_text = _normalize_lesson_query(" ".join(str(x or "") for x in (prompt, part, supervisor.get("summary"))))
+    try:
+        if root is None:
+            prior_lessons = load_relevant_lessons_context(lesson_text, limit=5)
+        else:
+            with _pinned_workspace(root):
+                prior_lessons = load_relevant_lessons_context(lesson_text, limit=5)
+    except Exception:
+        prior_lessons = ""
+    prior_lessons = _cap_lesson_block(prior_lessons)
+    prior_block = f"\nPrior lessons:\n{prior_lessons}\n" if prior_lessons else ""
     return (
         "You are the implementation agent for Agent Harness direct goal runner.\n"
         "Implement the current part directly in the workspace. Keep changes scoped. "
         "Run useful local checks if available, then exit without asking follow-up questions unless blocked.\n\n"
-        f"Goal:\n{prompt}\n\n"
-        f"Current part:\n{part}\n\n"
-        f"Supervisor summary:\n{supervisor.get('summary') or ''}\n"
+        "Use any prior lessons below as constraints and shortcuts; do not repeat a known failed approach.\n"
+        "If this run discovers a reusable non-error workflow/procedure, print one final single-line marker:\n"
+        "HARNESS_LESSON_JSON: {\"title\":\"...\",\"summary\":\"...\",\"steps\":[\"...\"],\"tags\":[\"...\"]}\n"
+        "Only emit the marker for durable, reusable knowledge; do not include secrets.\n\n"
+        f"{prior_block}"
+        f"Goal:\n{_cap_agent_field(prompt)}\n\n"
+        f"Current part:\n{_cap_agent_field(part)}\n\n"
+        f"Supervisor summary:\n{_cap_agent_field(supervisor.get('summary') or '')}\n"
     )
+
+
+def _record_agent_lessons(prompt: str, agent: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    agent_status = str(agent.get("status") or "")
+    if agent_status not in {"completed", "success"}:
+        return records
+    marker = "HARNESS_LESSON_JSON:"
+    text = "\n".join(str(agent.get(k) or "") for k in ("stdout", "stderr"))
+    pos = 0
+    marker_seen = False
+    while True:
+        start = text.find(marker, pos)
+        if start < 0:
+            break
+        marker_seen = True
+        raw_start = start + len(marker)
+        while raw_start < len(text) and text[raw_start].isspace():
+            raw_start += 1
+        raw_end = raw_start
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(raw_start, len(text)):
+            ch = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    raw_end = idx + 1
+                    break
+        if raw_end <= raw_start:
+            raw_end = text.find("\n", raw_start)
+            if raw_end < 0:
+                raw_end = len(text)
+        raw = text[raw_start:raw_end].strip()
+        pos = raw_end
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            records.append({"status": "skipped", "reason": "invalid lesson json"})
+            continue
+        if not isinstance(payload, dict):
+            records.append({"status": "skipped", "reason": "lesson payload must be an object"})
+            continue
+        records.append(record_procedure_lesson(
+            title=str(payload.get("title") or ""),
+            summary=str(payload.get("summary") or ""),
+            steps=payload.get("steps"),
+            tags=payload.get("tags"),
+            source="goal_runner",
+            refs={"goal": prompt[:500]},
+        ))
+    if not records and not marker_seen:
+        fallback = _infer_agent_procedure_lesson(prompt, text)
+        if fallback:
+            records.append(record_procedure_lesson(
+                title=fallback["title"],
+                summary=fallback["summary"],
+                steps=fallback["steps"],
+                tags=fallback["tags"],
+                source="goal_runner_fallback",
+                refs={"goal": prompt[:500], "extraction": "structured_output_fallback"},
+            ))
+    return records
+
+
+def _infer_agent_procedure_lesson(prompt: str, text: str) -> dict[str, Any] | None:
+    if not text.strip():
+        return None
+    low = text.lower()
+    triggers = (
+        "reusable workflow", "standard workflow", "lesson learned", "procedure:",
+        "best practice", "standard way", "workflow learned", "quy trình", "bài học",
+        "cách làm chuẩn", "các bước",
+    )
+    trigger_score = sum(1 for item in triggers if item in low)
+    if trigger_score < 1 or not re.search(r"(?im)^\s*(?:steps?|procedure|workflow|các bước|quy trình)\s*:", text):
+        return None
+    title = _extract_labeled_value(text, ("title", "lesson", "procedure", "workflow", "quy trình", "bài học"))
+    if not title:
+        title = _title_from_prompt(prompt)
+    title = re.sub(r"\s+", " ", title).strip(" -:")[:120]
+    if not _lesson_title_is_reusable(title):
+        return None
+    summary = _extract_labeled_value(text, ("summary", "use when", "why", "mô tả", "khi dùng"))
+    if not summary:
+        return None
+    summary = re.sub(r"\s+", " ", summary).strip()[:600]
+    steps = _extract_structured_steps(text)
+    if len(steps) < 2:
+        return None
+    if _imperative_step_count(steps) < 2:
+        return None
+    score = trigger_score * 2 + len(steps) * 3 + (4 if summary else 0) + (4 if title else 0)
+    if score < 12:
+        return None
+    return {"title": title, "summary": summary, "steps": steps[:8], "tags": _fallback_lesson_tags(prompt, title)}
+
+
+def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> str:
+    joined = "|".join(re.escape(label) for label in labels)
+    match = re.search(rf"(?im)^\s*(?:{joined})\s*:\s*(.+?)\s*$", text)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_structured_steps(text: str) -> list[str]:
+    steps: list[str] = []
+    in_steps = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            if in_steps and steps:
+                break
+            continue
+        if re.match(r"(?i)^(?:steps?|procedure|workflow|các bước|quy trình)\s*:", line):
+            in_steps = True
+            continue
+        match = re.match(r"^(?:[-*]|\d+[.)])\s+(.+)$", line)
+        if match and (in_steps or len(steps) > 0):
+            step = re.sub(r"\s+", " ", match.group(1)).strip()
+            if step and len(step) <= 240:
+                steps.append(step)
+            continue
+        if in_steps and steps:
+            break
+    return steps
+
+
+def _imperative_step_count(steps: list[str]) -> int:
+    verbs = {
+        "add", "apply", "build", "check", "choose", "click", "configure", "connect",
+        "create", "deploy", "export", "import", "install", "open", "review", "run",
+        "save", "select", "set", "sync", "test", "update", "verify", "write",
+        "bật", "cấu", "chạy", "chọn", "ghi", "kiểm", "mở", "nhập", "tạo", "thêm", "xuất",
+    }
+    count = 0
+    for step in steps:
+        first = re.match(r"^[\wÀ-ỹ-]+", step.lower(), flags=re.UNICODE)
+        if first and first.group(0) in verbs:
+            count += 1
+    return count
+
+
+def _title_from_prompt(prompt: str) -> str:
+    text = re.sub(r"\s+", " ", prompt or "").strip()
+    return text[:100] or "Reusable workflow"
+
+
+def _lesson_title_is_reusable(title: str) -> bool:
+    if len(title) < 8:
+        return False
+    low = title.lower()
+    project_specific = (".py", ".js", ".ts", ".tsx", ".json", "traceback", "exception", "bug", "fix", "patch", "diff")
+    return not any(item in low for item in project_specific)
+
+
+def _fallback_lesson_tags(prompt: str, title: str) -> list[str]:
+    stop = {
+        "the", "and", "for", "with", "from", "this", "that", "workflow", "procedure",
+        "lesson", "learned", "create", "setup", "configure", "cach", "quy", "trinh",
+    }
+    tags: list[str] = []
+    for term in re.findall(r"[\wÀ-ỹ][\wÀ-ỹ_-]{3,}", f"{title} {prompt}".lower(), flags=re.UNICODE):
+        if term not in stop and term not in tags:
+            tags.append(term[:40])
+        if len(tags) >= 6:
+            break
+    return tags or ["workflow"]
 
 
 def _split_command(command: str) -> list[str]:
@@ -254,7 +491,7 @@ def _resolve_agent_command(agent_command: str | list[str] | None, prompt: str) -
     return [], ""
 
 
-async def _run_agent(prompt: str, agent_command: str | None, timeout: float) -> dict[str, Any]:
+async def _run_agent(prompt: str, agent_command: str | None, timeout: float, root: Path | None = None) -> dict[str, Any]:
     cmd, source = _resolve_agent_command(agent_command, prompt)
     if not cmd:
         return {
@@ -266,7 +503,7 @@ async def _run_agent(prompt: str, agent_command: str | None, timeout: float) -> 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=str(_root()),
+            cwd=str(root or _root()),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -326,8 +563,9 @@ async def goal_runner(
     lock = _acquire_runner_lock()
     if lock is None:
         return {"status": "blocked_goal_busy", "detail": "Another goal_runner is already active in this workspace."}
+    root = _root()
     try:
-        result = await _goal_runner_locked(prompt, max_iterations, mode, agent_command, agent_timeout, dry_run, final_prod_gate, resume)
+        result = await _goal_runner_locked(prompt, max_iterations, mode, agent_command, agent_timeout, dry_run, final_prod_gate, resume, root)
         try:
             from .ops import append_run_ledger
 
@@ -348,6 +586,7 @@ async def _goal_runner_locked(
     dry_run: bool,
     final_prod_gate: bool,
     resume: bool,
+    root: Path,
 ) -> dict[str, Any]:
     events: list[dict[str, Any]] = []
     try:
@@ -379,15 +618,17 @@ async def _goal_runner_locked(
         if action == "blocked_ask_user":
             return {"status": "blocked_needs_user", "events": events, "supervisor": supervisor, "last_checks": last_checks}
         if action == "run_final":
-            final = await prod_readiness_gate(changed_files=changed, diff=diff, task=prompt, mode=mode) if final_prod_gate else await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="final", mode=mode)
+            with _pinned_workspace(root):
+                final = await prod_readiness_gate(changed_files=changed, diff=diff, task=prompt, mode=mode) if final_prod_gate else await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="final", mode=mode)
             finish_mode = "complete" if _prod_gate_ok(final) else "block"
             finish = await goal_autopilot(mode=finish_mode, context=json.dumps(final, ensure_ascii=False)[:4000], changed_files=changed, diff=diff, task=prompt)
             events.append({"step": "final", "verdict": final.get("verdict"), "finish_status": finish.get("status")})
             return {"status": finish.get("status"), "events": events, "final": final, "finish": finish}
         if action == "run_check":
-            changed = _changed_files()
-            diff, _ = _git_diff()
-            last_checks = await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="post_edit", mode=mode)
+            changed = _changed_files(root)
+            diff, _ = _git_diff(cwd=str(root))
+            with _pinned_workspace(root):
+                last_checks = await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="post_edit", mode=mode)
             events.append({"step": "check", "changed_files": changed, "status": last_checks.get("status"), "selected_tools": last_checks.get("selected_tools")})
             continue
 
@@ -395,10 +636,14 @@ async def _goal_runner_locked(
             return {"status": "blocked_unknown_action", "events": events, "supervisor": supervisor}
         if dry_run:
             return {"status": "blocked_needs_agent", "events": events, "supervisor": supervisor, "agent": {"status": "dry_run"}}
-        agent = await _run_agent(_agent_prompt(prompt, supervisor), agent_command, agent_timeout)
-        changed = _changed_files()
-        diff, _ = _git_diff()
-        events.append({"step": "agent", "iteration": iteration, "agent_status": agent.get("status"), "changed_files": changed})
+        agent = await _run_agent(_agent_prompt(prompt, supervisor, root), agent_command, agent_timeout, root)
+        learned = _record_agent_lessons(prompt, agent)
+        changed = _changed_files(root)
+        diff, _ = _git_diff(cwd=str(root))
+        event = {"step": "agent", "iteration": iteration, "agent_status": agent.get("status"), "changed_files": changed}
+        if learned:
+            event["lessons"] = learned
+        events.append(event)
         agent_status = str(agent.get("status") or "")
         if agent_status == "missing_agent_command":
             return {"status": "blocked_needs_agent", "events": events, "agent": agent}
@@ -406,7 +651,14 @@ async def _goal_runner_locked(
             return {"status": "blocked_agent_failed", "events": events, "agent": agent}
         if not changed:
             return {"status": "blocked_no_changes", "events": events, "agent": agent}
-        last_checks = await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="post_edit", mode=mode)
+        with _pinned_workspace(root):
+            last_checks = await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="post_edit", mode=mode)
         events.append({"step": "check", "changed_files": changed, "status": last_checks.get("status"), "selected_tools": last_checks.get("selected_tools")})
 
-    return {"status": "blocked_max_iterations", "events": events, "last_checks": last_checks}
+    return {
+        "status": "blocked_needs_agent",
+        "reason": "max_iterations_reached",
+        "max_iterations": max_iterations,
+        "events": events,
+        "last_checks": last_checks,
+    }

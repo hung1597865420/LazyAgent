@@ -7,7 +7,7 @@ import json
 import os
 from typing import Optional
 from agents import Agent, AgentRole, AgentResult
-from config import get_azure_client, WORKSPACE_ROOT
+from config import get_azure_client
 from .core import (
     _git_diff,
     _calculate_review_hash,
@@ -16,11 +16,23 @@ from .core import (
     _parse_json_findings,
     _parse_json_object,
     _result_meta,
+    get_runtime_path,
     MAX_TOTAL_BYTES
 )
 
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 _FAST_CTX_BYTES = 80_000   # context cap cho fast mode
+
+
+def _panel_integrity_timeout(default_timeout: float) -> float:
+    try:
+        configured = float(os.getenv("HARNESS_PANEL_INTEGRITY_TIMEOUT", "75"))
+    except (TypeError, ValueError):
+        configured = 75.0
+    if configured <= 0:
+        configured = 75.0
+    return min(default_timeout, max(0.05, configured))
+
 
 def _dedup_findings_local(findings: list[dict]) -> list[dict]:
     """Dedupe nhanh bằng Python khi không cần Synthesizer.
@@ -126,11 +138,12 @@ async def panel_review(
         return {"error": "Không có gì để review — cần ít nhất một trong: files, diff, code, staged, since_commit", "warnings": warnings}
 
     # Caching check
-    cache_dir = os.path.join(WORKSPACE_ROOT, ".harness_cache")
+    cache_dir = get_runtime_path(".harness_cache")
     os.makedirs(cache_dir, exist_ok=True)
     cache_hash = _calculate_review_hash(
         files=files, diff=diff, code=code, focus=focus,
-        staged=staged, since_commit=since_commit
+        staged=staged, since_commit=since_commit,
+        fast=fast, agent_timeout=agent_timeout, cache_schema=2,
     )
     cache_file = os.path.join(cache_dir, f"review_{cache_hash}.json")
     if os.path.exists(cache_file):
@@ -159,7 +172,8 @@ async def panel_review(
     # để MANAGER/pro-3 rảnh cho ask_codebase.
     # trước khi đưa vào 3 codex reviewer song song
     _PREPASS_THRESHOLD = 200_000
-    if not fast and len(ctx) > _PREPASS_THRESHOLD:
+    ctx_bytes = len(ctx.encode("utf-8", errors="replace"))
+    if not fast and ctx_bytes > _PREPASS_THRESHOLD:
         try:
             from config import ROLE_TIMEOUTS
             prepass_system_prompt = (
@@ -173,12 +187,14 @@ async def panel_review(
                 "BỎ: pure style/whitespace/comment-only changes.\n"
             )
             prepass_prompt = (
-                f"Target: ~100KB (hiện {len(ctx)//1024}KB). Trả về text tóm tắt thuần.\n"
+                f"Target: ~100KB (hiện {ctx_bytes//1024}KB). Trả về text tóm tắt thuần.\n"
             )
             prepass_t = min(ROLE_TIMEOUTS.get(AgentRole.SYNTHESIZER.value, 180.0), agent_timeout)
             prepass_result = await asyncio.wait_for(
-                Agent(AgentRole.SYNTHESIZER, client, system_prompt=prepass_system_prompt).run_async(prepass_prompt, ctx),
-                timeout=prepass_t,
+                Agent(AgentRole.SYNTHESIZER, client, system_prompt=prepass_system_prompt).run_async(
+                    prepass_prompt, ctx, timeout=prepass_t, timeout_retries=0, use_spares=False
+                ),
+                timeout=prepass_t + 2,
             )
             if prepass_result.status == "success" and prepass_result.result:
                 orig_kb = len(ctx) // 1024
@@ -201,8 +217,10 @@ async def panel_review(
             role_t = min(role_t, agent_timeout)
         try:
             return await asyncio.wait_for(
-                Agent(role, client).run_async(task, ctx, json_mode=True),
-                timeout=role_t,
+                Agent(role, client).run_async(
+                    task, ctx, json_mode=True, timeout=role_t, timeout_retries=0, use_spares=False
+                ),
+                timeout=role_t + 2,
             )
         except asyncio.TimeoutError:
             warnings.append(f"{role.value}: timeout sau {role_t:.0f}s — bỏ qua")
@@ -261,6 +279,7 @@ async def panel_review(
             integrity_t = ROLE_TIMEOUTS.get(AgentRole.INTEGRITY.value, agent_timeout)
             if agent_timeout != _DEFAULT_TIMEOUT:
                 integrity_t = min(integrity_t, agent_timeout)
+            integrity_t = _panel_integrity_timeout(integrity_t)
             integrity_input = json.dumps(
                 {"code_context": ctx[:8000], "panel_findings": raw_findings},
                 ensure_ascii=False,
@@ -270,8 +289,11 @@ async def panel_review(
                     "Review data integrity và synthesize toàn bộ findings từ panel.",
                     integrity_input,
                     json_mode=True,
+                    timeout=integrity_t,
+                    timeout_retries=0,
+                    use_spares=False,
                 ),
-                timeout=integrity_t,
+                timeout=integrity_t + 2,
             )
             panel_meta.append(_result_meta(integrity_result))
             if integrity_result.status == "success":

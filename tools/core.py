@@ -11,15 +11,22 @@ import subprocess
 import hashlib
 import sys
 import shutil
+import sqlite3
 import uuid
 import math
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 from agents import Agent, AgentRole, AgentResult
 from config import WORKSPACE_ROOT, get_azure_client
 
 _log = logging.getLogger("harness.core")
+LESSON_INDEX_FILE = ".harness_lessons.jsonl"
+GLOBAL_LESSON_INDEX_FILE = ".harness_global_lessons.jsonl"
+LESSON_DB_FILE = ".harness_lessons.db"
+_LESSON_LOCK = threading.Lock()
 
 # ── Helper functions for CLI execution and LLM analysis ────────────────────────
 
@@ -177,6 +184,454 @@ def _get_active_workspace() -> str:
                 workspace = None
     workspace = workspace or (os.getenv("WORKSPACE_ROOT") or "").strip()
     return os.path.abspath(str(workspace or WORKSPACE_ROOT or os.getcwd()))
+
+
+def get_runtime_path(name: str, subdir: str = "") -> str:
+    root = _get_active_workspace()
+    if subdir:
+        root = os.path.join(root, subdir)
+    return os.path.join(root, name)
+
+
+def get_global_lessons_path() -> str:
+    override = (os.getenv("HARNESS_GLOBAL_LESSONS_FILE") or "").strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(os.path.expanduser("~"), ".claude", GLOBAL_LESSON_INDEX_FILE)
+
+
+def get_lesson_db_path(*, global_scope: bool = False) -> str:
+    if global_scope:
+        return str(Path(get_global_lessons_path()).with_suffix(".db"))
+    return get_runtime_path(LESSON_DB_FILE)
+
+
+def _redact_lesson_string(value: str) -> str:
+    text = re.sub(
+        r"(?i)\bauthorization\s*[:=]\s*bearer\s+[A-Za-z0-9._~+/=-]+",
+        "authorization=[REDACTED]",
+        value,
+    )
+    text = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+    text = re.sub(
+        r"(?i)\b(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*(['\"])[^'\"]+\2",
+        r"\1=[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*(?!\[REDACTED\])[^\s,;}\]]+",
+        r"\1=[REDACTED]",
+        text,
+    )
+    return text[:2000]
+
+
+def _redact_lesson_value(value, _seen: set[int] | None = None, _depth: int = 0):
+    if _depth > 8:
+        return "[DEPTH_LIMIT]"
+    if isinstance(value, str):
+        return _redact_lesson_string(value)
+    if isinstance(value, list):
+        marker = id(value)
+        _seen = _seen or set()
+        if marker in _seen:
+            return "[CYCLE]"
+        _seen.add(marker)
+        try:
+            return [_redact_lesson_value(item, _seen, _depth + 1) for item in value[:50]]
+        finally:
+            _seen.discard(marker)
+    if isinstance(value, dict):
+        marker = id(value)
+        _seen = _seen or set()
+        if marker in _seen:
+            return "[CYCLE]"
+        _seen.add(marker)
+        try:
+            return {str(k)[:80]: _redact_lesson_value(v, _seen, _depth + 1) for k, v in value.items()}
+        finally:
+            _seen.discard(marker)
+    return value
+
+
+def _lesson_key_exists_jsonl(path: Path, lesson_key: str) -> bool:
+    if not lesson_key or not path.exists():
+        return False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict) and str(item.get("lesson_key") or "") == lesson_key:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _connect_lesson_db(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=5.0)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS lesson_keys (
+                lesson_key TEXT PRIMARY KEY,
+                ts REAL NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS lesson_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+    except sqlite3.DatabaseError:
+        conn.close()
+        raise
+    return conn
+
+
+def _rebuild_lesson_index(conn: sqlite3.Connection, jsonl_path: Path) -> None:
+    if not jsonl_path.exists():
+        conn.execute("INSERT OR REPLACE INTO lesson_meta(key, value) VALUES ('jsonl_indexed', '1')")
+        return
+    with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            lesson_key = str(item.get("lesson_key") or "")
+            if not lesson_key:
+                continue
+            try:
+                ts = float(item.get("ts") or 0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            conn.execute(
+                "INSERT OR IGNORE INTO lesson_keys(lesson_key, ts) VALUES (?, ?)",
+                (lesson_key, ts),
+            )
+    conn.execute("INSERT OR REPLACE INTO lesson_meta(key, value) VALUES ('jsonl_indexed', '1')")
+
+
+def _ensure_lesson_index(conn: sqlite3.Connection, jsonl_path: Path) -> None:
+    row = conn.execute("SELECT value FROM lesson_meta WHERE key = 'jsonl_indexed'").fetchone()
+    if row:
+        return
+    _rebuild_lesson_index(conn, jsonl_path)
+    conn.commit()
+
+
+def _is_sqlite_busy_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def _lesson_auto_key(payload: dict) -> str:
+    stable = {
+        "source": payload.get("source"),
+        "lesson_type": payload.get("lesson_type"),
+        "title": payload.get("title"),
+        "summary": payload.get("summary"),
+        "error_signature": payload.get("error_signature"),
+        "fix_summary": payload.get("fix_summary"),
+        "files": payload.get("files"),
+        "steps": payload.get("steps"),
+        "tags": payload.get("tags"),
+        "wiki_ref": payload.get("wiki_ref"),
+    }
+    digest = hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+    return f"auto:{digest}"
+
+
+def _write_lesson_jsonl(path: Path, payload: dict) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError as e:
+            if os.getenv("HARNESS_LESSON_STRICT_FSYNC", "").strip().lower() in {"1", "true", "yes"}:
+                raise
+            _log.warning("Lesson fsync failed; keeping flushed JSONL write: %s", e)
+
+
+def _append_lesson_jsonl_fallback_unlocked(path: Path, payload: dict, lesson_key: str) -> bool:
+    if lesson_key and _lesson_key_exists_jsonl(path, lesson_key):
+        return False
+    _write_lesson_jsonl(path, payload)
+    return True
+
+
+def _append_lesson_jsonl_fallback(path: Path, payload: dict, lesson_key: str) -> bool:
+    with _lesson_file_lock(path):
+        return _append_lesson_jsonl_fallback_unlocked(path, payload, lesson_key)
+
+
+def _quarantine_lesson_db(db_path: Path) -> None:
+    stamp = f"{int(time.time() * 1000)}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    for candidate in (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm"), db_path):
+        try:
+            if candidate.exists():
+                candidate.rename(candidate.with_name(f"{candidate.name}.corrupt.{stamp}"))
+        except OSError:
+            pass
+
+
+@contextmanager
+def _lesson_file_lock(path: Path):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as f:
+        if os.name == "nt":
+            import msvcrt
+
+            f.seek(0)
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def append_lesson(entry: dict, *, global_scope: bool = False) -> bool:
+    payload = {"ts": time.time(), **_redact_lesson_value(entry)}
+    path = Path(get_global_lessons_path() if global_scope else get_runtime_path(LESSON_INDEX_FILE))
+    db_path = Path(get_lesson_db_path(global_scope=global_scope))
+    lesson_key = str(payload.get("lesson_key") or "")
+    if not lesson_key:
+        lesson_key = f"entry:{time.time_ns()}:{uuid.uuid4().hex}"
+        payload["lesson_key"] = lesson_key
+    try:
+        with _LESSON_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with _lesson_file_lock(path):
+                conn = None
+                try:
+                    for attempt in range(4):
+                        try:
+                            conn = _connect_lesson_db(db_path)
+                            _ensure_lesson_index(conn, path)
+                            cursor = conn.execute(
+                                "INSERT OR IGNORE INTO lesson_keys(lesson_key, ts) VALUES (?, ?)",
+                                (lesson_key, float(payload.get("ts") or 0)),
+                            )
+                            if cursor.rowcount == 0:
+                                conn.rollback()
+                                return False
+                            _write_lesson_jsonl(path, payload)
+                            conn.commit()
+                            break
+                        except sqlite3.OperationalError as exc:
+                            if conn is not None:
+                                try:
+                                    conn.rollback()
+                                except sqlite3.DatabaseError:
+                                    pass
+                                try:
+                                    conn.close()
+                                except sqlite3.DatabaseError:
+                                    pass
+                                conn = None
+                            if not _is_sqlite_busy_error(exc) or attempt == 3:
+                                raise
+                            time.sleep(0.05 * (attempt + 1))
+                except sqlite3.DatabaseError:
+                    if conn is not None:
+                        try:
+                            conn.rollback()
+                        except sqlite3.DatabaseError:
+                            pass
+                        try:
+                            conn.close()
+                        except sqlite3.DatabaseError:
+                            pass
+                        conn = None
+                    _quarantine_lesson_db(db_path)
+                    return _append_lesson_jsonl_fallback_unlocked(path, payload, lesson_key)
+                finally:
+                    if conn is not None:
+                        conn.close()
+        return True
+    except OSError:
+        return False
+
+
+def _clean_lesson_steps(steps) -> list[str]:
+    if steps is None:
+        return []
+    raw = steps if isinstance(steps, list) else str(steps).splitlines()
+    cleaned: list[str] = []
+    for item in raw[:12]:
+        text = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", str(item or "").strip())
+        if text:
+            cleaned.append(text[:300])
+    return cleaned
+
+
+def record_procedure_lesson(
+    title: str,
+    summary: str = "",
+    steps=None,
+    tags=None,
+    source: str = "procedure",
+    refs=None,
+) -> dict:
+    title = str(title or "").strip()[:160]
+    summary = str(summary or "").strip()[:1000]
+    step_list = _clean_lesson_steps(steps)
+    tag_items = [tags] if isinstance(tags, str) else (tags or [])
+    tag_list = [str(tag).strip().lower()[:80] for tag in tag_items if str(tag).strip()]
+    if not title or (not summary and not step_list):
+        return {"status": "skipped", "reason": "missing reusable procedure content"}
+    key_steps = sorted(re.sub(r"\s+", " ", step.lower()).strip() for step in step_list)
+    digest = hashlib.sha256(json.dumps([title.lower(), summary.lower(), key_steps], ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    entry = {
+        "source": source or "procedure",
+        "lesson_type": "procedure",
+        "title": title,
+        "outcome": "learned",
+        "summary": summary,
+        "steps": step_list,
+        "tags": sorted(set(tag_list + ["procedure", "workflow"])),
+        "refs": refs or {},
+        "lesson_key": f"procedure:{digest}",
+    }
+    local_stored = append_lesson(entry)
+    global_stored = append_lesson(entry, global_scope=True)
+    return {
+        "status": "stored" if local_stored or global_stored else "duplicate",
+        "lesson_key": f"procedure:{digest}",
+        "title": title,
+        "stored": {"local": local_stored, "global": global_stored},
+    }
+
+
+def _read_lessons_from(path: Path, limit: int, scope: str) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        wanted = max(1, min(200, int(limit or 20)))
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, ValueError):
+        return []
+    rows: list[dict] = []
+    for line in reversed(lines):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            item = dict(item)
+            item["_lesson_scope"] = scope
+            rows.append(item)
+            if len(rows) >= wanted:
+                break
+    return list(reversed(rows))
+
+
+def _lesson_identity(lesson: dict) -> str:
+    key = str(lesson.get("lesson_key") or "").strip()
+    if key:
+        return key
+    return "|".join(str(lesson.get(k, ""))[:200] for k in ("source", "title", "summary", "error_signature", "fix_summary"))
+
+
+def read_lessons(limit: int = 20, *, include_global: bool = False) -> list[dict]:
+    wanted = max(1, min(200, int(limit or 20)))
+    rows = _read_lessons_from(Path(get_runtime_path(LESSON_INDEX_FILE)), wanted, "local")
+    if include_global:
+        rows.extend(_read_lessons_from(Path(get_global_lessons_path()), wanted, "global"))
+        seen = set()
+        deduped = []
+        for item in rows:
+            identity = _lesson_identity(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduped.append(item)
+        rows = deduped
+    return rows[-wanted:]
+
+
+def _lesson_terms(text: str) -> set[str]:
+    return {m.group(0).lower() for m in re.finditer(r"[\w./:-]{3,}", text or "", flags=re.UNICODE)}
+
+
+def _lesson_blob(lesson: dict, keys: tuple[str, ...]) -> str:
+    return " ".join(str(lesson.get(k, "")) for k in keys).lower()
+
+
+def _lesson_score(target_terms: set[str], lesson: dict, target_text: str = "") -> int:
+    title = _lesson_blob(lesson, ("title",))
+    tags = _lesson_blob(lesson, ("tags", "lesson_type", "source"))
+    body = _lesson_blob(lesson, (
+        "summary", "error_signature", "fix_summary", "files", "steps", "procedure",
+        "workflow", "commands", "refs", "domain", "provider",
+    ))
+    score = 0
+    for term in target_terms:
+        if term in title:
+            score += 8
+        elif term in tags:
+            score += 6
+        elif term in body:
+            score += 3
+    target_low = (target_text or "").lower()
+    clean_title = re.sub(r"\s+", " ", title).strip()
+    if clean_title and len(clean_title) >= 8 and (clean_title in target_low or target_low in clean_title):
+        score += 20
+    return score
+
+
+def load_relevant_lessons_context(target_text: str, limit: int = 3) -> str:
+    terms = _lesson_terms(target_text)
+    if not terms:
+        return ""
+    scored = []
+    for lesson in read_lessons(100, include_global=True):
+        score = _lesson_score(terms, lesson, target_text)
+        if score > 0:
+            scored.append((score, lesson))
+    scored.sort(key=lambda item: (-item[0], -float(item[1].get("ts") or 0)))
+    lines = []
+    for score, lesson in scored[:max(1, min(5, limit))]:
+        title = str(lesson.get("title") or "untitled")
+        outcome = str(lesson.get("outcome") or "unknown")
+        lesson_type = str(lesson.get("lesson_type") or ("fix" if lesson.get("error_signature") else "lesson"))
+        scope = str(lesson.get("_lesson_scope") or "local")
+        files = ", ".join(str(x) for x in (lesson.get("files") or [])[:5]) if isinstance(lesson.get("files"), list) else str(lesson.get("files") or "")
+        fix = str(lesson.get("fix_summary") or lesson.get("summary") or "")[:260]
+        ref = str(lesson.get("wiki_ref") or "")
+        steps = _clean_lesson_steps(lesson.get("steps"))
+        step_text = " | ".join(f"{idx + 1}. {step}" for idx, step in enumerate(steps[:5]))[:500]
+        extra = f"\n  steps: {step_text}" if step_text else ""
+        lines.append(f"- score={score} scope={scope} type={lesson_type} outcome={outcome} title={title} files={files} ref={ref}\n  {fix}{extra}")
+    return "\n".join(lines)
 
 
 def _wiki_roots() -> list[tuple[str, str]]:
@@ -338,6 +793,10 @@ def _assemble_context(
     wiki_ctx = _load_relevant_wiki_context(target_text)
     if wiki_ctx:
         parts.append(f"=== PROJECT WIKI CONTEXT (SELECTIVE) ===\n{wiki_ctx}")
+
+    lessons_ctx = load_relevant_lessons_context(target_text)
+    if lessons_ctx:
+        parts.append(f"=== PRIOR LESSONS (AUTO-INJECTED) ===\n{lessons_ctx}")
         
     if files:
         file_block, file_warns, _ = read_workspace_files(files, total_cap)
@@ -408,12 +867,13 @@ def _result_meta(r: AgentResult) -> dict:
 # ── Helper functions for caching, report export, and patching ─────────────────
 
 def _calculate_review_hash(
-    files: Optional[list[str]],
-    diff: Optional[str],
-    code: Optional[str],
-    focus: Optional[str],
-    staged: bool,
-    since_commit: str,
+    files: Optional[list[str]] = None,
+    diff: Optional[str] = None,
+    code: Optional[str] = None,
+    focus: Optional[str] = None,
+    staged: bool = False,
+    since_commit: str = "",
+    **execution_options,
 ) -> str:
     hasher = hashlib.sha256()
     root = os.path.realpath(_get_active_workspace())
@@ -431,7 +891,8 @@ def _calculate_review_hash(
                             hasher.update(chunk)
             except Exception:
                 pass
-    for val in [diff, code, focus, str(staged), since_commit]:
+    option_blob = json.dumps(execution_options, ensure_ascii=False, sort_keys=True, default=str)
+    for val in [diff, code, focus, str(staged), since_commit, option_blob]:
         if val:
             val_str = val if isinstance(val, str) else str(val)
             hasher.update(val_str.encode(errors="replace"))
@@ -786,6 +1247,8 @@ def _run_tests() -> tuple[bool, str]:
             cwd=workspace,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30
         )
         success = (r.returncode == 0)
@@ -808,6 +1271,8 @@ def _run_tests_in_dir(target_dir: str, python_bin: str | None = None) -> tuple[b
             cwd=target_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30
         )
         success = (r.returncode == 0)
@@ -1211,6 +1676,17 @@ async def _extract_and_save_lesson(error: str, files: Optional[list[str]], patch
             
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
+
+        append_lesson({
+            "source": "wiki_lesson",
+            "title": title,
+            "outcome": "fixed",
+            "files": files or [],
+            "error_signature": (error or "")[:500],
+            "fix_summary": content[:600],
+            "wiki_ref": f"llmwiki/wiki/concepts/{os.path.basename(filepath)}",
+            "tags": ["suggest_fix", "lesson"],
+        })
             
         _log.info("[Harness] Đã lưu lesson wiki: wiki/concepts/%s", os.path.basename(filepath))
         
@@ -1227,8 +1703,9 @@ def run_in_sandbox(code: str, timeout: float = 5.0) -> dict:
         return {"status": "error", "stdout": "", "stderr": "timeout must be a positive finite number", "duration_ms": 0}
     
     workspace = _get_active_workspace()
-    os.makedirs(workspace, exist_ok=True)
-    temp_dir = tempfile.mkdtemp(prefix=".harness_sandbox_", dir=workspace)
+    sandbox_parent = os.path.join(workspace, ".harness_sandbox")
+    os.makedirs(sandbox_parent, exist_ok=True)
+    temp_dir = tempfile.mkdtemp(prefix="run_", dir=sandbox_parent)
     
     with tempfile.NamedTemporaryFile(suffix=".py", dir=temp_dir, mode="w", delete=False, encoding="utf-8") as f:
         f.write(code)

@@ -5,6 +5,7 @@ Roles, models, system prompts + core LLM call (adaptive params, retry, fallback)
 import asyncio
 import concurrent.futures
 import contextlib
+import json
 import logging
 import math
 import os
@@ -48,9 +49,30 @@ _RESPONSES_SEM = threading.BoundedSemaphore(_RESPONSES_MAX_WORKERS)
 
 _FINOPS_LOCK = threading.RLock()
 
+def _finops_workspace_root() -> str:
+    root = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
+    if not root:
+        meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
+        if meta:
+            try:
+                root = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
+            except Exception:
+                root = ""
+    root = root or (os.getenv("WORKSPACE_ROOT") or "").strip() or WORKSPACE_ROOT
+    root = os.path.abspath(root)
+    if os.path.isdir(root) and os.access(root, os.W_OK):
+        return root
+    fallback = os.path.join(os.path.expanduser("~"), ".agent-harness")
+    os.makedirs(fallback, exist_ok=True)
+    _log.warning("FinOps workspace root invalid/unwritable: %s; using %s", root, fallback)
+    return fallback
+
+
 def _finops_db_path() -> str:
-    root = os.getenv("WORKSPACE_ROOT") or os.getenv("CLAUDE_PROJECT_DIR") or WORKSPACE_ROOT
-    return os.path.join(os.path.abspath(root), ".harness_finops.db")
+    return os.path.join(_finops_workspace_root(), ".harness_finops.db")
+
+def get_finops_db_path() -> str:
+    return _finops_db_path()
 
 FINOPS_DB_PATH = _finops_db_path()
 current_run_id = contextvars.ContextVar("current_run_id", default="")
@@ -467,6 +489,14 @@ class _ResponsesTimeoutError(Exception):
     """Raised khi _responses_call vượt Python-level timeout. Map sang spare-model fallback trong chat_completion."""
 
 
+def _responses_queue_timeout(timeout: float) -> float:
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        value = 1.0
+    return max(0.01, value)
+
+
 def _get_responses_client() -> OpenAI:
     global _responses_client
     if _responses_client is None:
@@ -539,16 +569,25 @@ def _responses_call(model: str, messages: list[dict], max_output_tokens: int, ti
 
     # Azure Responses endpoint có thể ignore SDK timeout — enforce ở Python level.
     # Shared bounded pool prevents unbounded thread growth when requests time out.
-    acquired = _RESPONSES_SEM.acquire(timeout=max(1.0, min(timeout, 5.0)))
+    queue_timeout = _responses_queue_timeout(timeout)
+    acquired = _RESPONSES_SEM.acquire(timeout=queue_timeout)
     if not acquired:
-        raise _ResponsesTimeoutError(f"responses_call queue saturated after {min(timeout, 5.0)}s on {model}")
+        raise _ResponsesTimeoutError(f"responses_call queue saturated after {queue_timeout}s on {model}")
+
+    released = threading.Event()
+
+    def _release_once(_f=None):
+        if not released.is_set():
+            released.set()
+            _RESPONSES_SEM.release()
 
     future = _RESPONSES_EXECUTOR.submit(_do_call)
-    future.add_done_callback(lambda _f: _RESPONSES_SEM.release())
+    future.add_done_callback(_release_once)
     try:
         response = future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         future.cancel()
+        _release_once()
         raise _ResponsesTimeoutError(f"responses_call timeout after {timeout}s on {model}")
 
     usage = getattr(response, "usage", None)
@@ -637,7 +676,7 @@ def chat_completion(
             if attempt <= MAX_RETRIES:
                 time.sleep(min(2 ** attempt, 30) + random.uniform(0, 1))
                 continue
-            spare = next(spares, None)
+            spare = _next_distinct_spare(spares, current_model)
             if spare is not None:
                 current_model = spare
                 attempt = 0
@@ -651,7 +690,7 @@ def chat_completion(
                 _log.warning("Timeout lần %d trên %s — thử lại", timeout_attempt, current_model)
                 time.sleep(1.0)
                 continue
-            spare = next(spares, None) if use_spares else None
+            spare = _next_distinct_spare(spares, current_model) if use_spares else None
             if spare is not None:
                 _log.warning("Timeout lần %d trên %s → spare %s", timeout_attempt, current_model, spare)
                 current_model = spare
@@ -666,13 +705,21 @@ def chat_completion(
             if attempt <= MAX_RETRIES:
                 time.sleep(min(2 ** attempt, 15))
                 continue
-            spare = next(spares, None)
+            spare = _next_distinct_spare(spares, current_model)
             if spare is not None:
                 _log.warning("Connection/server error trên %s → thử spare %s", current_model, spare)
                 current_model = spare
                 attempt = 0
                 continue
             raise
+
+
+def _next_distinct_spare(spares, current_model: str) -> str | None:
+    current = str(current_model).strip().lower()
+    for spare in spares:
+        if str(spare).strip().lower() != current:
+            return spare
+    return None
 
 
 # ── Agent class ───────────────────────────────────────────────────────────────
