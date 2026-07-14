@@ -2,6 +2,8 @@
 
 Tài liệu này cung cấp hướng dẫn cài đặt, vận hành và phân tích chuyên sâu các kỹ thuật kỹ nghệ AI (AI Engineering), quản lý bộ nhớ (Memory) và bộ thư viện 13 kỹ năng tùy chỉnh (Custom Skills) đang được áp dụng trong hệ thống **Agent Harness (12-Agent support team)** kết hợp với **Claude Code**.
 
+> **Lý do repo này sinh ra:** chủ repo lười vlin, muốn gõ đúng một prompt rồi để harness + agent tự chia việc, tự chạy goal loop, tự gọi tool phù hợp, tự check, tự nhớ bài học, tự truy vết lỗi và tự làm hết phần nặng. Mục tiêu là workflow đủ tự động để người dùng chỉ việc chill chill, nhưng vẫn control full bằng `goal_supervisor`, `auto_trigger`, `panel_review`, production gate, ledger, lesson memory và quality gates rõ ràng.
+
 ---
 
 ## 1. Tổng Quan Kiến Trúc & Phân Vai Agent
@@ -168,6 +170,7 @@ Nếu dùng `uv`, `conda`, hoặc venv riêng, thay `python` trong lệnh `claud
 | Production readiness gate | MCP connected; dùng `mode=max` trước deploy thật | Gọi `prod_readiness_gate(changed_files=[...], task="release/prod check", mode="max")`; chỉ deploy/claim prod-ready khi verdict cho phép |
 | Auto-Watch daemon | `.env`: `HARNESS_AUTO_WATCH=1`; MCP tự spawn watcher nền đúng project bằng `pythonw`/no-window khi tool đầu tiên được gọi | Xem `.harness_auto_watch.log` |
 | Local/global llmwiki | Local wiki tự bootstrap `llmwiki/raw` + `wiki/*` lần đầu; copy seed vào `~/.claude/llmwiki` nếu muốn share global knowledge | `wiki_query("jwt")`, `wiki_lint` |
+| Lesson Memory local/global | Tự bật qua MCP hooks + `auto_trigger` + `goal_runner`; local ghi trong project, global ghi vào `~/.claude` khi lesson reusable qua curator | Xem `.harness_lessons.jsonl`, `~/.claude/.harness_global_lessons.jsonl`, hoặc gọi `run_ledger` |
 | Code index polyglot | `tree-sitter-languages` + `index_codebase` | `semantic_search("panel_review")` |
 | Visual review | Playwright Chromium | `visual_reviewer(url="http://localhost:3000")` |
 | Test/coverage | pytest + coverage | `coverage_analyzer` |
@@ -183,7 +186,7 @@ Nếu dùng `uv`, `conda`, hoặc venv riêng, thay `python` trong lệnh `claud
 | Harness ops | `harness_doctor`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check` | Git, optional agent CLI, existing smoke/test stack | Self-check, context budget audit, ask_codebase preflight, runner resume/status, audit ledger, profiles, adapters, benchmark dry-run, isolated patch check |
 | Deep reasoning/review | `consult`, `alt_implementation`, `panel_review`, `suggest_fix`, `quick_task`, `ask_codebase`, `swarm_debug` | Azure models, `SPARE_MODELS`, workspace files | Design, alternative implementation, review cuối, debug bí, việc vặt, hỏi codebase |
 | Security fix loop | `security_autofix`, `auto_tester`, `run_in_sandbox` | Git worktree, pytest, Azure debugger/tester | Auto-fix Critical/High security finding, sinh test, chạy reproducer cô lập |
-| Wiki/memory | `wiki_ingest`, `wiki_query`, `wiki_lint`, `doc_sync` | `llmwiki/raw`, `llmwiki/wiki`, README | Ingest knowledge, tìm concept/entity, lint wiki, đồng bộ docs |
+| Wiki/memory | `wiki_ingest`, `wiki_query`, `wiki_lint`, `doc_sync`, `lesson_curator` | `llmwiki/raw`, `llmwiki/wiki`, `.harness_lessons.jsonl`, `~/.claude/.harness_global_lessons.jsonl`, README | Ingest/query wiki, ghi lesson local/global, lọc lesson trước khi promote global, đồng bộ docs |
 | Static/code index | `index_codebase`, `semantic_search`, `dead_code_scanner`, `dependency_graph_visualizer` | tree-sitter-languages, SQLite cache | Search polyglot, dead code, import graph/cycle |
 | Security/config | `secret_scanner`, `config_security_audit`, `env_parity_checker`, `data_flow_taint_analyzer`, `auth_matrix_auditor` | `.env.example`, source files, API route files | Secrets, CORS/env drift, taint user input, auth/ownership matrix |
 | Quality gates | `devops_pipeline`, `complexity_analyzer`, `duplicate_code_scanner`, `polyglot_reviewer`, `incremental_refactor_guard` | ruff/flake8/mypy/black optional fallback, AST/LLM, git diff | Pre-PR quality, complexity, copy-paste, language-specific review, refactor breakage guard |
@@ -1926,7 +1929,7 @@ HARNESS_AUTO_MODE=max
 HARNESS_STATIC_LLM=1
 ```
 
-`auto_watch.py` là daemon polling riêng để đạt mức tự động cao hơn: nó tự thấy file trong workspace đổi rồi gọi thẳng `tools.auto.auto_trigger(mode="max")`. Người dùng bình thường không cần mở CMD riêng; khi `HARNESS_AUTO_WATCH=1`, MCP server tự spawn watcher nền đúng project bằng `pythonw`/no-window ở lần gọi tool đầu tiên.
+`auto_watch.py` là daemon polling riêng để đạt mức tự động cao hơn: nó tự thấy file trong workspace đổi rồi gọi thẳng `tools.auto.auto_trigger(mode="max")`. Người dùng bình thường không cần mở CMD riêng; khi `HARNESS_AUTO_WATCH=1`, MCP server tự spawn watcher nền đúng project bằng `pythonw`/no-window ở lần gọi tool đầu tiên. Code watcher chạy từ repo harness/MCP đang được client trỏ tới, nhưng `HARNESS_WATCH_ROOT` là workspace của project hiện tại; vì vậy `.harness_auto_watch.pid`, `.harness_auto_watch.log`, ledger, orchestrator và lessons được ghi trong từng project, không ghi chung vào repo harness trừ khi project hiện tại chính là repo harness.
 
 Config nhanh:
 
@@ -1954,7 +1957,7 @@ Debug thủ công khi cần:
 python auto_watch.py
 ```
 
-Watcher bỏ qua `.git`, cache, venv, node_modules; gom thay đổi bằng debounce; dùng lock atomic `.harness_auto_watch.lock` để chống chạy chồng; ghi PID vào `.harness_auto_watch.pid`; log vào `.harness_auto_watch.log` với redaction và rotation. `install.ps1` không tạo Windows Scheduled Task nữa và sẽ xoá task cũ `AgentHarnessAutoWatch` nếu còn tồn tại.
+Watcher bỏ qua `.git`, cache, venv, node_modules và runtime artifact nội bộ (`.harness_*`, `REVIEW_REPORT.md`, `.claude/audit/`, `llmwiki/raw/.bootstrapped`) để không tự kích hoạt vòng lặp bởi log/ledger/lesson do chính harness ghi; file source/config/test của project vẫn được theo dõi bình thường. Watcher gom thay đổi bằng debounce; dùng lock atomic `.harness_auto_watch.lock` để chống chạy chồng; ghi PID vào `.harness_auto_watch.pid`; log vào `.harness_auto_watch.log` với redaction và rotation. `install.ps1` không tạo Windows Scheduled Task nữa và sẽ xoá task cũ `AgentHarnessAutoWatch` nếu còn tồn tại.
 
 #### 55 tools static/static-first analysis
 
@@ -2037,6 +2040,16 @@ Mặc định:
 Chạy installer hoặc `python merge_settings.py` vẫn được, nhưng không còn bắt buộc sau mỗi update: MCP discovery sẽ tự merge nếu stamp cũ. User không cần tự thêm command MCP riêng cho từng agent.
 
 Runtime workspace cũng được resolve ở điểm dùng: `panel_review` cache ghi vào workspace hiện tại, review hash có workspace identity, và FinOps DB dùng `get_finops_db_path()` thay vì constant import-time. Nhờ vậy MCP process reuse giữa nhiều project không trả nhầm cache/DB của project trước.
+
+#### Lesson Memory local/global
+
+Luồng cơ chế ngắn gọn:
+
+1. **Capture:** hooks, MCP boundary, `auto_trigger`, `panel_review`, `suggest_fix`, và `goal_runner` tự ghi sự kiện/lesson khi user prompt, agent edit, check pass/fail, hoặc agent sinh procedure reusable.
+2. **Curate + dedupe:** lesson được redact secret, gắn `lesson_key`, dedupe bằng SQLite index; `lesson_curator` lọc xem cái nào chỉ giữ local, cái nào đủ chuẩn promote global.
+3. **Store:** local lesson ghi trong project hiện tại; global procedure/workflow reusable ghi trong `~/.claude` để project khác dùng lại.
+4. **Retrieve:** trước `consult`, `panel_review`, `suggest_fix`, `ask_codebase`, `auto_trigger`, và prompt agent từ `goal_runner`, harness tự search lesson local trước, global sau.
+5. **Inject + trace:** lesson liên quan được bơm vào `PRIOR LESSONS` có cap context; `run_ledger` và attribution `batch_id`/`diff_hash` giúp agent biết đã từng làm gì và lỗi mới có thể do edit nào.
 
 Lesson memory có 2 tầng append-only:
 

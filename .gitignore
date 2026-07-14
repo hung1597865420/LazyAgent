@@ -16,6 +16,7 @@ __pycache__/
 .harness_*.db
 .harness_*.jsonl
 .harness_*.log
+.harness_*.log.*
 .harness_*.pid
 .harness_*.lock
 .harness_ast_graph.json

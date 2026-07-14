@@ -28,6 +28,19 @@ IGNORE_SUFFIXES = {
     ".tmp", ".temp", ".swp", ".swo", ".pyc", ".pyo", ".log", ".lock",
     ".processing",
 }
+IGNORE_FILES = {
+    "REVIEW_REPORT.md",
+}
+IGNORE_PATHS = {
+    ("llmwiki", "raw", ".bootstrapped"),
+}
+IGNORE_ROOT_FILES = {
+    ".harness_ast_graph.json",
+    ".harness_coverage.json",
+    ".harness_goal_state.json",
+    ".harness_schema_baseline.json",
+}
+IGNORE_ROOT_FILE_RE = re.compile(r"^\.harness_[A-Za-z0-9_.-]+\.(?:db|jsonl|pid|lock|log)(?:\.\d+)?$")
 LOCK_FILE = ".harness_auto_watch.lock"
 PID_FILE = ".harness_auto_watch.pid"
 LOG_FILE = ".harness_auto_watch.log"
@@ -60,10 +73,22 @@ def _ignored(path: Path, root: Path) -> bool:
     parts = set(rel.parts)
     if parts & IGNORE_DIRS:
         return True
+    rel_parts = tuple(rel.parts)
+    if rel_parts in IGNORE_PATHS:
+        return True
+    if len(rel_parts) >= 2 and rel_parts[0] == ".claude" and rel_parts[1] == "audit":
+        return True
+    if any(part.startswith(".harness_worktree_") for part in rel_parts):
+        return True
     name = path.name
+    root_runtime_file = len(rel_parts) == 1 and (
+        name in IGNORE_ROOT_FILES or bool(IGNORE_ROOT_FILE_RE.match(name))
+    )
     return (
         name.startswith(".#")
         or name.endswith("~")
+        or name in IGNORE_FILES
+        or root_runtime_file
         or path.suffix.lower() in IGNORE_SUFFIXES
         or name in {LOCK_FILE, PID_FILE, LOG_FILE}
     )

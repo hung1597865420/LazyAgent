@@ -914,17 +914,48 @@ import auto_watch
 watch_root = SMOKE_DIR / "watch_root"
 (watch_root / "src").mkdir(parents=True, exist_ok=True)
 (watch_root / ".git").mkdir(parents=True, exist_ok=True)
+(watch_root / ".claude" / "audit").mkdir(parents=True, exist_ok=True)
+(watch_root / "llmwiki" / "raw").mkdir(parents=True, exist_ok=True)
+(watch_root / ".harness_docs").mkdir(parents=True, exist_ok=True)
+(watch_root / "src" / ".harness_utils").mkdir(parents=True, exist_ok=True)
 watched_file = watch_root / "src" / "app.py"
+watched_nested_harness_file = watch_root / "src" / ".harness_utils" / "config.py"
+watched_root_harness_dir_file = watch_root / ".harness_docs" / "policy.md"
 ignored_file = watch_root / ".git" / "config"
+ignored_harness_file = watch_root / ".harness_run_ledger.jsonl"
+ignored_harness_dir_file = watch_root / ".harness_cache" / "state.json"
+ignored_report_file = watch_root / "REVIEW_REPORT.md"
+ignored_audit_file = watch_root / ".claude" / "audit" / "2026-07-14.jsonl"
+ignored_bootstrap_file = watch_root / "llmwiki" / "raw" / ".bootstrapped"
 watched_file.write_text("print(1)\n", encoding="utf-8")
+watched_nested_harness_file.write_text("ENABLED = True\n", encoding="utf-8")
+watched_root_harness_dir_file.write_text("watch me\n", encoding="utf-8")
 ignored_file.write_text("ignore\n", encoding="utf-8")
+ignored_harness_file.write_text("{}\n", encoding="utf-8")
+ignored_harness_dir_file.parent.mkdir(parents=True, exist_ok=True)
+ignored_harness_dir_file.write_text("{}\n", encoding="utf-8")
+ignored_report_file.write_text("report\n", encoding="utf-8")
+ignored_audit_file.write_text("{}\n", encoding="utf-8")
+ignored_bootstrap_file.write_text("1\n", encoding="utf-8")
 snap1 = auto_watch.snapshot(watch_root)
 watched_file.write_text("print(2)\n", encoding="utf-8")
+ignored_harness_file.write_text("{\"changed\": true}\n", encoding="utf-8")
 snap2 = auto_watch.snapshot(watch_root)
 watch_changed = auto_watch.changed_files(snap1, snap2)
 check("auto_watch ignore .git và detect file đổi",
-      "src/app.py" in watch_changed and ".git/config" not in snap1,
+      "src/app.py" in watch_changed
+      and "src/.harness_utils/config.py" in snap1
+      and ".harness_docs/policy.md" in snap1
+      and ".git/config" not in snap1,
       str(watch_changed))
+check("auto_watch ignore harness runtime artifacts",
+      ".harness_run_ledger.jsonl" not in snap1
+      and ".harness_cache/state.json" not in snap1
+      and "REVIEW_REPORT.md" not in snap1
+      and ".claude/audit/2026-07-14.jsonl" not in snap1
+      and "llmwiki/raw/.bootstrapped" not in snap1
+      and ".harness_run_ledger.jsonl" not in watch_changed,
+      f"snap={sorted(snap1)[:20]} changed={watch_changed}")
 lock_path = watch_root / auto_watch.LOCK_FILE
 token1 = auto_watch._acquire_lock(lock_path)
 lock2 = auto_watch._acquire_lock(lock_path)
