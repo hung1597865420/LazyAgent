@@ -177,15 +177,45 @@ st.run_in_sandbox = mock_run_in_sandbox
 
 
 # 2. Config đầy đủ 12 model
-from config import MODELS, SPARE_MODELS, WORKSPACE_ROOT
+from config import MODELS, WORKSPACE_ROOT, _parse_spare_models, get_model_config, get_spare_models
 roles = ["manager", "synthesizer", "analyzer", "code_a", "code_b",
          "reviewer", "tester", "security", "integrity", "scanner",
          "debugger", "worker"]
 check("ModelConfig đủ 12 role", all(getattr(MODELS, r, None) for r in roles))
-check("SPARE_MODELS load được", isinstance(SPARE_MODELS, list) and len(SPARE_MODELS) > 0,
-      str(SPARE_MODELS))
+check("SPARE_MODELS load động được", isinstance(get_spare_models(), list) and len(get_spare_models()) > 0,
+      str(get_spare_models()))
 check("SPARE_MODELS skip model trùng khi failover",
       agents._next_distinct_spare(iter(["gpt-5.4-pro-2", "gpt-5.4-3"]), "gpt-5.4-pro-2") == "gpt-5.4-3")
+check("SPARE_MODELS lọc deployment lạ và duplicate",
+      _parse_spare_models("gpt-5.4-4,no-such-model,gpt-5.4-4", {"gpt-5.4-4"}) == ["gpt-5.4-4"])
+_orig_worker = os.environ.get("MODEL_WORKER")
+_orig_spares = os.environ.get("SPARE_MODELS")
+_orig_known = os.environ.get("HARNESS_KNOWN_DEPLOYMENTS")
+try:
+    os.environ["MODEL_WORKER"] = " "
+    check("ModelConfig fallback khi MODEL_* rỗng", get_model_config().worker == "gpt-5.4-mini")
+    os.environ["MODEL_WORKER"] = "custom-spare"
+    os.environ["SPARE_MODELS"] = "custom-spare,no-such-model"
+    os.environ["HARNESS_KNOWN_DEPLOYMENTS"] = ""
+    check("SPARE_MODELS dynamic theo env sau import", get_spare_models() == ["custom-spare"])
+    os.environ["SPARE_MODELS"] = "no-such-model"
+    _bad_spare_fallback = get_spare_models()
+    check("SPARE_MODELS cấu hình sai vẫn có fallback",
+          bool(_bad_spare_fallback) and "no-such-model" not in _bad_spare_fallback,
+          str(_bad_spare_fallback))
+finally:
+    if _orig_worker is None:
+        os.environ.pop("MODEL_WORKER", None)
+    else:
+        os.environ["MODEL_WORKER"] = _orig_worker
+    if _orig_spares is None:
+        os.environ.pop("SPARE_MODELS", None)
+    else:
+        os.environ["SPARE_MODELS"] = _orig_spares
+    if _orig_known is None:
+        os.environ.pop("HARNESS_KNOWN_DEPLOYMENTS", None)
+    else:
+        os.environ["HARNESS_KNOWN_DEPLOYMENTS"] = _orig_known
 check("Responses queue timeout dùng full budget",
       agents._responses_queue_timeout(45.0) == 45.0)
 check("Responses queue timeout tôn trọng request nhỏ",

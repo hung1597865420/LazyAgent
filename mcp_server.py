@@ -25,7 +25,7 @@ from mcp.server.stdio import stdio_server
 from mcp import types
 
 from agents import Agent, AgentRole, get_finops_stats
-from config import MODELS, WORKSPACE_ROOT, get_azure_client
+from config import MODELS, WORKSPACE_ROOT, get_azure_client, get_model_config
 import support_tools as st
 
 logging.basicConfig(
@@ -130,7 +130,7 @@ _AGENT_METADATA = {
     AgentRole.MANAGER:     {"tool": "ask_codebase",       "specialty": "Q&A trên codebase lớn — 1M token context. Gọi TRƯỚC khi đọc file nếu task >1 file"},
     AgentRole.SYNTHESIZER: {"tool": "panel_review",       "specialty": "Merge/dedupe findings từ review panel"},
     AgentRole.ANALYZER:    {"tool": "consult",            "specialty": "Design questions, trade-offs (deep reasoning)"},
-    AgentRole.CODE_A:      {"tool": "alt_implementation", "specialty": "Phương án implementation 1 (Kimi K2.6)"},
+    AgentRole.CODE_A:      {"tool": "alt_implementation", "specialty": "Phương án implementation 1 — code-focused, nhanh"},
     AgentRole.CODE_B:      {"tool": "alt_implementation", "specialty": "Phương án implementation 2 — chủ động khác biệt"},
     AgentRole.REVIEWER:    {"tool": "panel_review",       "specialty": "Bugs, logic errors, anti-patterns, performance"},
     AgentRole.TESTER:      {"tool": "panel_review",       "specialty": "Adversarial devil's advocate — race condition, hidden assumption, edge case mà quality/security bỏ sót"},
@@ -156,7 +156,9 @@ MCP_LESSON_FALLBACK_TOOLS = {
 }
 MCP_LESSON_BACKGROUND_LIMIT = 64
 
-_MODEL_BY_ROLE = {role.value: getattr(MODELS, role.value) for role in AgentRole}
+def _model_by_role() -> dict[str, str]:
+    models = get_model_config()
+    return {role.value: getattr(models, role.value) for role in AgentRole}
 
 _FILES_SCHEMA = {
     "type": "array", "items": {"type": "string"},
@@ -427,7 +429,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="alt_implementation",
-            description="2 model song song (Kimi K2 + GPT) sinh 2 approach khác nhau để so sánh. Dùng cho function/module độc lập.",
+            description="2 model song song sinh 2 approach khác nhau để so sánh. Dùng cho function/module độc lập.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1754,11 +1756,12 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
             })
 
         if name == "list_agents":
+            model_by_role = _model_by_role()
             return _json_response({
                 "toolbox": "12-Agent Support Team cho Claude Code",
                 "workspace_root": _active_workspace(),
                 "agents": [
-                    {**a, "model": _MODEL_BY_ROLE[a["role"]]} for a in AGENT_INFO
+                    {**a, "model": model_by_role[a["role"]]} for a in AGENT_INFO
                 ],
             })
 

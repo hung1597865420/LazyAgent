@@ -29,9 +29,9 @@ from openai import (
     RateLimitError,
 )
 from config import (
-    MODELS, SPARE_MODELS, MAX_OUTPUT_TOKENS, MAX_RETRIES, REQUEST_TIMEOUT,
+    MODELS, MAX_OUTPUT_TOKENS, MAX_RETRIES, REQUEST_TIMEOUT,
     ROLE_TIMEOUTS, get_azure_client, get_responses_client,
-    WORKSPACE_ROOT,
+    WORKSPACE_ROOT, get_spare_models,
 )
 from pydantic import BaseModel
 
@@ -620,7 +620,7 @@ def chat_completion(
     - Timeout/5xx → backoff retry
     """
     current_model  = model
-    spares         = iter(SPARE_MODELS)
+    spares         = iter(get_spare_models())
     attempt        = 0
     timeout_attempt = 0  # retry tối đa 1 lần trước khi chuyển spare
 

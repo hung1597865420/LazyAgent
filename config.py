@@ -23,13 +23,13 @@ if not dotenv_disabled:
 class ModelConfig:
     # ── Orchestration (2x pro) ────────────────────────────────────────────────
     manager:     str   # gpt-5.4-pro-3   — ask_codebase: Q&A trên codebase lớn (1M context)
-    synthesizer: str   # gpt-5.4-pro-2   — merge/dedupe findings từ review panel
+    synthesizer: str   # gpt-5.4-4       — merge/dedupe findings, fast JSON synthesis
 
     # ── Analysis ─────────────────────────────────────────────────────────────
     analyzer:    str   # grok-4-20-reasoning — consult: design questions, trade-offs
 
     # ── Code (dual parallel) ─────────────────────────────────────────────────
-    code_a:      str   # Kimi-K2.6       — alt_implementation approach 1
+    code_a:      str   # gpt-5.3-codex   — alt_implementation approach 1, code-focused
     code_b:      str   # gpt-5.4         — alt_implementation approach 2
 
     # ── Review panel (3x codex parallel + 1x integrity sequential) ──────────────
@@ -47,28 +47,66 @@ class ModelConfig:
 
 
 def get_model_config() -> ModelConfig:
+    def model_env(key: str, default: str) -> str:
+        return (os.getenv(key, default) or "").strip() or default
+
     return ModelConfig(
-        manager     = os.getenv("MODEL_MANAGER",     "gpt-5.4-pro-3"),  # true 1M context
-        synthesizer = os.getenv("MODEL_SYNTHESIZER", "gpt-5.4-pro-2"),
-        analyzer    = os.getenv("MODEL_ANALYZER",    "grok-4-20-reasoning"),
-        code_a      = os.getenv("MODEL_CODE_A",      "Kimi-K2.6"),
-        code_b      = os.getenv("MODEL_CODE_B",      "gpt-5.4"),
-        reviewer    = os.getenv("MODEL_REVIEWER",    "gpt-5.3-codex"),
-        tester      = os.getenv("MODEL_TESTER",      "gpt-5.3-codex-2"),
-        security    = os.getenv("MODEL_SECURITY",    "gpt-5.3-codex-3"),
-        integrity   = os.getenv("MODEL_INTEGRITY",   "gpt-5.3-codex-4"),
-        scanner     = os.getenv("MODEL_SCANNER",     "gpt-5.3-codex-4"),
-        debugger    = os.getenv("MODEL_DEBUGGER",    "gpt-5.4-2"),
-        worker      = os.getenv("MODEL_WORKER",      "gpt-5.4-mini"),
+        manager     = model_env("MODEL_MANAGER",     "gpt-5.4-pro-3"),  # true 1M context
+        synthesizer = model_env("MODEL_SYNTHESIZER", "gpt-5.4-4"),
+        analyzer    = model_env("MODEL_ANALYZER",    "grok-4-20-reasoning"),
+        code_a      = model_env("MODEL_CODE_A",      "gpt-5.3-codex"),
+        code_b      = model_env("MODEL_CODE_B",      "gpt-5.4"),
+        reviewer    = model_env("MODEL_REVIEWER",    "gpt-5.3-codex"),
+        tester      = model_env("MODEL_TESTER",      "gpt-5.3-codex-2"),
+        security    = model_env("MODEL_SECURITY",    "gpt-5.3-codex-3"),
+        integrity   = model_env("MODEL_INTEGRITY",   "gpt-5.3-codex-4"),
+        scanner     = model_env("MODEL_SCANNER",     "gpt-5.3-codex-4"),
+        debugger    = model_env("MODEL_DEBUGGER",    "gpt-5.4-2"),
+        worker      = model_env("MODEL_WORKER",      "gpt-5.4-mini"),
     )
 
 
 # ── Spare deployments — fallback khi rate-limit dai dẳng ─────────────────────
-SPARE_MODELS: list[str] = [
-    m.strip()
-    for m in os.getenv("SPARE_MODELS", "gpt-5.3-codex-4,gpt-5.4-3,gpt-5.4-4,gpt-4.1-mini").split(",")
-    if m.strip()
-]
+DEFAULT_SPARE_MODELS = "gpt-5.4-4,gpt-5.4-3,gpt-5.3-codex-4,gpt-5.4,gpt-5.4-2,gpt-4.1-mini"
+DEFAULT_EXTRA_DEPLOYMENTS = "gpt-4.1-mini"
+
+
+def _csv_values(raw: str) -> list[str]:
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def _parse_spare_models(raw: str, known: set[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for model in _csv_values(raw):
+        key = model.lower()
+        if key in seen or key not in known:
+            continue
+        seen.add(key)
+        result.append(model)
+    return result
+
+
+def _known_deployments() -> set[str]:
+    models = get_model_config()
+    return {
+        m.lower()
+        for m in [
+            *models.__dict__.values(),
+            *_csv_values(os.getenv("HARNESS_KNOWN_DEPLOYMENTS", DEFAULT_EXTRA_DEPLOYMENTS)),
+        ]
+    }
+
+
+def get_spare_models() -> list[str]:
+    known = _known_deployments()
+    parsed = _parse_spare_models(os.getenv("SPARE_MODELS", DEFAULT_SPARE_MODELS), known)
+    if parsed:
+        return parsed
+    fallback = _parse_spare_models(DEFAULT_SPARE_MODELS, known)
+    if fallback:
+        return fallback
+    return [get_model_config().worker]
 
 # ── Workspace root — support tools đọc file theo path tương đối từ đây ───────
 # Ưu tiên: WORKSPACE_ROOT (.env) → CLAUDE_PROJECT_DIR (Claude Code tự set cho
