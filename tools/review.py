@@ -10,6 +10,7 @@ from agents import Agent, AgentRole, AgentResult
 from config import get_azure_client
 from .core import (
     _git_diff,
+    append_lesson,
     _calculate_review_hash,
     _export_review_report,
     _assemble_context,
@@ -101,6 +102,40 @@ def _check_anti_consensus(results: list, raw_findings: list[dict]) -> list[str]:
     return warnings
 
 
+def _record_panel_review_lesson(result: dict, *, files: Optional[list[str]], review_hash: str) -> bool:
+    """Best-effort local lesson for every panel_review outcome."""
+    try:
+        findings = result.get("findings") if isinstance(result.get("findings"), list) else []
+        severities = {}
+        finding_summaries = []
+        for finding in findings[:8]:
+            if not isinstance(finding, dict):
+                continue
+            severity = str(finding.get("severity") or "unknown").lower()
+            severities[severity] = severities.get(severity, 0) + 1
+            loc = str(finding.get("file") or "")
+            line = finding.get("line")
+            issue = str(finding.get("issue") or finding.get("category") or "")[:240]
+            finding_summaries.append(f"{loc}:{line or '?'} {severity} {issue}".strip())
+        verdict = str(result.get("verdict") or ("error" if result.get("error") else "unknown"))
+        summary = str(result.get("summary") or result.get("error") or "")[:1000]
+        return append_lesson({
+            "source": "panel_review",
+            "lesson_type": "panel_review",
+            "title": f"panel_review {verdict}",
+            "outcome": verdict,
+            "summary": summary or f"panel_review completed with {len(findings)} findings",
+            "files": list(files or [])[:50],
+            "findings": finding_summaries,
+            "severity_counts": severities,
+            "warnings": [str(w)[:240] for w in (result.get("warnings") or [])[:8]],
+            "tags": sorted(set(["panel_review", verdict] + list(severities.keys()))),
+            "lesson_key": f"panel_review:{review_hash}",
+        })
+    except Exception:
+        return False
+
+
 async def panel_review(
     files: Optional[list[str]] = None,
     diff: Optional[str] = None,
@@ -152,6 +187,7 @@ async def panel_review(
                 cached_data = json.load(f)
             cached_data["cached"] = True
             _export_review_report(cached_data)
+            _record_panel_review_lesson(cached_data, files=files, review_hash=cache_hash)
             return cached_data
         except Exception:
             try:
@@ -251,7 +287,9 @@ async def panel_review(
     warnings.extend(_check_anti_consensus(results, raw_findings))
 
     if all(r.status == "error" for r in results):
-        return {"error": "Cả 3 reviewer đều lỗi", "panel": panel_meta, "warnings": warnings}
+        res = {"error": "Cả 3 reviewer đều lỗi", "panel": panel_meta, "warnings": warnings}
+        _record_panel_review_lesson(res, files=files, review_hash=cache_hash)
+        return res
 
     if not raw_findings:
         res = {
@@ -264,6 +302,7 @@ async def panel_review(
         except Exception:
             pass
         _export_review_report(res)
+        _record_panel_review_lesson(res, files=files, review_hash=cache_hash)
         return res
 
     # INTEGRITY agent: chạy sau 3 reviewer, nhận findings + code làm input
@@ -328,6 +367,7 @@ async def panel_review(
     except Exception:
         pass
     _export_review_report(merged)
+    _record_panel_review_lesson(merged, files=files, review_hash=cache_hash)
 
     return merged
 

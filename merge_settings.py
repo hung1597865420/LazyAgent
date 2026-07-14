@@ -13,7 +13,8 @@ from pathlib import Path
 CLAUDE_MARKER = "<!-- agent-harness-managed -->"
 GEMINI_MARKER = "<!-- agent-harness -->"
 HOOK_ID = "agent-harness-panel-reminder"
-RULES_VERSION = "2026-07-13-docsgate-r11"
+LESSON_HOOK_ID = "agent-harness-lesson-recorder"
+RULES_VERSION = "2026-07-14-lesson-hook-r2"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -145,6 +146,8 @@ HOOK_REMINDER_CMD = (
     'Truoc khi bao hoan thanh, goi auto_trigger stage=final mode=max hoac panel_review MOT LAN tren '
     'toan bo files da sua; neu supervisor tra run_final thi goi goal_autopilot mode=complete, neu tra complete moi bao xong. Khong gui .env that vao panel_review."}}\''
 )
+
+LESSON_HOOK_CMD = 'python "{}"'.format(str(_harness_root() / "harness_hook.py").replace("\\", "/"))
 
 
 def _read_md(md_path: Path) -> tuple[str, str] | None:
@@ -279,6 +282,10 @@ def merge_settings_json(claude_dir: Path) -> int:
     if not isinstance(post, list):
         print("[error] settings.json: 'hooks.PostToolUse' phai la array. Sua tay roi chay lai.")
         return 1
+    prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
+    if not isinstance(prompt_hooks, list):
+        print("[error] settings.json: 'hooks.UserPromptSubmit' phai la array. Sua tay roi chay lai.")
+        return 1
 
     # Idempotency: nhận diện theo id (ổn định) hoặc theo command (legacy/không có id)
     _cmd_norm = " ".join(HOOK_REMINDER_CMD.split())  # normalize whitespace cho compare
@@ -294,20 +301,62 @@ def merge_settings_json(claude_dir: Path) -> int:
                         and " ".join((h.get("command") or "").split()) == _cmd_norm
                         for h in sub))
 
+    changed = False
     if any(isinstance(e, dict) and _is_existing_hook(e) for e in post):
         print("[skip] Hook nhac Auto-Pilot da ton tai trong settings.json")
-        return 0
+    else:
+        post.append({
+            "id": HOOK_ID,
+            "matcher": "Edit|Write|NotebookEdit",
+            "hooks": [{
+                "type": "command",
+                "command": HOOK_REMINDER_CMD,
+                "timeout": 10,
+                "suppressOutput": True,
+            }],
+        })
+        changed = True
 
-    post.append({
-        "id": HOOK_ID,
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [{
-            "type": "command",
-            "command": HOOK_REMINDER_CMD,
-            "timeout": 10,
-            "suppressOutput": True,
-        }],
-    })
+    def _is_existing_lesson_hook(e: dict) -> bool:
+        if e.get("id") == LESSON_HOOK_ID:
+            return True
+        sub = e.get("hooks", [])
+        return isinstance(sub, list) and any(
+            isinstance(h, dict) and "harness_hook.py" in str(h.get("command") or "")
+            for h in sub
+        )
+
+    if any(isinstance(e, dict) and _is_existing_lesson_hook(e) for e in post):
+        print("[skip] Hook ghi lesson da ton tai trong settings.json")
+    else:
+        post.append({
+            "id": LESSON_HOOK_ID,
+            "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+            "hooks": [{
+                "type": "command",
+                "command": LESSON_HOOK_CMD,
+                "timeout": 10,
+                "suppressOutput": True,
+            }],
+        })
+        changed = True
+
+    if any(isinstance(e, dict) and _is_existing_lesson_hook(e) for e in prompt_hooks):
+        print("[skip] Hook prompt lesson da ton tai trong settings.json")
+    else:
+        prompt_hooks.append({
+            "id": LESSON_HOOK_ID,
+            "hooks": [{
+                "type": "command",
+                "command": LESSON_HOOK_CMD,
+                "timeout": 10,
+                "suppressOutput": True,
+            }],
+        })
+        changed = True
+
+    if not changed:
+        return 0
 
     # Atomic write với fallback: mkstemp trong cùng dir → os.replace
     # Fallback nếu mkstemp bị policy chặn: ghi thẳng với backup .bak
@@ -336,7 +385,7 @@ def merge_settings_json(claude_dir: Path) -> int:
             print(f"[error] Khong ghi duoc settings.json ({e2}). Kiem tra quyen ghi hoac dung luong dia.")
             return 1
 
-    print("[ok]   Da them hook nhac panel_review vao settings.json")
+    print("[ok]   Da cap nhat hooks agent-harness trong settings.json")
     return 0
 
 
@@ -400,6 +449,67 @@ def configure_codex_mcp(home: Path | None = None) -> None:
         content = content.rstrip() + "\n\n" + block
     path.write_text(content, encoding="utf-8")
     print("[ok]   Da cau hinh Codex MCP agent-harness dung path hien tai")
+
+
+def configure_codex_hooks(home: Path | None = None) -> None:
+    path = _home_dir(home) / ".codex" / "hooks.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    else:
+        data = {}
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = data["hooks"] = {}
+    post = hooks.setdefault("PostToolUse", [])
+    if not isinstance(post, list):
+        post = hooks["PostToolUse"] = []
+    prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
+    if not isinstance(prompt_hooks, list):
+        prompt_hooks = hooks["UserPromptSubmit"] = []
+
+    def _lesson_hook_exists(entries: list) -> bool:
+        return any(
+            isinstance(e, dict)
+            and (
+                e.get("id") == LESSON_HOOK_ID
+                or any(
+                    isinstance(h, dict) and "harness_hook.py" in str(h.get("command") or "")
+                    for h in e.get("hooks", [])
+                )
+            )
+            for e in entries
+        )
+
+    changed = False
+    if not _lesson_hook_exists(post):
+        post.append({
+            "id": LESSON_HOOK_ID,
+            "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+            "hooks": [{
+                "type": "command",
+                "command": LESSON_HOOK_CMD,
+                "timeout": 10,
+            }],
+        })
+        changed = True
+    if not _lesson_hook_exists(prompt_hooks):
+        prompt_hooks.append({
+            "id": LESSON_HOOK_ID,
+            "hooks": [{
+                "type": "command",
+                "command": LESSON_HOOK_CMD,
+                "timeout": 10,
+            }],
+        })
+        changed = True
+    if changed:
+        _write_json(path, data)
+        print("[ok]   Da cau hinh Codex hooks ghi/inject lesson")
+    else:
+        print("[skip] Codex hooks ghi/inject lesson da ton tai")
 
 
 GEMINI_MD_SECTION = """\
@@ -543,6 +653,7 @@ def _merge_all(home: Path | None = None) -> int:
         return err
     configure_claude_mcp(claude_dir)
     configure_codex_mcp(root_home)
+    configure_codex_hooks(root_home)
     gemini_dir = root_home / ".gemini"
     merge_gemini_md(gemini_dir)
     configure_gemini_mcp(gemini_dir)
