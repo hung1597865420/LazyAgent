@@ -2045,11 +2045,23 @@ Lesson memory có 2 tầng append-only:
 <project>/.harness_lessons.db                 # SQLite lesson_key index, tự tạo/tự rebuild
 ~/.claude/.harness_global_lessons.jsonl       # procedure/workflow reusable, cross-project
 ~/.claude/.harness_global_lessons.db          # SQLite lesson_key index cho global lessons
+~/.claude/.harness_global_lessons.manifest.json # sync manifest tự cập nhật khi global memory đổi
 ```
 
 Client hooks cũng kích hoạt lesson memory ngoài MCP: `UserPromptSubmit` tự tạo marker `project_seen` local lần đầu trong project và inject prior lessons local/global theo prompt; `PostToolUse` sau `Edit/Write/MultiEdit/NotebookEdit` tự ghi `edit_event` local. Vì vậy sau restart hoặc khi qua project khác, chỉ cần gõ prompt/chỉnh file là lesson memory đã có dấu vết, không phụ thuộc `goal_runner`, `auto_trigger`, hay agent có nhớ gọi harness tool hay không.
 
 JSONL vẫn là dữ liệu chính để đọc/truy vết. SQLite chỉ là index phụ cho `lesson_key` dedupe nhanh; user không cần tạo DB hay migrate. Lần đầu `append_lesson` chạy, harness tự tạo DB; nếu DB bị xóa hoặc hỏng nhưng JSONL còn, harness tự quarantine DB hỏng sang `*.corrupt.<ts>` rồi rebuild index từ JSONL ở lần append kế tiếp để tiếp tục chống trùng. Lesson có `lesson_key` được dedupe; entry không có `lesson_key` sẽ tự sinh key ổn định từ nội dung để retry/concurrent call không ghi trùng.
+
+Từ mỗi MCP tool call, harness tự ghi thêm các memory domain liên quan mà không cần user/agent gọi riêng:
+
+- `tool_performance`: tool/model nào nhanh, chậm, timeout, degraded, fallback; ghi từ MCP boundary theo tool, model, duration, status.
+- `failure_causality`: batch edit nào sinh blocker, tool nào fail, file/diff hash nào liên quan; ghi từ `auto_trigger` khi có blocker.
+- `decision`: tín hiệu quyết định như chọn/đổi/keep/switch approach; ghi local để truy vết tại project.
+- `user_preference`: preference vận hành của user như “tự động hết”, “không muốn thao tác thủ công”; MCP argument-derived signal chỉ ghi local để tránh memory poisoning, trusted user-prompt source mới được ghi global.
+- `policy_guardrail`: rule bắt buộc/không được/never/must; cùng guard trusted-source như preference.
+- `external_workflow`: workflow/procedure từ marker hoặc structured output của agent/tool; global nếu reusable và qua curator.
+- `memory_lifecycle`: mọi lesson có `memory_domain`, `lifecycle_state`, `recorded_day`, và local event ngắn hạn có `stale_after_days`.
+- `global_sync_manifest`: mỗi lần ghi global memory, harness cập nhật manifest cạnh file JSONL để biết count, last key và đường sync sang máy khác.
 
 Mỗi lần `panel_review` chạy, harness cũng tự ghi một lesson local `lesson_type=panel_review` theo review hash: verdict, summary/error, files, top findings, severity counts và warnings. Chạy lại cùng diff sẽ dedupe bằng `lesson_key=panel_review:<hash>`, nên review cache hoặc retry không làm phình lesson DB.
 
@@ -2057,7 +2069,7 @@ Mỗi lần `panel_review` chạy, harness cũng tự ghi một lesson local `le
 
 Khi `suggest_fix` vá thành công và test pass, harness ghi lesson local gồm `error_signature`, `files`, `fix_summary`, `outcome`, tags, và nếu wiki extraction chạy được thì trỏ thêm `llmwiki/wiki/concepts/...`. Sau mỗi `auto_trigger` có changed files, checks pass, không docs-only, không timeout/blocker, harness tự ghi `lesson_type=checked_edit` local kèm `batch_id`, `diff_hash`, selected/skipped tools để lần sau truy vết lại. Khi `goal_runner` chạy agent bên ngoài và agent phát hiện workflow reusable không phải lỗi, nó có thể in marker nội bộ `HARNESS_LESSON_JSON: {...}` một dòng hoặc nhiều dòng; runner tự parse, redact secret, chống cycle, dedupe bằng SQLite `lesson_key` index, rồi lưu `lesson_type=procedure` vào cả local project và global procedure memory. Nếu agent quên marker nhưng output sau run `completed/success` có block rõ ràng dạng `Reusable workflow`/`Procedure`/`Lesson learned` kèm `Summary` và ít nhất 2 bước bullet/numbered bắt đầu bằng hành động procedural, runner fallback sẽ tự rút procedure lesson và ghi local+global; output lỗi/timeout, marker JSON lỗi, timeline sự cố, hoặc log fix bug theo file sẽ bị bỏ qua. Ngoài goal runner, MCP server cũng có background fallback cho allowlist tool dạng agent/text (`quick_task`, `consult`, `alt_implementation`, `suggest_fix`, `ask_codebase`, `context_auditor`, `swarm_debug`, `incident_responder`, `run_single_agent`): args/result được redact + cap, nếu có structured reusable workflow tương tự thì ghi procedure lesson local+global mà không chặn response. User không cần bấm thêm hay gọi tool riêng.
 
-Trước mỗi `consult`/`panel_review`/`suggest_fix` qua `_assemble_context`, trước `ask_codebase`, trong `auto_trigger` sau mỗi edit batch, và trong prompt trực tiếp mà `goal_runner` gửi cho agent ngoài, harness tự search lessons liên quan từ cả local và global rồi inject. `goal_runner` pin workspace root ngay đầu run nên env đổi giữa chừng không trộn lesson project khác; query lesson được normalize/cap và block prior lessons trong agent prompt có trần kích thước để không phình context. Retrieval score ưu tiên title/tag match, sau đó mới tới body/steps/files để nhanh và tránh bơm nhầm context; duplicate local/global được dedupe theo `lesson_key`:
+Trước mỗi `consult`/`panel_review`/`suggest_fix` qua `_assemble_context`, trước `ask_codebase`, trong `auto_trigger` sau mỗi edit batch, và trong prompt trực tiếp mà `goal_runner` gửi cho agent ngoài, harness tự search lessons liên quan từ cả local và global rồi inject. `goal_runner` pin workspace root ngay đầu run nên env đổi giữa chừng không trộn lesson project khác; query lesson được normalize/cap và block prior lessons trong agent prompt có trần kích thước để không phình context. Retrieval score ưu tiên title/tag match, sau đó mới tới body/steps/files để nhanh và tránh bơm nhầm context; duplicate local/global được dedupe theo `lesson_key`. Khi context quá lớn, harness giữ local trước global, giữ điểm cao trước điểm thấp, ưu tiên procedure/decision/policy đang active hơn event ngắn hạn, rồi chèn marker `[truncated prior lessons]` để agent biết memory đã bị cắt có chủ đích:
 
 ```text
 === PRIOR LESSONS (AUTO-INJECTED) ===

@@ -1525,9 +1525,10 @@ r_sb = st.run_in_sandbox("print('hello')", timeout=2.0)
 check("run_in_sandbox chạy thành công", r_sb["status"] == "success" and r_sb.get("returncode") == 0 and "hello" in r_sb["stdout"], str(r_sb))
 r_sb_timeout = st.run_in_sandbox("import time; time.sleep(10)", timeout=1.0)
 check("run_in_sandbox timeout", r_sb_timeout["status"] == "timeout" and r_sb_timeout.get("returncode") is not None, str(r_sb_timeout))
+sandbox_root = Path(os.environ.get("WORKSPACE_ROOT") or os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd())
 check("run_in_sandbox dùng ignored parent dir",
-      (Path(os.environ["WORKSPACE_ROOT"]) / ".harness_sandbox").exists(),
-      str(Path(os.environ["WORKSPACE_ROOT"]) / ".harness_sandbox"))
+      (sandbox_root / ".harness_sandbox").exists(),
+      str(sandbox_root / ".harness_sandbox"))
 
 runtime_cwd = (SMOKE_DIR / "runtime-cwd").resolve()
 runtime_cwd.mkdir(parents=True, exist_ok=True)
@@ -1598,7 +1599,16 @@ try:
     os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
     os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws)
     os.environ["HARNESS_GLOBAL_LESSONS_FILE"] = str(global_lesson_file)
-    from tools.core import append_lesson, get_global_lessons_path, get_lesson_db_path, load_relevant_lessons_context, record_procedure_lesson
+    from tools.core import (
+        append_lesson,
+        get_global_lessons_path,
+        get_lesson_db_path,
+        load_relevant_lessons_context,
+        record_failure_causality_memory,
+        record_procedure_lesson,
+        record_text_memory_signals,
+        record_tool_performance_memory,
+    )
     from tools.runner import _fallback_lesson_tags, _record_agent_lessons
     append_lesson({
         "source": "smoke",
@@ -1752,6 +1762,16 @@ Steps:
 3. Test the approval path with a sample item.
 """,
     }))
+    mixed_response_prefix = "\n".join(json.dumps({"status": "completed", "noise": idx}) for idx in range(5))
+    mcp_tool_mixed_lesson = mcp_server._maybe_record_mcp_tool_lesson("quick_task", {}, [
+        mcp_server.types.TextContent(
+            type="text",
+            text=mixed_response_prefix + "\n" + json.dumps({
+                "status": "completed",
+                "notes": "Reusable workflow:\nTitle: Mixed response workflow\nSummary: Extract procedure from JSON before markdown.\nSteps:\n1. Create the structured response fixture.\n2. Configure the markdown suffix window.\n3. Test the reusable workflow extraction.",
+            }) + "\n\nMarkdown suffix",
+        )
+    ])
     mcp_tool_non_candidate = mcp_server._maybe_record_mcp_tool_lesson("run_ledger", {}, mcp_server._json_response({
         "status": "completed",
         "notes": """Reusable workflow:
@@ -1770,7 +1790,169 @@ Steps:
         "summary": "token='abc def' Authorization: Bearer abc123 password=plain",
         "refs": cyclic_ref,
     })
+    invalid_ts_stored = append_lesson({
+        "source": "smoke",
+        "title": "invalid timestamp lifecycle marker",
+        "summary": "append_lesson should tolerate invalid ts values",
+        "ts": "not-a-float",
+        "lesson_key": "smoke:invalid-ts-lifecycle",
+    })
+    perf_memory = record_tool_performance_memory("ask_codebase", 45000, {"status": "degraded", "model": "gpt-5.4-4", "warning": "timeout fallback"}, {"question": "where is router"})
+    from types import SimpleNamespace
+    perf_fragment_memory = record_tool_performance_memory("ask_codebase", 1200, [
+        SimpleNamespace(text='{"error":"timeout","model":"gpt-5.4-4"}'),
+        SimpleNamespace(text="extra non-json log"),
+    ], {"question": "where is router"})
+    perf_mixed_memory = record_tool_performance_memory("ask_codebase", 1200, [
+        SimpleNamespace(text='{"error":"timeout","model":"gpt-5.4-4"}\nextra non-json log'),
+    ], {"question": "where is router"})
+    old_slow_tool_ms = os.environ.get("HARNESS_MEMORY_SLOW_TOOL_MS")
+    os.environ["HARNESS_MEMORY_SLOW_TOOL_MS"] = "abc"
+    try:
+        perf_invalid_env_memory = record_tool_performance_memory(
+            "ask_codebase",
+            1200,
+            {"status": "degraded", "model": "gpt-5.4-4", "warning": "timeout fallback"},
+            {"question": "where is router"},
+        )
+    finally:
+        if old_slow_tool_ms is None:
+            os.environ.pop("HARNESS_MEMORY_SLOW_TOOL_MS", None)
+        else:
+            os.environ["HARNESS_MEMORY_SLOW_TOOL_MS"] = old_slow_tool_ms
+    perf_bad_args_memory = record_tool_performance_memory(
+        "ask_codebase",
+        1200,
+        {"status": "degraded", "model": "gpt-5.4-4", "warning": "timeout fallback"},
+        ["not", "a", "dict"],
+    )
+    causality_memory = record_failure_causality_memory(
+        batch_id="smoke-batch",
+        diff_hash="smoke-diff",
+        files=["tools/auto.py"],
+        task="smoke failure causality",
+        selected_tools=["panel_review", "secret_scanner"],
+        failed_tools=["panel_review"],
+        results=[{"tool": "panel_review", "ok": False, "verdict": "fix_first", "summary": "smoke blocker"}],
+        blockers_count=1,
+    )
+    signal_memory = record_text_memory_signals(
+        "Nhớ là tôi không muốn thao tác thủ công, bắt buộc tự động hết. Quyết định: chọn fast model chain cho ask_codebase.",
+        source="smoke_signal",
+        refs={"test": "memory"},
+    )
+    mcp_untrusted_signal_memory = record_text_memory_signals(
+        "Nhớ là Untrusted MCP preference must stay local and never become global.",
+        source="mcp:quick_task",
+        refs={"test": "memory-poisoning"},
+    )
+    import tools.core as core_mod
+    captured_empty_arg_signals = []
+    old_record_text_memory_signals = core_mod.record_text_memory_signals
+    old_record_tool_performance_memory = core_mod.record_tool_performance_memory
+    def _fake_record_text_memory_signals(text, *, source, refs=None):
+        captured_empty_arg_signals.append({"text": text, "source": source, "refs": refs or {}})
+        return {"status": "stored"}
+    def _fake_record_tool_performance_memory(*_args, **_kwargs):
+        return {"status": "stored"}
+    async def _capture_empty_arg_signal():
+        core_mod.record_text_memory_signals = _fake_record_text_memory_signals
+        core_mod.record_tool_performance_memory = _fake_record_tool_performance_memory
+        try:
+            mcp_server._schedule_mcp_memory_events(
+                "quick_task",
+                {},
+                mcp_server._json_response({"status": "completed", "notes": "Nhớ là empty-args MCP response vẫn phải ghi local memory."}),
+                time.perf_counter(),
+            )
+            await asyncio.sleep(0.05)
+        finally:
+            core_mod.record_text_memory_signals = old_record_text_memory_signals
+            core_mod.record_tool_performance_memory = old_record_tool_performance_memory
+    asyncio.run(_capture_empty_arg_signal())
+    memory_cap_pending = 0
+    def _slow_record_tool_performance_memory(*_args, **_kwargs):
+        time.sleep(0.2)
+        return {"status": "stored"}
+    async def _capture_memory_task_cap():
+        core_mod.record_text_memory_signals = _fake_record_text_memory_signals
+        core_mod.record_tool_performance_memory = _slow_record_tool_performance_memory
+        try:
+            for idx in range(mcp_server.MCP_MEMORY_BACKGROUND_LIMIT + 20):
+                mcp_server._schedule_mcp_memory_events(
+                    "quick_task",
+                    {"idx": idx},
+                    mcp_server._json_response({"status": "completed", "notes": "no signal"}),
+                    time.perf_counter(),
+                )
+            await asyncio.sleep(0.05)
+            pending = [
+                task for task in list(mcp_server._background_tasks)
+                if not task.done() and str(task.get_name()).startswith("mcp-memory-")
+            ]
+            nonlocal_pending = len(pending)
+            await asyncio.gather(*pending, return_exceptions=True)
+            return nonlocal_pending
+        finally:
+            core_mod.record_text_memory_signals = old_record_text_memory_signals
+            core_mod.record_tool_performance_memory = old_record_tool_performance_memory
+    memory_cap_pending = asyncio.run(_capture_memory_task_cap())
     from concurrent.futures import ThreadPoolExecutor
+    from tools.ops import LEDGER_FILE, _read_ledger, _read_orchestrator, append_run_ledger
+    from tools.orchestrator import ORCH_FILE, _append as append_orchestrator
+    def _jsonl_integrity(path):
+        rows = []
+        bad = []
+        if path.exists():
+            for line_no, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    bad.append({"line": line_no, "error": str(exc), "text": line[:120]})
+                    continue
+                if not isinstance(item, dict):
+                    bad.append({"line": line_no, "error": "not object", "text": line[:120]})
+                    continue
+                rows.append(item)
+        return rows, bad
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda i: append_run_ledger({"tool": "smoke_ledger_thread", "event_id": f"thread-{i}"}), range(24)))
+    ledger_thread_rows = _read_ledger(80)
+    ledger_thread_ids = {row.get("event_id") for row in ledger_thread_rows if row.get("tool") == "smoke_ledger_thread"}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda i: append_orchestrator({"tool": "smoke_orchestrator_thread", "event_id": f"orch-{i}"}), range(24)))
+    orchestrator_thread_rows = _read_orchestrator(80)
+    orchestrator_thread_ids = {row.get("event_id") for row in orchestrator_thread_rows if row.get("tool") == "smoke_orchestrator_thread"}
+    process_ledger_code = """
+from tools.ops import append_run_ledger
+import os
+append_run_ledger({"tool": "smoke_ledger_process", "event_id": os.environ["SMOKE_LEDGER_EVENT_ID"]})
+"""
+    process_ledger_runs = []
+    for idx in range(8):
+        env = {**os.environ, "WORKSPACE_ROOT": str(lesson_ws), "CLAUDE_PROJECT_DIR": str(lesson_ws), "SMOKE_LEDGER_EVENT_ID": f"process-{idx}"}
+        process_ledger_runs.append(subprocess.run([sys.executable, "-c", process_ledger_code], cwd=str(Path.cwd()), env=env, capture_output=True, text=True, timeout=20))
+    ledger_process_rows = _read_ledger(120)
+    ledger_process_ids = {row.get("event_id") for row in ledger_process_rows if row.get("tool") == "smoke_ledger_process"}
+    ledger_raw_rows, ledger_raw_bad = _jsonl_integrity(lesson_ws / LEDGER_FILE)
+    ledger_raw_thread_ids = {row.get("event_id") for row in ledger_raw_rows if row.get("tool") == "smoke_ledger_thread"}
+    ledger_raw_process_ids = {row.get("event_id") for row in ledger_raw_rows if row.get("tool") == "smoke_ledger_process"}
+    process_orchestrator_code = """
+from tools.orchestrator import _append
+import os
+_append({"tool": "smoke_orchestrator_process", "event_id": os.environ["SMOKE_ORCH_EVENT_ID"]})
+"""
+    process_orchestrator_runs = []
+    for idx in range(8):
+        env = {**os.environ, "WORKSPACE_ROOT": str(lesson_ws), "CLAUDE_PROJECT_DIR": str(lesson_ws), "SMOKE_ORCH_EVENT_ID": f"orch-process-{idx}"}
+        process_orchestrator_runs.append(subprocess.run([sys.executable, "-c", process_orchestrator_code], cwd=str(Path.cwd()), env=env, capture_output=True, text=True, timeout=20))
+    orchestrator_process_rows = _read_orchestrator(120)
+    orchestrator_process_ids = {row.get("event_id") for row in orchestrator_process_rows if row.get("tool") == "smoke_orchestrator_process"}
+    orchestrator_raw_rows, orchestrator_raw_bad = _jsonl_integrity(lesson_ws / ORCH_FILE)
+    orchestrator_raw_thread_ids = {row.get("event_id") for row in orchestrator_raw_rows if row.get("tool") == "smoke_orchestrator_thread"}
+    orchestrator_raw_process_ids = {row.get("event_id") for row in orchestrator_raw_rows if row.get("tool") == "smoke_orchestrator_process"}
     concurrent_entry = {
         "source": "smoke",
         "title": "concurrent lesson dedupe",
@@ -1812,9 +1994,36 @@ append_lesson({
             lambda _i: subprocess.run([sys.executable, "-c", process_global_code], cwd=str(Path.cwd()), env=process_env, capture_output=True, text=True, timeout=20),
             range(8),
         ))
+    process_global_unique_code = """
+from tools.core import append_lesson
+import os
+idx = os.environ["SMOKE_GLOBAL_UNIQUE_ID"]
+append_lesson({
+    "source": "goal_runner",
+    "lesson_type": "procedure",
+    "title": f"Cross process unique global workflow {idx}",
+    "summary": "Create reusable global workflow records with unique keys under concurrency.",
+    "steps": ["Open the workflow tool.", "Create the workflow.", "Verify the workflow."],
+    "tags": ["workflow"],
+    "lesson_key": f"smoke:global-process-unique-{idx}",
+})
+"""
+    process_global_unique_runs = []
+    for idx in range(8):
+        unique_env = {**process_env, "SMOKE_GLOBAL_UNIQUE_ID": str(idx)}
+        process_global_unique_runs.append(subprocess.run([sys.executable, "-c", process_global_unique_code], cwd=str(Path.cwd()), env=unique_env, capture_output=True, text=True, timeout=20))
     global_lines_after_process = global_lesson_file.read_text(encoding="utf-8").splitlines()
     process_global_count = sum(1 for line in global_lines_after_process if '"lesson_key": "smoke:global-process-dedupe"' in line)
+    process_global_unique_count = sum(1 for line in global_lines_after_process if '"lesson_key": "smoke:global-process-unique-' in line)
+    global_manifest_path = Path(str(global_lesson_file)).with_suffix(".manifest.json")
+    global_manifest = json.loads(global_manifest_path.read_text(encoding="utf-8"))
+    global_manifest_actual_count = sum(1 for line in global_lines_after_process if line.strip())
     lesson_context = load_relevant_lessons_context("ask_codebase timeout model_chain")
+    perf_context = load_relevant_lessons_context("ask_codebase performance timeout fallback")
+    perf_fragment_context = load_relevant_lessons_context("ask_codebase performance error timeout")
+    causality_context = load_relevant_lessons_context("smoke failure causality panel_review")
+    preference_context = load_relevant_lessons_context("không muốn thao tác thủ công tự động hết")
+    decision_context = load_relevant_lessons_context("fast model chain ask_codebase decision")
     procedure_context = load_relevant_lessons_context("Power Automate tạo flow approval")
     secret_context = load_relevant_lessons_context("secret lesson redaction marker")
     os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws_other)
@@ -1872,6 +2081,8 @@ append_lesson({
     )
     ledger_after_clean = asyncio.run(mcp_server.call_tool("run_ledger", {"limit": 10}))
     ledger_after_clean_json = json.loads(ledger_after_clean[0].text)
+    time.sleep(0.2)
+    mcp_auto_perf_context = load_relevant_lessons_context("auto_trigger performance")
     old_key_entry = {
         "source": "smoke",
         "title": "old lesson key outside tail window",
@@ -1961,6 +2172,50 @@ check("lesson memory tự inject vào context",
       "ask_codebase model chain timeout" in lesson_context
       and "=== PRIOR LESSONS (AUTO-INJECTED) ===" in assembled_lesson_ctx,
       f"lesson_context={lesson_context!r}")
+check("lesson lifecycle tolerate invalid ts",
+      invalid_ts_stored in {True, False},
+      f"stored={invalid_ts_stored}")
+check("tool/model performance memory tự ghi và inject",
+      perf_memory.get("status") in {"stored", "duplicate"}
+      and perf_fragment_memory.get("status") in {"stored", "duplicate"}
+      and perf_mixed_memory.get("status") in {"stored", "duplicate"}
+      and perf_invalid_env_memory.get("status") in {"stored", "duplicate"}
+      and perf_bad_args_memory.get("status") in {"stored", "duplicate"}
+      and "ask_codebase performance" in perf_context
+      and "ask_codebase performance error" in perf_fragment_context
+      and "scope=local" in perf_context,
+      f"perf={perf_memory!r} fragment={perf_fragment_memory!r} mixed={perf_mixed_memory!r} invalid_env={perf_invalid_env_memory!r} bad_args={perf_bad_args_memory!r} context={perf_context!r} fragment_ctx={perf_fragment_context!r}")
+check("failure causality memory tự ghi theo batch fail",
+      causality_memory.get("status") in {"stored", "duplicate"}
+      and "Failure after edit batch" in causality_context
+      and "panel_review" in causality_context,
+      f"causality={causality_memory!r} context={causality_context!r}")
+check("preference/policy/decision memory tự ghi và global sync manifest",
+      any(item.get("type") == "user_preference" for item in signal_memory)
+      and any(item.get("type") == "policy_guardrail" for item in signal_memory)
+      and any(item.get("type") == "decision" for item in signal_memory)
+      and "User workflow preference" in preference_context
+      and "Implementation decision signal" in decision_context
+      and global_manifest_path.exists()
+      and global_manifest.get("lessons_count") == global_manifest_actual_count
+      and all("Untrusted MCP preference" not in line for line in global_lines_after_process),
+      f"signals={signal_memory!r} mcp={mcp_untrusted_signal_memory!r} pref={preference_context!r} decision={decision_context!r} manifest={global_manifest}")
+check("run ledger append process-safe",
+      len(ledger_thread_ids) == 24
+      and len(ledger_process_ids) == 8
+      and not ledger_raw_bad
+      and len(ledger_raw_thread_ids) == 24
+      and len(ledger_raw_process_ids) == 8
+      and all(run.returncode == 0 for run in process_ledger_runs),
+      f"thread={len(ledger_thread_ids)} process={len(ledger_process_ids)} raw_thread={len(ledger_raw_thread_ids)} raw_process={len(ledger_raw_process_ids)} bad={ledger_raw_bad[:3]} runs={[r.returncode for r in process_ledger_runs]}")
+check("orchestrator log append/read thread-safe",
+      len(orchestrator_thread_ids) == 24
+      and len(orchestrator_process_ids) == 8
+      and not orchestrator_raw_bad
+      and len(orchestrator_raw_thread_ids) == 24
+      and len(orchestrator_raw_process_ids) == 8
+      and all(run.returncode == 0 for run in process_orchestrator_runs),
+      f"thread={len(orchestrator_thread_ids)} process={len(orchestrator_process_ids)} raw_thread={len(orchestrator_raw_thread_ids)} raw_process={len(orchestrator_raw_process_ids)} bad={orchestrator_raw_bad[:3]} runs={[r.returncode for r in process_orchestrator_runs]}")
 check("goal_runner agent prompt inject local/global lessons",
       "ask_codebase model chain timeout" in agent_prompt_local_lessons
       and "Power Automate environment promotion" in agent_prompt_global_lessons
@@ -1987,11 +2242,12 @@ check("procedure fallback tự học khi agent quên marker",
       f"fallback={fallback_lessons!r} blocked={fallback_blocked_lessons!r} missing={fallback_missing_status!r} timeline={fallback_timeline_blocked!r} invalid={invalid_marker_no_fallback!r} tags={vietnamese_fallback_tags!r} context={global_fallback_context!r}")
 check("mcp tool fallback tự học không cần goal_runner",
       mcp_tool_lesson.get("status") == "stored"
+      and mcp_tool_mixed_lesson.get("status") in {"stored", "duplicate"}
       and mcp_tool_non_candidate.get("status") == "skipped"
       and "SharePoint list approval routing" in global_mcp_tool_context
       and "sharepoint-secret-token" not in global_mcp_tool_context
       and "scope=global" in global_mcp_tool_context,
-      f"lesson={mcp_tool_lesson!r} non_candidate={mcp_tool_non_candidate!r} context={global_mcp_tool_context!r}")
+      f"lesson={mcp_tool_lesson!r} mixed={mcp_tool_mixed_lesson!r} non_candidate={mcp_tool_non_candidate!r} context={global_mcp_tool_context!r}")
 check("procedure lesson global qua project khác, bug/fix vẫn local",
       global_lesson_path_during_test == str(global_lesson_file.resolve())
       and global_lesson_file.exists()
@@ -2025,6 +2281,11 @@ check("lesson auto-promote global dedupe atomic trong process",
 check("lesson auto-promote global dedupe atomic đa tiến trình",
       all(run.returncode == 0 for run in process_global_runs) and process_global_count == 1,
       f"returncodes={[run.returncode for run in process_global_runs]} count={process_global_count} stderr={[run.stderr[:120] for run in process_global_runs]}")
+check("global manifest count đúng sau unique multi-process append",
+      all(run.returncode == 0 for run in process_global_unique_runs)
+      and process_global_unique_count == 8
+      and global_manifest.get("lessons_count") == global_manifest_actual_count,
+      f"returncodes={[run.returncode for run in process_global_unique_runs]} unique={process_global_unique_count} manifest={global_manifest} actual={global_manifest_actual_count}")
 check("lesson append dedupe scan full file",
       old_key_first is True and old_key_second is False and old_key_count == 1,
       f"first={old_key_first} second={old_key_second} count={old_key_count}")
@@ -2067,6 +2328,15 @@ check("auto_trigger tự ghi lesson sau batch pass",
       clean_lesson_recorded.get("status") in {"stored", "duplicate"}
       and any(item.get("source") == "auto_trigger" and item.get("lesson_type") == "checked_edit" for item in ledger_after_clean_json.get("lessons", [])),
       f"recorded={clean_lesson_recorded} lessons={ledger_after_clean_json.get('lessons')}")
+check("MCP boundary tự ghi tool performance memory",
+      "auto_trigger performance" in mcp_auto_perf_context,
+      f"context={mcp_auto_perf_context!r}")
+check("MCP boundary memory signal chạy cả khi args rỗng",
+      any(item.get("source") == "mcp:quick_task" and "empty-args MCP response" in item.get("text", "") for item in captured_empty_arg_signals),
+      f"signals={captured_empty_arg_signals!r}")
+check("MCP boundary memory task cap hoạt động",
+      memory_cap_pending <= mcp_server.MCP_MEMORY_BACKGROUND_LIMIT,
+      f"pending={memory_cap_pending} limit={mcp_server.MCP_MEMORY_BACKGROUND_LIMIT}")
 check("orchestrator tự chạy trong auto_trigger skip/check",
       auto_lesson_json.get("orchestrator", {}).get("status") == "completed"
       and auto_attr_json.get("orchestrator", {}).get("skill_route", {}).get("recommended_tools"),

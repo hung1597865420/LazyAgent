@@ -707,6 +707,20 @@ async def auto_trigger(
         timeout_budget_exceeded=bool(pending),
     )
     try:
+        from .core import record_failure_causality_memory
+        causality_recorded = record_failure_causality_memory(
+            batch_id=batch_id,
+            diff_hash=diff_hash,
+            files=files,
+            task=task,
+            selected_tools=selected,
+            failed_tools=failed_tools,
+            results=results,
+            blockers_count=len(blockers),
+        )
+    except Exception:
+        causality_recorded = {"status": "skipped", "reason": "record_failed"}
+    try:
         from .ops import append_run_ledger
         from .orchestrator import orchestrate
         orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode, results={"results": results, "blockers_count": len(blockers)})
@@ -726,6 +740,7 @@ async def auto_trigger(
             "blockers_count": len(blockers),
             "prior_lessons": prior_lessons,
             "lessons_recorded": lessons_recorded,
+            "causality_recorded": causality_recorded,
             "orchestrator": orchestrator,
         })
     except Exception:
@@ -751,6 +766,7 @@ async def auto_trigger(
         "failed_tools": failed_tools,
         "prior_lessons": prior_lessons,
         "lessons_recorded": lessons_recorded,
+        "causality_recorded": causality_recorded,
         "orchestrator": orchestrator,
         "warnings": warnings,
     }

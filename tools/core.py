@@ -30,7 +30,11 @@ _LESSON_LOCK = threading.RLock()
 _LESSON_PROMOTION_LOCK = threading.RLock()
 _LESSON_PROMOTION_LOCAL_TYPES = {"procedure", "workflow", "procedure_candidate"}
 _LESSON_NOISE_TYPES = {"edit_event", "project_seen"}
-_LESSON_LOCAL_ONLY_TYPES = {"checked_edit", "panel_review", "fix", "bug_fix"}
+_LESSON_LOCAL_ONLY_TYPES = {
+    "checked_edit", "panel_review", "fix", "bug_fix", "tool_performance",
+    "failure_causality", "decision", "user_preference", "policy_guardrail",
+    "external_workflow", "memory_lifecycle",
+}
 _LESSON_AUTO_PROMOTE_SOURCES = {"procedure", "goal_runner", "goal_runner_fallback", "mcp_tool_fallback"}
 _LESSON_ACTION_WORDS = {
     "add", "build", "choose", "configure", "create", "deploy", "export", "import",
@@ -47,6 +51,12 @@ _LESSON_GLOBAL_REJECT_PATTERNS = (
     r"(?i)[a-z]:\\users\\|/users/|/home/",
 )
 _LESSON_CURATOR_AZURE_ROLES = (AgentRole.TESTER, AgentRole.SECURITY, AgentRole.REVIEWER)
+_MEMORY_SIGNAL_GLOBAL_TYPES = {"user_preference", "policy_guardrail"}
+_MEMORY_LLM_TOOLS = {
+    "ask_codebase", "panel_review", "consult", "alt_implementation", "suggest_fix",
+    "quick_task", "lesson_curator", "goal_runner", "auto_trigger", "prod_readiness_gate",
+    "context_auditor", "swarm_debug", "incident_responder", "run_single_agent",
+}
 
 # ── Helper functions for CLI execution and LLM analysis ────────────────────────
 
@@ -383,6 +393,12 @@ def _write_lesson_jsonl(path: Path, payload: dict) -> None:
             _log.warning("Lesson fsync failed; keeping flushed JSONL write: %s", e)
 
 
+def _count_jsonl_lessons_unlocked(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+
+
 def _append_lesson_jsonl_fallback_unlocked(path: Path, payload: dict, lesson_key: str) -> bool:
     if lesson_key and _lesson_key_exists_jsonl(path, lesson_key):
         return False
@@ -539,6 +555,83 @@ def _global_lesson_payload(entry: dict, decision: dict) -> dict:
         "curation": decision,
         "lesson_key": lesson_key,
     }
+
+
+def _lesson_memory_domain(payload: dict) -> str:
+    lesson_type = str(payload.get("lesson_type") or "").strip().lower()
+    source = str(payload.get("source") or "").strip().lower()
+    if lesson_type in {"procedure", "workflow", "procedure_candidate"}:
+        return "procedure"
+    if lesson_type in {"tool_performance"}:
+        return "tool_performance"
+    if lesson_type in {"failure_causality"}:
+        return "failure_causality"
+    if lesson_type in {"decision"}:
+        return "decision"
+    if lesson_type in {"user_preference"}:
+        return "preference"
+    if lesson_type in {"policy_guardrail"}:
+        return "policy"
+    if lesson_type in {"external_workflow"} or source in {"goal_runner_fallback", "mcp_tool_fallback"}:
+        return "external_workflow"
+    return "lesson"
+
+
+def _apply_lesson_lifecycle(payload: dict, *, global_scope: bool) -> dict:
+    lesson_type = str(payload.get("lesson_type") or "").strip().lower()
+    recorded_ts = _safe_lesson_ts(payload.get("ts"))
+    payload["ts"] = recorded_ts
+    payload.setdefault("memory_domain", _lesson_memory_domain(payload))
+    payload.setdefault("lifecycle_state", "active")
+    payload.setdefault("recorded_day", time.strftime("%Y-%m-%d", time.gmtime(recorded_ts)))
+    payload.setdefault("scope", "global" if global_scope else "local")
+    if not global_scope and lesson_type in {"tool_performance", "checked_edit"}:
+        payload.setdefault("stale_after_days", 30)
+    elif not global_scope and lesson_type in {"failure_causality", "panel_review"}:
+        payload.setdefault("stale_after_days", 90)
+    return payload
+
+
+def _safe_lesson_ts(value) -> float:
+    try:
+        recorded_ts = float(value or time.time())
+        if not math.isfinite(recorded_ts) or recorded_ts < 0:
+            recorded_ts = time.time()
+    except (TypeError, ValueError, OverflowError):
+        recorded_ts = time.time()
+    return recorded_ts
+
+
+def _write_global_sync_manifest(path: Path, lesson_key: str, lessons_count: int | None = None) -> bool:
+    manifest = path.with_suffix(".manifest.json")
+    try:
+        with _lesson_file_lock(manifest):
+            if lessons_count is None:
+                count = _count_jsonl_lessons_unlocked(path)
+            else:
+                count = max(0, int(lessons_count))
+            payload = {
+                "version": 1,
+                "updated_ts": time.time(),
+                "updated_day": time.strftime("%Y-%m-%d", time.gmtime()),
+                "lessons_file": str(path),
+                "lessons_count": count,
+                "last_lesson_key": lesson_key,
+                "sync_hint": "copy this JSONL plus .db/.manifest to another machine after reviewing for secrets",
+            }
+            tmp = manifest.with_name(f"{manifest.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+            with tmp.open("w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n")
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, manifest)
+        return True
+    except OSError as exc:
+        _log.warning("Global lesson manifest update failed for %s: %s", manifest, exc)
+        return False
 
 
 def _lesson_curator_static(
@@ -778,6 +871,7 @@ def _auto_promote_lesson(payload: dict) -> bool:
 
 def append_lesson(entry: dict, *, global_scope: bool = False) -> bool:
     payload = {"ts": time.time(), **_redact_lesson_value(entry)}
+    payload = _apply_lesson_lifecycle(payload, global_scope=global_scope)
     if not global_scope and _lesson_should_curate(payload):
         payload.setdefault("curation", curate_lesson(payload))
     path = Path(get_global_lessons_path() if global_scope else get_runtime_path(LESSON_INDEX_FILE))
@@ -805,6 +899,9 @@ def append_lesson(entry: dict, *, global_scope: bool = False) -> bool:
                                 return False
                             _write_lesson_jsonl(path, payload)
                             conn.commit()
+                            if global_scope:
+                                count = conn.execute("SELECT COUNT(*) FROM lesson_keys").fetchone()[0]
+                                _write_global_sync_manifest(path, lesson_key, lessons_count=count)
                             break
                         except sqlite3.OperationalError as exc:
                             if conn is not None:
@@ -835,6 +932,8 @@ def append_lesson(entry: dict, *, global_scope: bool = False) -> bool:
                     stored = _append_lesson_jsonl_fallback_unlocked(path, payload, lesson_key)
                     if stored and not global_scope:
                         _auto_promote_lesson(payload)
+                    elif stored and global_scope:
+                        _write_global_sync_manifest(path, lesson_key, lessons_count=_count_jsonl_lessons_unlocked(path))
                     return stored
                 finally:
                     if conn is not None:
@@ -894,6 +993,224 @@ def record_procedure_lesson(
         "title": title,
         "stored": {"local": local_stored, "global": global_stored},
     }
+
+
+def _memory_digest(*parts: object, n: int = 16) -> str:
+    return hashlib.sha256(json.dumps(parts, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()[:n]
+
+
+def _memory_text(value, depth: int = 0) -> str:
+    if depth > 4:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n".join(_memory_text(v, depth + 1) for v in value.values())
+    if isinstance(value, list):
+        return "\n".join(_memory_text(v, depth + 1) for v in value[:40])
+    if hasattr(value, "text"):
+        return str(getattr(value, "text") or "")
+    return str(value or "")
+
+
+def _memory_response_json(response) -> dict:
+    objects = _memory_response_json_objects(response)
+    merged: dict = {}
+    for item in objects:
+        merged.update(item)
+    return merged
+
+
+def _memory_response_json_objects(response) -> list[dict]:
+    if isinstance(response, dict):
+        return [response]
+    candidates = response if isinstance(response, list) else [response]
+    objects: list[dict] = []
+    for candidate in candidates:
+        raw = _memory_text(candidate).strip()
+        if not raw:
+            continue
+        decoder = json.JSONDecoder()
+        try:
+            data = json.loads(raw)
+            objects.extend(_memory_dict_objects(data))
+            continue
+        except json.JSONDecodeError:
+            pass
+        idx = 0
+        while idx < len(raw) and len(objects) < 20:
+            starts = [pos for pos in (raw.find("{", idx), raw.find("[", idx)) if pos >= 0]
+            if not starts:
+                break
+            start = min(starts)
+            try:
+                data, end = decoder.raw_decode(raw[start:])
+            except json.JSONDecodeError:
+                idx = start + 1
+                continue
+            objects.extend(_memory_dict_objects(data))
+            idx = start + max(end, 1)
+    return objects
+
+
+def _memory_dict_objects(value) -> list[dict]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _memory_status_from_response(objects: list[dict], text: str) -> str:
+    for item in objects:
+        if item.get("error"):
+            return "error"
+    for item in objects:
+        verdict = str(item.get("verdict") or "").lower()
+        if verdict == "fix_first":
+            return "fix_first"
+    for item in objects:
+        status = str(item.get("status") or "").lower()
+        if status in {"error", "failed", "degraded", "cancelled", "timeout"}:
+            return status
+    if any(word in text for word in ("timeout", "rate-limit", "degraded", "fallback", "fix_first", "cancelled")):
+        return "degraded"
+    return "success"
+
+
+def _memory_find_model(value) -> str:
+    if isinstance(value, dict):
+        for key in ("model", "model_used", "deployment"):
+            if value.get(key):
+                return str(value.get(key))[:80]
+        for key in ("panel", "azure_votes", "model_attempts"):
+            found = _memory_find_model(value.get(key))
+            if found:
+                return found
+        for item in value.values():
+            found = _memory_find_model(item)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _memory_find_model(item)
+            if found:
+                return found
+    return ""
+
+
+def record_tool_performance_memory(tool: str, duration_ms: int, response=None, arguments: dict | None = None) -> dict:
+    tool = str(tool or "unknown").split("/", 1)[-1][:80]
+    try:
+        duration_ms = max(0, int(duration_ms))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    objects = _memory_response_json_objects(response)
+    data = _memory_response_json(response)
+    text = _memory_text(response).lower()
+    status = _memory_status_from_response(objects, text)[:60]
+    model = _memory_find_model(objects) or _memory_find_model(data)
+    errorish = any(word in text for word in ("timeout", "rate", "degraded", "fallback", "error", "fix_first", "cancelled"))
+    try:
+        slow_ms = int(os.getenv("HARNESS_MEMORY_SLOW_TOOL_MS", "30000") or "30000")
+    except (TypeError, ValueError):
+        _log.debug("Invalid HARNESS_MEMORY_SLOW_TOOL_MS; using default 30000")
+        slow_ms = 30000
+    statusish = str(status or "").lower()
+    should_store = errorish or statusish in {"error", "degraded", "fix_first", "cancelled"} or duration_ms >= slow_ms
+    if not should_store:
+        return {"status": "skipped", "reason": "not performance-significant"}
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    bucket = "slow" if duration_ms >= slow_ms else ("error" if errorish or status in {"error", "degraded", "fix_first"} else "ok")
+    key = f"tool_perf:{tool}:{bucket}:{model or 'no-model'}:{day}"
+    safe_arguments = arguments if isinstance(arguments, dict) else {}
+    stored = append_lesson({
+        "source": "mcp_runtime",
+        "lesson_type": "tool_performance",
+        "title": f"{tool} performance {bucket}",
+        "outcome": status,
+        "summary": f"{tool} finished with status={status}, duration_ms={duration_ms}, model={model or 'unknown'}.",
+        "tool": tool,
+        "model": model,
+        "duration_ms": duration_ms,
+        "status": status,
+        "refs": {"args_keys": sorted(str(k)[:80] for k in safe_arguments.keys())},
+        "tags": ["tool-performance", tool, bucket],
+        "lesson_key": key,
+    })
+    return {"status": "stored" if stored else "duplicate", "lesson_key": key}
+
+
+def record_failure_causality_memory(
+    *,
+    batch_id: str,
+    diff_hash: str,
+    files: list[str],
+    task: str,
+    selected_tools: list[str],
+    failed_tools: list[str],
+    results: list[dict],
+    blockers_count: int,
+) -> dict:
+    if blockers_count <= 0 and not failed_tools:
+        return {"status": "skipped", "reason": "no failure"}
+    top_failures = []
+    for item in results[:20]:
+        if isinstance(item, dict) and (item.get("ok") is False or item.get("error") or str(item.get("verdict", "")).lower() == "fix_first"):
+            top_failures.append({
+                "tool": item.get("tool"),
+                "error": item.get("error"),
+                "verdict": item.get("verdict"),
+                "summary": str(item.get("summary") or item.get("message") or item.get("detail") or "")[:300],
+            })
+    key = f"failure:{diff_hash or _memory_digest(files, task)}:{_memory_digest(failed_tools, top_failures, n=10)}"
+    stored = append_lesson({
+        "source": "auto_trigger",
+        "lesson_type": "failure_causality",
+        "title": f"Failure after edit batch {batch_id}",
+        "outcome": "blocked",
+        "summary": f"Batch touched {len(files)} files; blockers={blockers_count}; failed_tools={', '.join(failed_tools[:8])}.",
+        "files": files[:20],
+        "task": task[:500],
+        "diff_hash": diff_hash,
+        "selected_tools": selected_tools[:30],
+        "failed_tools": failed_tools[:20],
+        "top_failures": top_failures[:8],
+        "tags": ["failure-causality", "edit-batch"],
+        "lesson_key": key,
+    })
+    return {"status": "stored" if stored else "duplicate", "lesson_key": key}
+
+
+def record_text_memory_signals(text: str, *, source: str = "mcp_call", refs: dict | None = None) -> list[dict]:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) < 12:
+        return []
+    low = text.lower()
+    records: list[dict] = []
+    trusted_global_source = source in {"user_prompt", "explicit_preference", "client_user_prompt", "smoke_signal"} or source.startswith("trusted:")
+
+    def store(kind: str, title: str, summary: str, global_scope: bool) -> None:
+        digest = _memory_digest(kind, title.lower(), summary.lower())
+        stored = append_lesson({
+            "source": source,
+            "lesson_type": kind,
+            "title": title[:160],
+            "outcome": "learned",
+            "summary": summary[:900],
+            "refs": refs or {},
+            "tags": [kind.replace("_", "-"), "auto-memory"],
+            "lesson_key": f"{kind}:{digest}",
+        }, global_scope=global_scope)
+        records.append({"type": kind, "status": "stored" if stored else "duplicate", "lesson_key": f"{kind}:{digest}"})
+
+    if any(p in low for p in ("tôi muốn", "toi muon", "không muốn", "khong muon", "nhớ là", "nho la", "ưu tiên", "uu tien", "đừng", "dung ")) and len(text) <= 1200:
+        store("user_preference", "User workflow preference", text, trusted_global_source)
+    if any(p in low for p in ("bắt buộc", "bat buoc", "không được", "khong duoc", "must ", "never ", "always ", "policy", "guardrail")) and len(text) <= 1200:
+        store("policy_guardrail", "Harness policy guardrail", text, trusted_global_source)
+    if any(p in low for p in ("decision:", "quyết định", "quyet dinh", "chọn ", "chon ", "đổi ", "doi ", "keep ", "switch ")) and len(text) <= 1600:
+        store("decision", "Implementation decision signal", text, False)
+    return records
 
 
 def _read_lessons_from(path: Path, limit: int, scope: str) -> list[dict]:

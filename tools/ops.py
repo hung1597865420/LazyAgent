@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .core import LESSON_INDEX_FILE, _assemble_context, _get_active_workspace, _run_cmd_safe, read_lessons
+from .core import LESSON_INDEX_FILE, _assemble_context, _get_active_workspace, _lesson_file_lock, _run_cmd_safe, get_global_lessons_path, read_lessons
 from .orchestrator import ORCH_FILE, orchestrate
 from .goal import load_goal_state
 from .runner import RUNNER_LOCK_FILE, _read_lock
@@ -53,8 +53,16 @@ def append_run_ledger(entry: dict[str, Any]) -> None:
     payload = {"ts": time.time(), **_redact_value(entry)}
     path = _root() / LEDGER_FILE
     try:
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+        with _lesson_file_lock(path):
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
     except OSError:
         pass
 
@@ -66,7 +74,8 @@ def _read_ledger(limit: int = 20) -> list[dict[str, Any]]:
     rows = []
     try:
         wanted = max(1, min(200, int(limit)))
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with _lesson_file_lock(path):
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except (OSError, ValueError):
         return []
     for line in reversed(lines):
@@ -87,7 +96,8 @@ def _read_orchestrator(limit: int = 20) -> list[dict[str, Any]]:
         return []
     try:
         wanted = max(1, min(200, int(limit)))
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with _lesson_file_lock(path):
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except (OSError, ValueError):
         return []
     rows = []
@@ -115,6 +125,8 @@ async def run_ledger(limit: int = 20) -> dict[str, Any]:
         "lessons": lessons,
         "lessons_count": len(lessons),
         "lessons_file": _display_path(str(_root() / LESSON_INDEX_FILE)),
+        "global_lessons_file": _display_path(get_global_lessons_path()),
+        "global_sync_manifest": _display_path(str(Path(get_global_lessons_path()).with_suffix(".manifest.json"))),
         "orchestrator": _read_orchestrator(limit),
         "orchestrator_file": _display_path(str(_root() / ORCH_FILE)),
     }

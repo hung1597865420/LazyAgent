@@ -155,6 +155,8 @@ MCP_LESSON_FALLBACK_TOOLS = {
     "context_auditor", "swarm_debug", "incident_responder", "run_single_agent",
 }
 MCP_LESSON_BACKGROUND_LIMIT = 64
+MCP_MEMORY_BACKGROUND_LIMIT = 128
+_mcp_memory_slots = threading.BoundedSemaphore(MCP_MEMORY_BACKGROUND_LIMIT)
 
 def _model_by_role() -> dict[str, str]:
     models = get_model_config()
@@ -1007,14 +1009,8 @@ def _maybe_record_mcp_tool_lesson(name: str, arguments: dict, response: list[typ
         safe_arguments = _redact_lesson_value(arguments or {})
         arg_text = _collect_lesson_text(safe_arguments)[:4_000]
         result_chunks = []
-        for item in (response or []):
-            if getattr(item, "type", "") != "text":
-                continue
-            raw = str(item.text or "")
-            try:
-                result_chunks.append(_collect_lesson_text(_redact_lesson_value(json.loads(raw))))
-            except Exception:
-                result_chunks.append(_collect_lesson_text(_redact_lesson_value(raw)))
+        for chunk in _mcp_response_text_chunks(response, max_chars=8_000):
+            result_chunks.append(chunk)
         result_text = "\n".join(chunk[:8_000] for chunk in result_chunks)
         text = f"{arg_text}\n{result_text}"[:12_000]
         fallback = _infer_agent_procedure_lesson(f"mcp tool {name}", text)
@@ -1032,6 +1028,52 @@ def _maybe_record_mcp_tool_lesson(name: str, arguments: dict, response: list[typ
     except Exception as exc:
         _log.debug("MCP lesson fallback skipped for %s: %s", name, exc)
         return {"status": "skipped", "reason": type(exc).__name__}
+
+
+def _lesson_marker_window(text: str, max_chars: int = 12_000) -> str:
+    lower = text.lower()
+    markers = ("reusable workflow", "procedure", "lesson learned", "summary:", "steps:")
+    positions = [lower.find(marker) for marker in markers if lower.find(marker) >= 0]
+    if not positions:
+        return text[:max_chars]
+    start = max(0, min(positions) - 1000)
+    return text[start:start + max_chars]
+
+
+def _mcp_response_text_chunks(response: list[types.TextContent], max_chars: int = 8_000) -> list[str]:
+    from tools.core import _redact_lesson_value
+
+    chunks: list[str] = []
+    decoder = json.JSONDecoder()
+    for item in (response or []):
+        if getattr(item, "type", "") != "text":
+            continue
+        raw = str(item.text or "")
+        if not raw:
+            continue
+        parsed = []
+        idx = 0
+        while idx < len(raw) and idx < 64_000 and len("\n".join(parsed)) < max_chars * 4:
+            starts = [pos for pos in (raw.find("{", idx), raw.find("[", idx)) if pos >= 0]
+            if not starts:
+                break
+            start = min(starts)
+            try:
+                obj, end = decoder.raw_decode(raw[start:])
+            except ValueError:
+                idx = start + 1
+                continue
+            parsed.append(_collect_lesson_text(_redact_lesson_value(obj))[:max_chars])
+            idx = start + max(end, 1)
+        if parsed:
+            chunks.extend(piece for piece in parsed if piece)
+            window = _lesson_marker_window(_collect_lesson_text(_redact_lesson_value(raw)), max_chars=max_chars)
+            if window and window not in chunks:
+                chunks.append(window)
+        else:
+            window = _lesson_marker_window(raw, max_chars=max_chars)
+            chunks.append(_collect_lesson_text(_redact_lesson_value(window))[:max_chars])
+    return chunks
 
 
 def _collect_lesson_text(value, depth: int = 0) -> str:
@@ -1053,7 +1095,11 @@ def _schedule_mcp_tool_lesson(name: str, arguments: dict, response: list[types.T
         tool_name = name
     if tool_name not in MCP_LESSON_FALLBACK_TOOLS:
         return
-    if len(_background_tasks) >= MCP_LESSON_BACKGROUND_LIMIT:
+    lesson_task_count = sum(
+        1 for task in _background_tasks
+        if not task.done() and str(task.get_name()).startswith("mcp-lesson-")
+    )
+    if lesson_task_count >= MCP_LESSON_BACKGROUND_LIMIT:
         _log.debug("MCP lesson fallback skipped for %s: background task cap reached", tool_name)
         return
 
@@ -1069,6 +1115,49 @@ def _schedule_mcp_tool_lesson(name: str, arguments: dict, response: list[types.T
     task = asyncio.create_task(_run_lesson_record(), name=f"mcp-lesson-{tool_name}")
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+def _schedule_mcp_memory_events(name: str, arguments: dict, response: list[types.TextContent], started_at: float) -> None:
+    tool_name = name.split("/", 1)[-1] if "/" in str(name) else str(name)
+    if tool_name in {"list_agents", "finops_stats"}:
+        return
+    if not _mcp_memory_slots.acquire(blocking=False):
+        _log.debug("MCP memory events skipped for %s: background task cap reached", tool_name)
+        return
+
+    async def _run_memory_events():
+        try:
+            from tools.core import record_text_memory_signals, record_tool_performance_memory
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            await asyncio.to_thread(record_tool_performance_memory, tool_name, duration_ms, response, dict(arguments or {}))
+            signal_text = "\n".join([
+                _collect_lesson_text(arguments or {})[:2500],
+                "\n".join(_mcp_response_text_chunks(response, max_chars=2500))[:2500],
+            ]).strip()
+            if signal_text:
+                await asyncio.to_thread(
+                    record_text_memory_signals,
+                    signal_text[:5000],
+                    source=f"mcp:{tool_name}",
+                    refs={"tool": tool_name},
+                )
+        except Exception as exc:
+            _log.debug("MCP memory events skipped for %s: %s", tool_name, exc)
+        finally:
+            try:
+                _mcp_memory_slots.release()
+            except ValueError:
+                pass
+
+    try:
+        task = asyncio.create_task(_run_memory_events(), name=f"mcp-memory-{tool_name}")
+    except Exception:
+        _mcp_memory_slots.release()
+        raise
+    _background_tasks.add(task)
+    def _discard_memory_task(done_task: asyncio.Task) -> None:
+        _background_tasks.discard(done_task)
+    task.add_done_callback(_discard_memory_task)
 
 
 def _parse_bool_arg(args: dict, name: str, default: bool = False) -> tuple[bool, str | None]:
@@ -1313,21 +1402,21 @@ def _kick_project_auto_watch() -> None:
         env = os.environ.copy()
         env["HARNESS_WATCH_ROOT"] = root
         script = Path(__file__).with_name("auto_watch.py")
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         log_path = Path(root) / ".harness_auto_watch.bootstrap.log"
         try:
             _rotate_bootstrap_log(log_path)
             with open(log_path, "ab") as log:
-                subprocess.Popen(
-                    [_watcher_python(), str(script)],
-                    cwd=str(Path(__file__).resolve().parent),
-                    env=env,
-                    stdout=log,
-                    stderr=log,
-                    stdin=subprocess.DEVNULL,
-                    creationflags=creationflags,
-                    close_fds=True,
-                )
+                popen_kwargs = {
+                    "cwd": str(Path(__file__).resolve().parent),
+                    "env": env,
+                    "stdout": log,
+                    "stderr": log,
+                    "stdin": subprocess.DEVNULL,
+                    "close_fds": True,
+                }
+                if os.name == "nt":
+                    popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                subprocess.Popen([_watcher_python(), str(script)], **popen_kwargs)
             _auto_watch_roots.add(root)
             _log.info("Started Auto-Watch for %s", root)
         except Exception as e:
@@ -1412,6 +1501,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         res = await asyncio.shield(task)
         res = res or _json_response({"error": "empty_tool_result", "detail": f"{name} returned no content."})
         _schedule_mcp_tool_lesson(name, arguments if isinstance(arguments, dict) else {}, res)
+        _schedule_mcp_memory_events(name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
     except asyncio.CancelledError:
         # Yield once then check — catches tasks that finished microseconds before cancel
@@ -1426,10 +1516,14 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         except (asyncio.TimeoutError, asyncio.CancelledError):
             pass
         _log.info("tool %s cancelled by client, running in background", name)
-        return _json_response({"error": "cancelled", "detail": "Cancelled by client; tool running in background"})
+        res = _json_response({"error": "cancelled", "detail": "Cancelled by client; tool running in background"})
+        _schedule_mcp_memory_events(name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        return res
     except Exception as exc:
         _log.exception("tool %s failed before MCP response", name)
-        return _json_response({"error": f"{type(exc).__name__}: {exc}", "tool": name})
+        res = _json_response({"error": f"{type(exc).__name__}: {exc}", "tool": name})
+        _schedule_mcp_memory_events(name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        return res
     finally:
         current_run_id.reset(run_token)
         if name not in ("list_agents", "finops_stats"):

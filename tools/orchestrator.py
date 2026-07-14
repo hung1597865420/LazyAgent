@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
 
-from .core import _get_active_workspace, load_relevant_lessons_context
+from .core import _get_active_workspace, _lesson_file_lock, load_relevant_lessons_context
 
 ORCH_FILE = ".harness_orchestrator.jsonl"
 
@@ -37,8 +38,16 @@ def _append(entry: dict[str, Any]) -> None:
     path = _root() / ORCH_FILE
     payload = {"ts": time.time(), **_redact(entry)}
     try:
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+        with _lesson_file_lock(path):
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
     except OSError:
         pass
 
