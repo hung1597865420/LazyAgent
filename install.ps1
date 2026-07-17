@@ -52,11 +52,10 @@ Write-Host "[3/4] Cau hinh ~/.claude/CLAUDE.md va hook..."
 & $pythonCmd "$dir\merge_settings.py"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 $ErrorActionPreference = "Continue"
-Unregister-ScheduledTask -TaskName "AgentHarnessAutoWatch" -Confirm:$false 2>$null | Out-Null
-$ErrorActionPreference = "Stop"
 $legacyTasks = Get-ScheduledTask -TaskName "AgentHarness*" -ErrorAction SilentlyContinue
+$ErrorActionPreference = "Stop"
 if ($legacyTasks) {
-    Write-Host "[warn] Con scheduled task AgentHarness* cu; Auto-Watch bay gio spawn theo project tu MCP." -ForegroundColor Yellow
+    Write-Host "[info] Tim thay scheduled task AgentHarness*; install.ps1 se giu nguyen. Dung harness-full-setup.bat de cai/update Auto-Watch startup task." -ForegroundColor Yellow
 }
 
 # ── 4. Smoke test ────────────────────────────────────────────────────────────
