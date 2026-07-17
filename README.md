@@ -167,6 +167,18 @@ Thang profile theo độ đốt token: `off` = 0/10 hard-off, `light` = 1/10 dù
 
 Profile `standard` vẫn bật `llm=true`, nghĩa là bạn gọi tool LLM thủ công vẫn được; nó chỉ tắt `auto-pilot-llm`, `auto-watch-llm`, và `static-llm` để tránh tự động gọi LLM nền. Profile `off` thì tắt cả `llm=false`, đúng nghĩa không gọi model.
 
+Agent policy theo profile được inject cho mọi client chính qua `merge_settings.py`: Claude đọc `~/.claude/CLAUDE.md`, Gemini/Antigravity đọc `~/.gemini/GEMINI.md`, Codex đọc `~/.codex/AGENTS.md`, và agent generic/user-level đọc `~/AGENTS.md`. Policy này đứng trên các rule tự động khác: profile thấp không được tự nâng profile, không được bypass `llm.enabled=false`, và nếu profile không cho phép LLM thì agent phải dùng static/local fallback rồi báo ngắn `profile <name> đang chặn LLM`.
+
+| Profile | Agent được làm | Agent không được làm |
+|---|---|---|
+| `off` | Chỉ read-only/static local: status/list/json, đọc file, git status/diff, py_compile/lint/test khi user yêu cầu. | Không gọi LLM tools (`consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`), không `goal_runner`, không `prod_readiness_gate max`, không bật hooks/lessons/finops/watch. |
+| `light` | Static-first checks, hooks/lessons/finops nếu enabled, `auto_trigger safe` không LLM. | Không auto LLM enrichment, không watcher, không tự đổi profile. |
+| `standard` | Như `light` + watcher safe static. | Watcher/Auto-Pilot không gọi LLM, không `static_llm`, không max fan-out. |
+| `balanced` / `4` | Coding/review chủ động: `consult`, `panel_review`, `ask_codebase`, `auto_trigger safe` khi rule thật sự khớp. | Không watcher, không static LLM nền, không max/prod fan-out mặc định. |
+| `review` / `5` | Auto-Pilot LLM + static LLM cho batch review; watcher safe không LLM. | Watcher không gọi LLM, không max fan-out mặc định. |
+| `heavy` / `7` | Refactor/debug khó: Auto-Pilot max, static LLM, watcher LLM safe. | Không chạy release/prod gates liên tục, không panel lặp từng file. |
+| `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không tự chuyển từ profile thấp lên `max`, không để mặc định cả ngày. |
+
 ### 2.3. Cài tự động trên Windows
 
 Mở PowerShell ngay trong folder harness rồi chạy:

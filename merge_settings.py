@@ -12,9 +12,10 @@ from pathlib import Path
 
 CLAUDE_MARKER = "<!-- agent-harness-managed -->"
 GEMINI_MARKER = "<!-- agent-harness -->"
+CODEX_PROFILE_MARKER = "<!-- agent-harness-runtime-profile-policy -->"
 HOOK_ID = "agent-harness-panel-reminder"
 LESSON_HOOK_ID = "agent-harness-lesson-recorder"
-RULES_VERSION = "2026-07-14-lesson-hook-r2"
+RULES_VERSION = "2026-07-17-runtime-profile-policy-r1"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -61,6 +62,22 @@ CLAUDE_MD_SECTION = """\
 # Agent Harness — quy trình khi làm coding task
 
 Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+
+## Runtime Profile Policy — profile thắng mọi rule bên dưới
+
+Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM hoặc chạy nền, đọc `harness.features.json` trong workspace hiện tại. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
+
+| Profile | Agent được làm | Agent không được làm |
+|---|---|---|
+| `off` | Chỉ read-only/static local: đọc file, `status/list/json`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
+| `light` | Static-first checks, hooks/lessons/finops nếu đang enabled, `auto_trigger mode=safe` không LLM, secret/env/config/devops/static analyzers. Manual LLM chỉ khi user yêu cầu rõ hoặc task thật sự cần theo rule bắt buộc. | Không tự gọi auto LLM enrichment; không bật watcher; không tự đổi profile. |
+| `standard` | Như `light` + watcher safe được phép chạy static checks. Manual LLM vẫn chỉ khi có lý do rõ. | Watcher/Auto-Pilot không được tự gọi LLM; không dùng `static_llm`; không fan-out max. |
+| `balanced` / `4` | Coding/review chủ động: `auto_trigger safe`, `consult`/`panel_review`/`ask_codebase` được phép khi rule bắt buộc khớp. | Không bật watcher; không static LLM enrichment nền; không gọi max/prod fan-out trừ khi user yêu cầu. |
+| `review` / `5` | Review kỹ hơn: Auto-Pilot LLM + static LLM được phép cho batch review; watcher safe nhưng không watcher LLM. | Watcher không được gọi LLM; không dùng max fan-out mặc định. |
+| `heavy` / `7` | Refactor lớn/debug khó: Auto-Pilot max, static LLM, watcher LLM safe được phép. | Không chạy aggressive release/prod gates liên tục; vẫn phải gom batch, tránh gọi panel lặp. |
+| `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
+
+Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
 
 ## Auto-Pilot — mặc định bật
 
@@ -206,6 +223,18 @@ def _replace_managed_section(content: str, marker: str, section: str) -> tuple[s
     return content[:start].rstrip() + "\n\n" + section, True
 
 
+def _strip_managed_section(content: str, marker: str) -> tuple[str, bool]:
+    end_marker = _end_marker_for(marker)
+    start = _find_marker_line(content, marker)
+    if start == -1:
+        return content, False
+    end = _find_marker_line(content, end_marker, start + len(marker))
+    if end != -1:
+        tail_start = end + len(end_marker)
+        return (content[:start].rstrip() + "\n\n" + content[tail_start:].lstrip()).strip() + "\n", True
+    return content[:start].rstrip() + "\n", True
+
+
 def merge_claude_md(claude_dir: Path) -> None:
     md_path = claude_dir / "CLAUDE.md"
     if md_path.exists():
@@ -213,7 +242,8 @@ def merge_claude_md(claude_dir: Path) -> None:
         if result is None:
             return
         content, enc = result
-        new_content, replaced = _replace_managed_section(content, CLAUDE_MARKER, CLAUDE_MD_SECTION)
+        stripped, replaced = _strip_managed_section(content, CLAUDE_MARKER)
+        new_content = CLAUDE_MD_SECTION.rstrip() + "\n\n" + stripped.lstrip()
         try:
             md_path.write_text(new_content, encoding=enc)
         except OSError as e:
@@ -512,11 +542,76 @@ def configure_codex_hooks(home: Path | None = None) -> None:
         print("[skip] Codex hooks ghi/inject lesson da ton tai")
 
 
+CODEX_PROFILE_POLICY_SECTION = """\
+<!-- agent-harness-runtime-profile-policy -->
+# Agent Harness Runtime Profile Policy
+
+Quy tắc này áp dụng cho Codex và mọi agent đọc `AGENTS.md`. Profile trong `harness.features.json` thắng mọi rule tự động khác.
+
+Trước khi tự gọi bất kỳ Agent Harness tool nào có thể dùng LLM hoặc chạy nền, đọc `harness.features.json` trong workspace hiện tại. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
+
+| Profile | Agent được làm | Agent không được làm |
+|---|---|---|
+| `off` | Chỉ read-only/static local: đọc file, `harness-toggle.bat status/list/json`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
+| `light` | Static-first checks, hooks/lessons/finops nếu đang enabled, `auto_trigger mode=safe` không LLM, secret/env/config/devops/static analyzers. Manual LLM chỉ khi user yêu cầu rõ hoặc task thật sự cần theo rule bắt buộc. | Không tự gọi auto LLM enrichment; không bật watcher; không tự đổi profile. |
+| `standard` | Như `light` + watcher safe được phép chạy static checks. Manual LLM vẫn chỉ khi có lý do rõ. | Watcher/Auto-Pilot không được tự gọi LLM; không dùng `static_llm`; không fan-out max. |
+| `balanced` / `4` | Coding/review chủ động: `auto_trigger safe`, `consult`/`panel_review`/`ask_codebase` được phép khi rule bắt buộc khớp. | Không bật watcher; không static LLM enrichment nền; không gọi max/prod fan-out trừ khi user yêu cầu. |
+| `review` / `5` | Review kỹ hơn: Auto-Pilot LLM + static LLM được phép cho batch review; watcher safe nhưng không watcher LLM. | Watcher không được gọi LLM; không dùng max fan-out mặc định. |
+| `heavy` / `7` | Refactor lớn/debug khó: Auto-Pilot max, static LLM, watcher LLM safe được phép. | Không chạy aggressive release/prod gates liên tục; vẫn phải gom batch, tránh gọi panel lặp. |
+| `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
+
+Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
+<!-- /agent-harness-runtime-profile-policy -->
+"""
+
+
+def merge_codex_agents(home: Path | None = None) -> None:
+    root_home = _home_dir(home)
+    for path in (root_home / ".codex" / "AGENTS.md", root_home / "AGENTS.md"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            result = _read_md(path)
+            if result is None:
+                continue
+            content, enc = result
+            stripped, replaced = _strip_managed_section(content, CODEX_PROFILE_MARKER)
+            new_content = CODEX_PROFILE_POLICY_SECTION.rstrip() + "\n\n" + stripped.lstrip()
+            try:
+                path.write_text(new_content, encoding=enc)
+            except OSError as e:
+                print(f"[error] Khong ghi duoc {path} ({e}).")
+                continue
+            print(f"[ok]   {'Da cap nhat' if replaced else 'Da append'} runtime profile policy trong {path}")
+        else:
+            try:
+                path.write_text(CODEX_PROFILE_POLICY_SECTION, encoding="utf-8")
+            except OSError as e:
+                print(f"[error] Khong tao duoc {path} ({e}).")
+                continue
+            print(f"[ok]   Da tao {path} voi runtime profile policy")
+
+
 GEMINI_MD_SECTION = """\
 <!-- agent-harness -->
 # Agent Harness — quy trình khi làm coding task
 
 Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+
+## Runtime Profile Policy — profile thắng mọi rule bên dưới
+
+Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM hoặc chạy nền, đọc `harness.features.json` trong workspace hiện tại. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
+
+| Profile | Agent được làm | Agent không được làm |
+|---|---|---|
+| `off` | Chỉ read-only/static local: đọc file, `status/list/json`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
+| `light` | Static-first checks, hooks/lessons/finops nếu đang enabled, `auto_trigger mode=safe` không LLM, secret/env/config/devops/static analyzers. Manual LLM chỉ khi user yêu cầu rõ hoặc task thật sự cần theo rule bắt buộc. | Không tự gọi auto LLM enrichment; không bật watcher; không tự đổi profile. |
+| `standard` | Như `light` + watcher safe được phép chạy static checks. Manual LLM vẫn chỉ khi có lý do rõ. | Watcher/Auto-Pilot không được tự gọi LLM; không dùng `static_llm`; không fan-out max. |
+| `balanced` / `4` | Coding/review chủ động: `auto_trigger safe`, `consult`/`panel_review`/`ask_codebase` được phép khi rule bắt buộc khớp. | Không bật watcher; không static LLM enrichment nền; không gọi max/prod fan-out trừ khi user yêu cầu. |
+| `review` / `5` | Review kỹ hơn: Auto-Pilot LLM + static LLM được phép cho batch review; watcher safe nhưng không watcher LLM. | Watcher không được gọi LLM; không dùng max fan-out mặc định. |
+| `heavy` / `7` | Refactor lớn/debug khó: Auto-Pilot max, static LLM, watcher LLM safe được phép. | Không chạy aggressive release/prod gates liên tục; vẫn phải gom batch, tránh gọi panel lặp. |
+| `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
+
+Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
 
 ## Auto-Pilot — mặc định bật
 
@@ -627,7 +722,8 @@ def merge_gemini_md(gemini_dir: Path) -> None:
         if result is None:
             return
         content, enc = result
-        new_content, replaced = _replace_managed_section(content, GEMINI_MARKER, GEMINI_MD_SECTION)
+        stripped, replaced = _strip_managed_section(content, GEMINI_MARKER)
+        new_content = GEMINI_MD_SECTION.rstrip() + "\n\n" + stripped.lstrip()
         try:
             md_path.write_text(new_content, encoding=enc)
         except OSError as e:
@@ -654,6 +750,7 @@ def _merge_all(home: Path | None = None) -> int:
     configure_claude_mcp(claude_dir)
     configure_codex_mcp(root_home)
     configure_codex_hooks(root_home)
+    merge_codex_agents(root_home)
     gemini_dir = root_home / ".gemini"
     merge_gemini_md(gemini_dir)
     configure_gemini_mcp(gemini_dir)
