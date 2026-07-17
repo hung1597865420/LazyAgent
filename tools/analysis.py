@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import httpx
 
 from config import WORKSPACE_ROOT
+from runtime_flags import bool_flag
 from agents import AgentRole
 from .fix import suggest_fix
 
@@ -29,7 +30,7 @@ _log = logging.getLogger("harness.analysis")
 
 
 def _optional_llm_enabled() -> bool:
-    return os.getenv("HARNESS_STATIC_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
+    return bool_flag("HARNESS_STATIC_LLM", False, root=WORKSPACE_ROOT)
 
 
 async def schema_drift(baseline_schema: Optional[str] = None) -> dict:

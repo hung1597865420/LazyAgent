@@ -3,14 +3,16 @@ tools/review.py — Reviewer tools.
 Ported from support_tools.py.
 """
 import asyncio
+import hashlib
 import json
 import os
 from typing import Optional
 from agents import Agent, AgentRole, AgentResult
-from config import get_azure_client
+from config import get_llm_client
 from .core import (
     _git_diff,
     append_lesson,
+    build_lesson_checkpoint,
     _calculate_review_hash,
     _export_review_report,
     _assemble_context,
@@ -42,7 +44,13 @@ def _dedup_findings_local(findings: list[dict]) -> list[dict]:
     """
     seen: dict[tuple, dict] = {}
     for f in findings:
-        key = (str(f.get("file", "")), str(f.get("line", "")), str(f.get("issue", ""))[:60])
+        issue_hash = hashlib.sha256(str(f.get("issue") or "").encode("utf-8", errors="replace")).hexdigest()[:10]
+        key = (
+            str(f.get("file", "")),
+            str(f.get("line", "")),
+            str(f.get("category", "")),
+            issue_hash,
+        )
         existing = seen.get(key)
         if existing is None:
             seen[key] = dict(f)
@@ -119,12 +127,31 @@ def _record_panel_review_lesson(result: dict, *, files: Optional[list[str]], rev
             finding_summaries.append(f"{loc}:{line or '?'} {severity} {issue}".strip())
         verdict = str(result.get("verdict") or ("error" if result.get("error") else "unknown"))
         summary = str(result.get("summary") or result.get("error") or "")[:1000]
+        top_finding = next((f for f in findings if isinstance(f, dict)), {})
+        symptom = summary or str(top_finding.get("issue") or top_finding.get("category") or "")
+        root_cause = str(
+            top_finding.get("root_cause")
+            or top_finding.get("cause")
+            or top_finding.get("issue")
+            or top_finding.get("category")
+            or ""
+        )
+        exact_fix = str(top_finding.get("fix") or top_finding.get("suggestion") or top_finding.get("recommendation") or "")
+        verification = f"panel_review verdict={verdict}; findings={len(findings)}; severity_counts={severities}"
         return append_lesson({
             "source": "panel_review",
             "lesson_type": "panel_review",
             "title": f"panel_review {verdict}",
             "outcome": verdict,
             "summary": summary or f"panel_review completed with {len(findings)} findings",
+            **build_lesson_checkpoint(
+                symptom=symptom,
+                root_cause=root_cause,
+                exact_fix=exact_fix,
+                verification=verification,
+                files=list(files or [])[:50],
+                diff_hash=review_hash,
+            ),
             "files": list(files or [])[:50],
             "findings": finding_summaries,
             "severity_counts": severities,
@@ -202,7 +229,7 @@ async def panel_review(
     if not ctx:
         return {"error": "Không có gì để review — cần ít nhất một trong: files, diff, code, staged, since_commit", "warnings": warnings}
 
-    client = get_azure_client()
+    client = get_llm_client()
 
     # Pre-pass summarizer: khi ctx > 200KB, SYNTHESIZER/pro tier tóm gọn xuống ~100KB
     # để MANAGER/pro-3 rảnh cho ask_codebase.
@@ -379,7 +406,7 @@ async def consult(
 ) -> dict:
     """Analyzer (deep reasoning) tư vấn."""
     ctx, warnings = _assemble_context(files=files, context=context)
-    result = await Agent(AgentRole.ANALYZER, get_azure_client()).run_async(question, ctx)
+    result = await Agent(AgentRole.ANALYZER, get_llm_client()).run_async(question, ctx)
     return {
         "advice": result.result if result.status == "success" else None,
         "agent": _result_meta(result), "warnings": warnings,
@@ -393,7 +420,7 @@ async def alt_implementation(
 ) -> dict:
     """Sinh 2 phương án implementation song song."""
     ctx, warnings = _assemble_context(files=files, context=context)
-    client = get_azure_client()
+    client = get_llm_client()
     res_a, res_b = await asyncio.gather(
         Agent(AgentRole.CODE_A, client).run_async(spec, ctx),
         Agent(AgentRole.CODE_B, client).run_async(spec, ctx),

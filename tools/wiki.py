@@ -6,7 +6,7 @@ Ported from support_tools.py.
 import os
 import ast
 import json
-from config import WORKSPACE_ROOT, get_azure_client
+from config import WORKSPACE_ROOT, get_llm_client
 from agents import Agent, AgentRole
 
 # Re-export tools from llmwiki_tool for unified tools packaging
@@ -73,7 +73,7 @@ async def doc_sync() -> dict:
         "- Trình bày mạch lạc, rõ ràng các tham số và kiểu trả về."
     )
     
-    client = get_azure_client()
+    client = get_llm_client()
     agent = Agent(AgentRole.WORKER, client)
     res = await agent.run_async(prompt)
     

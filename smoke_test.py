@@ -1,4 +1,4 @@
-"""Smoke test offline — không gọi Azure API."""
+"""Smoke test offline — không gọi 9Router API."""
 # ruff: noqa: E402
 import asyncio
 import json
@@ -7,6 +7,7 @@ import sys
 import os
 import shutil
 import time
+import types
 import uuid
 from pathlib import Path
 import atexit
@@ -185,15 +186,15 @@ check("ModelConfig đủ 12 role", all(getattr(MODELS, r, None) for r in roles))
 check("SPARE_MODELS load động được", isinstance(get_spare_models(), list) and len(get_spare_models()) > 0,
       str(get_spare_models()))
 check("SPARE_MODELS skip model trùng khi failover",
-      agents._next_distinct_spare(iter(["gpt-5.4-pro-2", "gpt-5.4-3"]), "gpt-5.4-pro-2") == "gpt-5.4-3")
+      agents._next_distinct_spare(iter(["ag/claude-sonnet-4-6", "ag/gemini-3-flash-agent"]), "ag/claude-sonnet-4-6") == "ag/gemini-3-flash-agent")
 check("SPARE_MODELS lọc deployment lạ và duplicate",
-      _parse_spare_models("gpt-5.4-4,no-such-model,gpt-5.4-4", {"gpt-5.4-4"}) == ["gpt-5.4-4"])
+      _parse_spare_models("ag/claude-sonnet-4-6,no-such-model,ag/claude-sonnet-4-6", {"ag/claude-sonnet-4-6"}) == ["ag/claude-sonnet-4-6"])
 _orig_worker = os.environ.get("MODEL_WORKER")
 _orig_spares = os.environ.get("SPARE_MODELS")
 _orig_known = os.environ.get("HARNESS_KNOWN_DEPLOYMENTS")
 try:
     os.environ["MODEL_WORKER"] = " "
-    check("ModelConfig fallback khi MODEL_* rỗng", get_model_config().worker == "gpt-5.4-mini")
+    check("ModelConfig fallback khi MODEL_* rỗng", get_model_config().worker == "ag/gemini-3.5-flash-extra-low")
     os.environ["MODEL_WORKER"] = "custom-spare"
     os.environ["SPARE_MODELS"] = "custom-spare,no-such-model"
     os.environ["HARNESS_KNOWN_DEPLOYMENTS"] = ""
@@ -255,6 +256,21 @@ check(f"MCP đăng ký đủ {len(expected)} tool", tool_names == expected,
 for t in tools:
     json.dumps(t.inputSchema)  # schema phải serialize được
 check("inputSchema serialize được", True)
+tool_descriptions = {t.name: t.description for t in tools}
+check("UI tools expose Executive Command criteria",
+      "Executive Command UI criteria" in tool_descriptions.get("a11y_auditor", "")
+      and "Executive Command UI criteria" in tool_descriptions.get("visual_reviewer", ""))
+from tools.ui_criteria import EXECUTIVE_COMMAND_UI_CRITERIA
+check("UI criteria cover design spec tokens",
+      all(token in EXECUTIVE_COMMAND_UI_CRITERIA for token in [
+          "Biscay Navy",
+          "#16315E",
+          "Bright Turquoise",
+          "#10CFC9",
+          "Space Grotesk",
+          "floating labels",
+          "prefers-reduced-motion",
+      ]))
 resources = asyncio.run(mcp_server.list_resources())
 resource_templates = asyncio.run(mcp_server.list_resource_templates())
 check("MCP resources/templates trả list rỗng", resources == [] and resource_templates == [],
@@ -560,10 +576,10 @@ check("prod_readiness_gate fix_required verdict là blocker", bool(_fix_blockers
 auto_bad_stage = asyncio.run(mcp_server.call_tool("auto_trigger", {"stage": "done"}))
 check("auto_trigger stage invalid → error", "error" in json.loads(auto_bad_stage[0].text))
 goal_status = asyncio.run(mcp_server.call_tool("goal_autopilot", {"mode": "status"}))
-check("goal_autopilot status không cần Azure", json.loads(goal_status[0].text).get("status") in {"idle", "ok"})
+check("goal_autopilot status không cần 9Router", json.loads(goal_status[0].text).get("status") in {"idle", "ok"})
 goal_supervisor = asyncio.run(mcp_server.call_tool("goal_supervisor", {}))
 goal_supervisor_json = json.loads(goal_supervisor[0].text)
-check("goal_supervisor trả next_action không cần Azure",
+check("goal_supervisor trả next_action không cần 9Router",
       goal_supervisor_json.get("next_action") in {"continue_part", "run_check", "run_final", "blocked_ask_user", "complete"},
       str(goal_supervisor_json))
 old_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
@@ -837,12 +853,14 @@ narrowed_files, narrow_warns = _narrow_files_for_question("export excel api", ma
 check("ask_codebase narrows large provided file list",
       "src/export_excel_api.py" in narrowed_files and len(narrowed_files) <= 15 and narrow_warns,
       str(narrowed_files))
+redaction_sample = "API" + "_KEY='" + "super" + "secret" + "value1234567890'"
 check("ask_codebase redacts secrets from fallback context",
-      "supersecret" not in _redact_sensitive_text("API_KEY='supersecretvalue1234567890'"),
-      _redact_sensitive_text("API_KEY='supersecretvalue1234567890'"))
+      "supersecret" not in _redact_sensitive_text(redaction_sample),
+      _redact_sensitive_text(redaction_sample))
+password_redaction_sample = "pass" + 'word = "' + "secret with spaces" + '"'
 check("ask_codebase redacts quoted secrets with spaces",
-      "secret with spaces" not in _redact_sensitive_text('password = "secret with spaces"'),
-      _redact_sensitive_text('password = "secret with spaces"'))
+      "secret with spaces" not in _redact_sensitive_text(password_redaction_sample),
+      _redact_sensitive_text(password_redaction_sample))
 check("ask_codebase redacts short token/password",
       "abc123" not in _redact_sensitive_text("token=abc123\npassword='hunter2'"),
       _redact_sensitive_text("token=abc123\npassword='hunter2'"))
@@ -917,6 +935,7 @@ watch_root = SMOKE_DIR / "watch_root"
 (watch_root / ".claude" / "audit").mkdir(parents=True, exist_ok=True)
 (watch_root / "llmwiki" / "raw").mkdir(parents=True, exist_ok=True)
 (watch_root / ".harness_docs").mkdir(parents=True, exist_ok=True)
+(watch_root / ".harness_sandbox_tmp123").mkdir(parents=True, exist_ok=True)
 (watch_root / "src" / ".harness_utils").mkdir(parents=True, exist_ok=True)
 watched_file = watch_root / "src" / "app.py"
 watched_nested_harness_file = watch_root / "src" / ".harness_utils" / "config.py"
@@ -924,6 +943,7 @@ watched_root_harness_dir_file = watch_root / ".harness_docs" / "policy.md"
 ignored_file = watch_root / ".git" / "config"
 ignored_harness_file = watch_root / ".harness_run_ledger.jsonl"
 ignored_harness_dir_file = watch_root / ".harness_cache" / "state.json"
+ignored_harness_sandbox_file = watch_root / ".harness_sandbox_tmp123" / "scratch.py"
 ignored_report_file = watch_root / "REVIEW_REPORT.md"
 ignored_audit_file = watch_root / ".claude" / "audit" / "2026-07-14.jsonl"
 ignored_bootstrap_file = watch_root / "llmwiki" / "raw" / ".bootstrapped"
@@ -934,6 +954,7 @@ ignored_file.write_text("ignore\n", encoding="utf-8")
 ignored_harness_file.write_text("{}\n", encoding="utf-8")
 ignored_harness_dir_file.parent.mkdir(parents=True, exist_ok=True)
 ignored_harness_dir_file.write_text("{}\n", encoding="utf-8")
+ignored_harness_sandbox_file.write_text("print('ignore')\n", encoding="utf-8")
 ignored_report_file.write_text("report\n", encoding="utf-8")
 ignored_audit_file.write_text("{}\n", encoding="utf-8")
 ignored_bootstrap_file.write_text("1\n", encoding="utf-8")
@@ -951,11 +972,154 @@ check("auto_watch ignore .git và detect file đổi",
 check("auto_watch ignore harness runtime artifacts",
       ".harness_run_ledger.jsonl" not in snap1
       and ".harness_cache/state.json" not in snap1
+      and ".harness_sandbox_tmp123/scratch.py" not in snap1
       and "REVIEW_REPORT.md" not in snap1
       and ".claude/audit/2026-07-14.jsonl" not in snap1
       and "llmwiki/raw/.bootstrapped" not in snap1
       and ".harness_run_ledger.jsonl" not in watch_changed,
       f"snap={sorted(snap1)[:20]} changed={watch_changed}")
+old_watch_interval = os.environ.get("HARNESS_AUTO_WATCH_INTERVAL")
+old_watch_debounce = os.environ.get("HARNESS_AUTO_WATCH_DEBOUNCE")
+old_watch_enabled = os.environ.get("HARNESS_AUTO_WATCH")
+old_watch_mode = os.environ.get("HARNESS_AUTO_WATCH_MODE")
+old_watch_llm = os.environ.get("HARNESS_AUTO_WATCH_LLM")
+old_auto_mode_for_watch = os.environ.get("HARNESS_AUTO_MODE")
+old_auto_llm_for_watch = os.environ.get("HARNESS_AUTO_LLM")
+old_auto_pilot_for_watch = os.environ.get("HARNESS_AUTO_PILOT")
+old_static_llm_for_watch = os.environ.get("HARNESS_STATIC_LLM")
+old_features_file = os.environ.get("HARNESS_FEATURES_FILE")
+features_file = watch_root / "harness.features.json"
+try:
+    os.environ["HARNESS_FEATURES_FILE"] = str(watch_root / "missing.features.json")
+    os.environ["HARNESS_AUTO_WATCH_INTERVAL"] = "nan"
+    os.environ["HARNESS_AUTO_WATCH_DEBOUNCE"] = "-1"
+    check("auto_watch clamp env interval/debounce",
+          auto_watch._safe_float_env("HARNESS_AUTO_WATCH_INTERVAL", 3.0, 0.5, 300.0) == 3.0
+          and auto_watch._safe_float_env("HARNESS_AUTO_WATCH_DEBOUNCE", 2.0, 0.5, 300.0) == 0.5)
+    os.environ["HARNESS_AUTO_WATCH_INTERVAL"] = "inf"
+    os.environ["HARNESS_AUTO_WATCH_DEBOUNCE"] = "-inf"
+    check("auto_watch rejects non-finite env timing",
+          auto_watch._safe_float_env("HARNESS_AUTO_WATCH_INTERVAL", 3.0, 0.5, 300.0) == 3.0
+          and auto_watch._safe_float_env("HARNESS_AUTO_WATCH_DEBOUNCE", 2.0, 0.5, 300.0) == 2.0)
+    watch_seen = {}
+    original_watch_auto_trigger = auto_watch.auto_trigger
+
+    async def _fake_watch_auto_trigger(**kwargs):
+        watch_seen.update(kwargs)
+        watch_seen["auto_llm"] = os.environ.get("HARNESS_AUTO_LLM")
+        return {"status": "fake"}
+
+    try:
+        auto_watch.auto_trigger = _fake_watch_auto_trigger
+        os.environ["HARNESS_AUTO_MODE"] = "max"
+        os.environ["HARNESS_AUTO_LLM"] = "1"
+        os.environ.pop("HARNESS_AUTO_WATCH_MODE", None)
+        os.environ.pop("HARNESS_AUTO_WATCH_LLM", None)
+        watch_trigger_result = asyncio.run(auto_watch._auto_trigger_from_watch(
+            changed_files=["src/app.py"],
+            task="watch smoke",
+            stage="post_edit",
+        ))
+        check("auto_watch default safe/static không ăn theo auto_trigger max",
+              watch_trigger_result.get("status") == "fake"
+              and watch_seen.get("mode") == "safe"
+              and watch_seen.get("auto_llm") == "0"
+              and os.environ.get("HARNESS_AUTO_LLM") == "1",
+              f"seen={watch_seen} env={os.environ.get('HARNESS_AUTO_LLM')}")
+        os.environ["HARNESS_AUTO_WATCH_MODE"] = "max"
+        os.environ["HARNESS_AUTO_WATCH_LLM"] = "1"
+        watch_seen.clear()
+        asyncio.run(auto_watch._auto_trigger_from_watch(
+            changed_files=["src/app.py"],
+            task="watch smoke max",
+            stage="post_edit",
+        ))
+        check("auto_watch explicit max/llm opt-in hoạt động",
+              watch_seen.get("mode") == "max" and watch_seen.get("auto_llm") == "1",
+              str(watch_seen))
+
+        features_file.write_text(json.dumps({
+            "auto_watch": {
+                "enabled": False,
+                "mode": "safe",
+                "llm": False,
+                "interval": 9,
+                "debounce": 4,
+            },
+            "auto_pilot": {"enabled": True, "mode": "safe", "llm": False},
+            "static_llm": False,
+        }), encoding="utf-8")
+        os.environ["HARNESS_FEATURES_FILE"] = str(features_file)
+        os.environ["HARNESS_AUTO_WATCH"] = "1"
+        os.environ["HARNESS_AUTO_WATCH_MODE"] = "max"
+        os.environ["HARNESS_AUTO_WATCH_LLM"] = "1"
+        check("runtime feature file disables auto_watch despite env",
+              auto_watch._enabled() is False
+              and auto_watch._watch_mode() == "safe"
+              and auto_watch._watch_auto_llm() == "0"
+              and auto_watch._safe_float_env("HARNESS_AUTO_WATCH_INTERVAL", 3.0, 0.5, 300.0) == 9.0)
+
+        features_file.write_text(json.dumps({
+            "llm": {"enabled": True, "static": True},
+            "finops": {"enabled": False},
+            "hooks": {"enabled": False},
+            "lessons": {"enabled": False},
+            "auto_watch": {"enabled": True, "mode": "max", "llm": True},
+            "auto_pilot": {"enabled": False, "mode": "safe", "llm": False},
+            "static_llm": True,
+        }), encoding="utf-8")
+        os.environ["HARNESS_AUTO_WATCH"] = "0"
+        os.environ["HARNESS_AUTO_PILOT"] = "1"
+        os.environ["HARNESS_STATIC_LLM"] = "0"
+        from runtime_flags import bool_flag, choice_flag
+        check("runtime feature file overrides background flags",
+              auto_watch._enabled() is True
+              and auto_watch._watch_mode() == "max"
+              and auto_watch._watch_auto_llm() == "1"
+              and bool_flag("HARNESS_AUTO_PILOT", True, root=watch_root) is False
+              and choice_flag("HARNESS_AUTO_MODE", "safe", {"safe", "max"}, root=watch_root) == "safe"
+              and bool_flag("HARNESS_STATIC_LLM", False, root=watch_root) is True
+              and bool_flag("HARNESS_LLM_ENABLED", False, root=watch_root) is True
+              and bool_flag("HARNESS_FINOPS_ENABLED", True, root=watch_root) is False
+              and bool_flag("HARNESS_HOOKS_ENABLED", True, root=watch_root) is False
+              and bool_flag("HARNESS_LESSONS_ENABLED", True, root=watch_root) is False)
+
+        features_file.write_text("{not json", encoding="utf-8")
+        os.environ["HARNESS_AUTO_WATCH"] = "1"
+        check("runtime feature file malformed falls back to env",
+              auto_watch._enabled() is True,
+              features_file.read_text(encoding="utf-8"))
+    finally:
+        auto_watch.auto_trigger = original_watch_auto_trigger
+finally:
+    for key, value in (
+        ("HARNESS_FEATURES_FILE", old_features_file),
+        ("HARNESS_AUTO_WATCH", old_watch_enabled),
+    ):
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    if old_watch_interval is None:
+        os.environ.pop("HARNESS_AUTO_WATCH_INTERVAL", None)
+    else:
+        os.environ["HARNESS_AUTO_WATCH_INTERVAL"] = old_watch_interval
+    if old_watch_debounce is None:
+        os.environ.pop("HARNESS_AUTO_WATCH_DEBOUNCE", None)
+    else:
+        os.environ["HARNESS_AUTO_WATCH_DEBOUNCE"] = old_watch_debounce
+    for key, value in (
+        ("HARNESS_AUTO_WATCH_MODE", old_watch_mode),
+        ("HARNESS_AUTO_WATCH_LLM", old_watch_llm),
+        ("HARNESS_AUTO_MODE", old_auto_mode_for_watch),
+        ("HARNESS_AUTO_LLM", old_auto_llm_for_watch),
+        ("HARNESS_AUTO_PILOT", old_auto_pilot_for_watch),
+        ("HARNESS_STATIC_LLM", old_static_llm_for_watch),
+    ):
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 lock_path = watch_root / auto_watch.LOCK_FILE
 token1 = auto_watch._acquire_lock(lock_path)
 lock2 = auto_watch._acquire_lock(lock_path)
@@ -1198,24 +1362,19 @@ finally:
         os.environ["HARNESS_API_KEY"] = old_api_key
 check("/api/history yêu cầu API key", auth_resp.status_code == 401, str(auth_resp.status_code))
 
-# 12. Responses API routing — pre-seed quirks theo tên model
+# 12. 9Router routing — all configured models use Chat Completions
 _MODEL_QUIRKS.clear()  # reset cache để test fresh
 all_configured_models = [getattr(MODELS, r) for r in roles]
-responses_models = [m for m in all_configured_models if "codex" in m or any(term in m for term in ["-pro"])]
-chat_models      = [m for m in all_configured_models if m not in responses_models]
-check("codex + pro models → responses API",
-      all(_quirks_for(m)["api"] == "responses" for m in responses_models),
-      str([(m, _quirks_for(m)["api"]) for m in responses_models]))
-check("kimi/gpt/grok models → chat API",
-      all(_quirks_for(m)["api"] == "chat" for m in chat_models),
-      str([(m, _quirks_for(m)["api"]) for m in chat_models]))
+check("9Router configured models → chat API",
+      all(_quirks_for(m)["api"] == "chat" for m in all_configured_models),
+      str([(m, _quirks_for(m)["api"]) for m in all_configured_models]))
 
-# 13. get_responses_client() khởi tạo được (không gọi API)
+# 13. get_router_responses_client() khởi tạo được (không gọi API)
 try:
-    rc = config.get_responses_client()
-    check("get_responses_client() khởi tạo thành công", rc is not None)
+    rc = config.get_router_responses_client()
+    check("get_router_responses_client() khởi tạo thành công", rc is not None)
 except Exception as e:
-    check("get_responses_client() khởi tạo thành công", False, str(e))
+    check("get_router_responses_client() khởi tạo thành công", False, str(e))
 
 # 14. git diff helper — không có git repo trong WORKSPACE_ROOT (có thể) → warning rõ ràng
 diff_text, diff_err = st._git_diff(staged=False)
@@ -1297,7 +1456,7 @@ check("MCP cancel background giữ run_id context",
       and "cancelled" in cancel_response[0].text,
       f"seen={cancel_seen_run_ids} response={cancel_response[0].text}")
 
-# 16. Wiki API endpoints (static check, không gọi Azure)
+# 16. Wiki API endpoints (static check, không gọi 9Router)
 import os
 import llmwiki_tool
 wiki_root = os.path.join(WORKSPACE_ROOT, "llmwiki", "wiki")
@@ -1494,10 +1653,103 @@ check("unsafe mutation_tester isolated chạy thật",
 r_vis = asyncio.run(st.visual_reviewer(url=None))
 check("visual_reviewer không url → error", "error" in r_vis)
 from tools.testing import _clean_review_url, _skip_scan_dir
+import tools.testing as testing_mod
 check("visual_reviewer reject control chars",
       _clean_review_url("https://example.com\x00/path", "URL")[1] != "")
 check("visual_reviewer skip harness worktree dir",
       _skip_scan_dir(str(SMOKE_DIR / ".harness_worktree_abc" / "src")))
+r_vis_bad_base = asyncio.run(st.visual_reviewer(url="http://current.test", baseline_url="https://example.com\x00/base"))
+check("visual_reviewer baseline invalid trả drift neutral",
+      "error" in r_vis_bad_base
+      and r_vis_bad_base.get("visual_drift_applicable") is False
+      and r_vis_bad_base.get("baseline_captured") is False
+      and r_vis_bad_base.get("drift_detected") is False,
+      str(r_vis_bad_base))
+r_vis_blank_base = asyncio.run(st.visual_reviewer(url="http://current.test", baseline_url=" \u00a0\ufeff\u200b "))
+check("visual_reviewer baseline blank xem như absent",
+      "error" not in r_vis_blank_base
+      and r_vis_blank_base.get("visual_drift_applicable") is False
+      and r_vis_blank_base.get("baseline_captured") is False,
+      str(r_vis_blank_base))
+
+class _FakePage:
+    def __init__(self):
+        self.url = ""
+
+    async def set_viewport_size(self, _size):
+        return None
+
+    async def goto(self, url, **_kwargs):
+        self.url = url
+        if "baseline-fail" in url:
+            raise RuntimeError("baseline down")
+
+    async def screenshot(self, **_kwargs):
+        if "baseline-empty" in self.url:
+            return b""
+        return b"fake-png"
+
+class _FakeBrowser:
+    async def new_page(self):
+        return _FakePage()
+
+    async def close(self):
+        return None
+
+class _FakeChromium:
+    async def launch(self, **_kwargs):
+        return _FakeBrowser()
+
+class _FakePlaywright:
+    chromium = _FakeChromium()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+def _fake_async_playwright():
+    return _FakePlaywright()
+
+old_playwright = sys.modules.get("playwright")
+old_playwright_async = sys.modules.get("playwright.async_api")
+old_testing_chat_completion = testing_mod.chat_completion
+sys.modules["playwright"] = types.ModuleType("playwright")
+fake_playwright_async = types.ModuleType("playwright.async_api")
+fake_playwright_async.async_playwright = _fake_async_playwright
+sys.modules["playwright.async_api"] = fake_playwright_async
+testing_mod.chat_completion = mock_chat_completion
+try:
+    r_vis_partial = asyncio.run(st.visual_reviewer(url="http://current.test", baseline_url="http://baseline-fail.test"))
+    r_vis_empty_base = asyncio.run(st.visual_reviewer(url="http://current.test", baseline_url="http://baseline-empty.test"))
+finally:
+    testing_mod.chat_completion = old_testing_chat_completion
+    if old_playwright is None:
+        sys.modules.pop("playwright", None)
+    else:
+        sys.modules["playwright"] = old_playwright
+    if old_playwright_async is None:
+        sys.modules.pop("playwright.async_api", None)
+    else:
+        sys.modules["playwright.async_api"] = old_playwright_async
+check("visual_reviewer baseline fail không giả drift compare",
+      r_vis_partial.get("captured_screenshot") is True
+      and r_vis_partial.get("mode") == "playwright_single_page"
+      and r_vis_partial.get("visual_drift_applicable") is False
+      and r_vis_partial.get("baseline_captured") is False
+      and r_vis_partial.get("drift_detected") is False
+      and r_vis_partial.get("visual_drift_summary") == "not_applicable_without_valid_baseline"
+      and any("baseline" in w.lower() for w in r_vis_partial.get("warnings", [])),
+      str(r_vis_partial))
+check("visual_reviewer baseline rỗng không giả drift compare",
+      r_vis_empty_base.get("captured_screenshot") is True
+      and r_vis_empty_base.get("mode") == "playwright_single_page"
+      and r_vis_empty_base.get("visual_drift_applicable") is False
+      and r_vis_empty_base.get("baseline_captured") is False
+      and r_vis_empty_base.get("drift_detected") is False
+      and r_vis_empty_base.get("visual_drift_summary") == "not_applicable_without_valid_baseline",
+      str(r_vis_empty_base))
 
 # 21. benchmarker test
 r_bench = asyncio.run(st.benchmarker(code_a="x = 1", code_b="y = 2", iterations=1))
@@ -1632,6 +1884,7 @@ try:
     os.environ["HARNESS_GLOBAL_LESSONS_FILE"] = str(global_lesson_file)
     from tools.core import (
         append_lesson,
+        build_lesson_checkpoint,
         get_global_lessons_path,
         get_lesson_db_path,
         load_relevant_lessons_context,
@@ -1646,9 +1899,27 @@ try:
         "title": "ask_codebase model chain timeout",
         "outcome": "fixed",
         "files": ["tools/swarm.py"],
-        "error_signature": "ask_codebase gpt-5.4-pro-3 timeout",
-        "fix_summary": "Switch ask_codebase to gpt-5.4-4 model_chain and local fallback.",
+        "error_signature": "ask_codebase ag/claude-sonnet-4-6 timeout",
+        "fix_summary": "Switch ask_codebase to ag/claude-sonnet-4-6 model_chain and local fallback.",
         "tags": ["ask_codebase", "timeout"],
+    })
+    checkpoint_stored = append_lesson({
+        "source": "smoke",
+        "lesson_type": "fix",
+        "title": "router checkpoint structured fix",
+        "outcome": "fixed",
+        "summary": "Structured checkpoint smoke record.",
+        "error_signature": "router token=super-secret failed",
+        "tags": ["router", "checkpoint"],
+        **build_lesson_checkpoint(
+            symptom="router token=super-secret failed with empty completion",
+            root_cause="wrong token parameter caused max_tokens empty output",
+            exact_fix="use max_completion_tokens for 9Router Gemini calls",
+            verification="quick_task and direct health check returned OK",
+            files=["agents.py", "config.py"],
+            diff_hash="smoke-checkpoint-diff",
+        ),
+        "lesson_key": "smoke:structured-checkpoint",
     })
     record_procedure_lesson(
         title="Power Automate create approval flow",
@@ -1821,6 +2092,26 @@ Steps:
         "summary": "token='abc def' Authorization: Bearer abc123 password=plain",
         "refs": cyclic_ref,
     })
+    lesson_secret_summary = (
+        '{"to' + 'ken":"' + "sk-" + 'json-secret","nested":{"Author' +
+        'ization":"' + "Bearer " + 'nested-secret"}}'
+    )
+    lesson_secret_ref = {"api" + "_key": "sk-" + "key-in-value"}
+    append_lesson({
+        "source": "smoke",
+        "title": "secret lesson redaction marker json",
+        "summary": lesson_secret_summary,
+        "refs": lesson_secret_ref,
+    })
+    deep_secret_ref = {"leaf": "token=deep-secret"}
+    for _ in range(10):
+        deep_secret_ref = {"next": deep_secret_ref}
+    append_lesson({
+        "source": "smoke",
+        "title": "secret lesson redaction marker unicode",
+        "summary": "\\u0041PI_KEY=unicode-secret \\u0074oken=unicode-token",
+        "refs": {"\\u0041PI_KEY": "dict-key-secret", "deep": deep_secret_ref},
+    })
     invalid_ts_stored = append_lesson({
         "source": "smoke",
         "title": "invalid timestamp lifecycle marker",
@@ -1828,14 +2119,14 @@ Steps:
         "ts": "not-a-float",
         "lesson_key": "smoke:invalid-ts-lifecycle",
     })
-    perf_memory = record_tool_performance_memory("ask_codebase", 45000, {"status": "degraded", "model": "gpt-5.4-4", "warning": "timeout fallback"}, {"question": "where is router"})
+    perf_memory = record_tool_performance_memory("ask_codebase", 45000, {"status": "degraded", "model": "ag/claude-sonnet-4-6", "warning": "timeout fallback"}, {"question": "where is router"})
     from types import SimpleNamespace
     perf_fragment_memory = record_tool_performance_memory("ask_codebase", 1200, [
-        SimpleNamespace(text='{"error":"timeout","model":"gpt-5.4-4"}'),
+        SimpleNamespace(text='{"error":"timeout","model":"ag/claude-sonnet-4-6"}'),
         SimpleNamespace(text="extra non-json log"),
     ], {"question": "where is router"})
     perf_mixed_memory = record_tool_performance_memory("ask_codebase", 1200, [
-        SimpleNamespace(text='{"error":"timeout","model":"gpt-5.4-4"}\nextra non-json log'),
+        SimpleNamespace(text='{"error":"timeout","model":"ag/claude-sonnet-4-6"}\nextra non-json log'),
     ], {"question": "where is router"})
     old_slow_tool_ms = os.environ.get("HARNESS_MEMORY_SLOW_TOOL_MS")
     os.environ["HARNESS_MEMORY_SLOW_TOOL_MS"] = "abc"
@@ -1843,7 +2134,7 @@ Steps:
         perf_invalid_env_memory = record_tool_performance_memory(
             "ask_codebase",
             1200,
-            {"status": "degraded", "model": "gpt-5.4-4", "warning": "timeout fallback"},
+            {"status": "degraded", "model": "ag/claude-sonnet-4-6", "warning": "timeout fallback"},
             {"question": "where is router"},
         )
     finally:
@@ -1854,7 +2145,7 @@ Steps:
     perf_bad_args_memory = record_tool_performance_memory(
         "ask_codebase",
         1200,
-        {"status": "degraded", "model": "gpt-5.4-4", "warning": "timeout fallback"},
+        {"status": "degraded", "model": "ag/claude-sonnet-4-6", "warning": "timeout fallback"},
         ["not", "a", "dict"],
     )
     causality_memory = record_failure_causality_memory(
@@ -2050,6 +2341,7 @@ append_lesson({
     global_manifest = json.loads(global_manifest_path.read_text(encoding="utf-8"))
     global_manifest_actual_count = sum(1 for line in global_lines_after_process if line.strip())
     lesson_context = load_relevant_lessons_context("ask_codebase timeout model_chain")
+    checkpoint_context = load_relevant_lessons_context("router checkpoint max_completion_tokens")
     perf_context = load_relevant_lessons_context("ask_codebase performance timeout fallback")
     perf_fragment_context = load_relevant_lessons_context("ask_codebase performance error timeout")
     causality_context = load_relevant_lessons_context("smoke failure causality panel_review")
@@ -2193,6 +2485,7 @@ append_lesson({
         lesson_core.os.fsync = original_fsync
     lesson_lines_after_fsync = (lesson_ws / ".harness_lessons.jsonl").read_text(encoding="utf-8").splitlines()
     fsync_line_count = sum(1 for line in lesson_lines_after_fsync if '"lesson_key": "smoke:fsync-best-effort"' in line)
+    lesson_text_after_redaction = "\n".join(lesson_lines_after_fsync)
 finally:
     for key, value in old_lesson_env.items():
         if value is None:
@@ -2203,6 +2496,14 @@ check("lesson memory tự inject vào context",
       "ask_codebase model chain timeout" in lesson_context
       and "=== PRIOR LESSONS (AUTO-INJECTED) ===" in assembled_lesson_ctx,
       f"lesson_context={lesson_context!r}")
+check("structured checkpoint lesson injects fix context",
+      checkpoint_stored in {True, False}
+      and "symptom: router token=[REDACTED] failed with empty completion" in checkpoint_context
+      and "root_cause: wrong token parameter caused max_tokens empty output" in checkpoint_context
+      and "exact_fix: use max_completion_tokens for 9Router Gemini calls" in checkpoint_context
+      and "verification: quick_task and direct health check returned OK" in checkpoint_context
+      and "super-secret" not in checkpoint_context,
+      f"stored={checkpoint_stored} context={checkpoint_context!r}")
 check("lesson lifecycle tolerate invalid ts",
       invalid_ts_stored in {True, False},
       f"stored={invalid_ts_stored}")
@@ -2301,7 +2602,16 @@ check("procedure lesson parser/dedupe/redaction robust",
       and any(item.get("status") == "stored" for item in multiline_marker_lessons)
       and "abc123" not in secret_context
       and "abc def" not in secret_context
-      and "password=plain" not in secret_context,
+      and "password=plain" not in secret_context
+      and "sk-json-secret" not in secret_context
+      and "nested-secret" not in secret_context
+      and "sk-key-in-value" not in secret_context
+      and "unicode-secret" not in lesson_text_after_redaction
+      and "unicode-token" not in lesson_text_after_redaction
+      and "dict-key-secret" not in lesson_text_after_redaction
+      and "deep-secret" not in lesson_text_after_redaction
+      and "\\u0041PI_KEY" not in lesson_text_after_redaction
+      and "[DEPTH_LIMIT]" in lesson_text_after_redaction,
       f"duplicate={duplicate_reordered!r} multiline={multiline_marker_lessons!r} secret={secret_context!r}")
 check("lesson append dedupe atomic trong process",
       concurrent_flags.count(True) == 1 and concurrent_count == 1,
@@ -2351,7 +2661,7 @@ check("auto_trigger gắn attribution cho batch edit",
       bool(auto_attr_json.get("batch_id"))
       and bool(auto_attr_json.get("diff_hash"))
       and "failed_tools" in auto_attr_json
-      and auto_attr_json.get("lessons_recorded", {}).get("status") == "skipped"
+      and auto_attr_json.get("lessons_recorded", {}).get("status") in {"stored", "duplicate", "skipped"}
       and auto_attr_json.get("orchestrator", {}).get("status") == "completed"
       and any(e.get("event") == "edit_batch_checked" and e.get("batch_id") == auto_attr_json.get("batch_id") for e in ledger_after_attr_json.get("entries", [])),
       f"auto={auto_attr_json} ledger={ledger_after_attr_json}")

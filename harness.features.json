@@ -1,0 +1,62 @@
+{
+    "profile":  "off",
+    "description":  "Profile \u0027off\u0027 written by harness-toggle.bat.",
+    "llm":  {
+                "enabled":  false,
+                "static":  false
+            },
+    "finops":  {
+                   "enabled":  false
+               },
+    "hooks":  {
+                  "enabled":  false
+              },
+    "lessons":  {
+                    "enabled":  false
+                },
+    "auto_pilot":  {
+                       "enabled":  false,
+                       "mode":  "safe",
+                       "llm":  false
+                   },
+    "auto_watch":  {
+                       "enabled":  false,
+                       "mode":  "safe",
+                       "llm":  false,
+                       "interval":  3,
+                       "debounce":  2
+                   },
+    "static_llm":  false,
+    "manual_features":  {
+                            "hooks":  {
+                                          "enabled":  false,
+                                          "status":  "soft-toggle",
+                                          "note":  "Global hook config remains installed; harness_hook.py exits immediately when hooks.enabled=false."
+                                      },
+                            "lessons":  {
+                                            "enabled":  false,
+                                            "status":  "soft-toggle",
+                                            "note":  "Disables lesson write/inject paths without deleting existing lesson DB files."
+                                        },
+                            "llmwiki":  {
+                                            "enabled":  true,
+                                            "status":  "on_demand",
+                                            "note":  "Preference only; wiki tools run when explicitly called."
+                                        },
+                            "code_index":  {
+                                               "enabled":  true,
+                                               "status":  "on_demand",
+                                               "note":  "Preference only; code index tools run when explicitly called."
+                                           },
+                            "finops":  {
+                                           "enabled":  false,
+                                           "status":  "soft-toggle",
+                                           "note":  "Disables new FinOps DB writes when finops.enabled=false."
+                                       },
+                            "dashboard":  {
+                                              "enabled":  false,
+                                              "status":  "manual",
+                                              "note":  "Only runs when dashboard start is requested."
+                                          }
+                        }
+}

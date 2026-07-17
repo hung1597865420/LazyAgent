@@ -8,7 +8,7 @@ Các thực thể cloud storage được nhắc đến:
 
 - S3
 - GCS
-- Azure
+- 9Router
 - anonymous listing
 - object reads
 - metadata headers

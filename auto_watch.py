@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from config import WORKSPACE_ROOT
+from runtime_flags import bool_env_string, bool_flag, choice_flag, float_flag
 from tools.auto import auto_trigger
 
 IGNORE_DIRS = {
@@ -24,6 +25,10 @@ IGNORE_DIRS = {
     ".ruff_cache", ".harness_cache", ".harness_sandbox", ".harness_smoke",
     "node_modules", "venv", ".venv", "dist", "build",
 }
+IGNORE_DIR_PREFIXES = (
+    ".harness_sandbox_",
+    ".harness_worktree_",
+)
 IGNORE_SUFFIXES = {
     ".tmp", ".temp", ".swp", ".swo", ".pyc", ".pyo", ".log", ".lock",
     ".processing",
@@ -48,17 +53,43 @@ MAX_LOG_BYTES = 2_000_000
 MAX_LOG_FILES = 60
 REDACT_KEYS = ("key", "token", "secret", "password", "credential", "authorization")
 _last_log_warning = 0.0
+_PID_TOKEN = uuid.uuid4().hex
 
 
 def _enabled() -> bool:
-    return os.getenv("HARNESS_AUTO_WATCH", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return bool_flag("HARNESS_AUTO_WATCH", False, root=_root())
 
 
-def _safe_float_env(name: str, default: float, min_value: float) -> float:
+def _watch_mode() -> str:
+    return choice_flag("HARNESS_AUTO_WATCH_MODE", "safe", {"safe", "max"}, root=_root())
+
+
+def _watch_auto_llm() -> str | None:
+    return bool_env_string("HARNESS_AUTO_WATCH_LLM", False, root=_root())
+
+
+async def _auto_trigger_from_watch(*, changed_files: list[str], task: str, stage: str) -> dict:
+    previous_auto_llm = os.getenv("HARNESS_AUTO_LLM")
+    watch_auto_llm = _watch_auto_llm()
+    if watch_auto_llm is not None:
+        os.environ["HARNESS_AUTO_LLM"] = watch_auto_llm
     try:
-        return max(min_value, float(os.getenv(name, str(default))))
-    except (TypeError, ValueError):
-        return default
+        return await auto_trigger(
+            changed_files=changed_files,
+            task=task,
+            stage=stage,
+            mode=_watch_mode(),
+        )
+    finally:
+        if watch_auto_llm is not None:
+            if previous_auto_llm is None:
+                os.environ.pop("HARNESS_AUTO_LLM", None)
+            else:
+                os.environ["HARNESS_AUTO_LLM"] = previous_auto_llm
+
+
+def _safe_float_env(name: str, default: float, min_value: float, max_value: float | None = None) -> float:
+    return float_flag(name, default, min_value, max_value, root=_root())
 
 
 def _root() -> Path:
@@ -74,11 +105,11 @@ def _ignored(path: Path, root: Path) -> bool:
     if parts & IGNORE_DIRS:
         return True
     rel_parts = tuple(rel.parts)
+    if any(part.startswith(IGNORE_DIR_PREFIXES) for part in rel_parts):
+        return True
     if rel_parts in IGNORE_PATHS:
         return True
     if len(rel_parts) >= 2 and rel_parts[0] == ".claude" and rel_parts[1] == "audit":
-        return True
-    if any(part.startswith(".harness_worktree_") for part in rel_parts):
         return True
     name = path.name
     root_runtime_file = len(rel_parts) == 1 and (
@@ -99,14 +130,29 @@ def snapshot(root: Path) -> dict[str, tuple[int, int]]:
     state: dict[str, tuple[int, int]] = {}
     if not root.exists():
         return state
-    for path in root.rglob("*"):
-        if _ignored(path, root) or path.is_dir() or path.is_symlink():
-            continue
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _err: None):
+        base = Path(dirpath)
         try:
-            stat = path.stat()
-        except OSError:
+            rel_base = base.relative_to(root)
+        except ValueError:
             continue
-        state[path.relative_to(root).as_posix()] = (stat.st_mtime_ns, stat.st_size)
+        rel_parts = tuple(rel_base.parts)
+        if rel_parts and _ignored(base, root):
+            dirnames[:] = []
+            continue
+        dirnames[:] = [
+            name for name in dirnames
+            if name not in IGNORE_DIRS and not name.startswith(IGNORE_DIR_PREFIXES)
+        ]
+        for filename in filenames:
+            path = base / filename
+            try:
+                if _ignored(path, root) or path.is_symlink():
+                    continue
+                stat = path.stat()
+                state[path.relative_to(root).as_posix()] = (stat.st_mtime_ns, stat.st_size)
+            except (FileNotFoundError, OSError):
+                continue
     return state
 
 
@@ -232,7 +278,7 @@ def _claim_pid_file(pid_file: Path) -> int | None:
 
 
 def _write_pid_fd(fd: int) -> None:
-    payload = json.dumps({"pid": os.getpid(), "ts": time.time(), "script": __file__})
+    payload = json.dumps({"pid": os.getpid(), "ts": time.time(), "script": __file__, "token": _PID_TOKEN})
     os.ftruncate(fd, 0)
     os.lseek(fd, 0, os.SEEK_SET)
     os.write(fd, payload.encode("utf-8", errors="ignore"))
@@ -248,10 +294,18 @@ def _heartbeat_pid_fd(fd: int) -> None:
 def _cleanup_pid_file(pid_file: Path) -> None:
     data = _read_lock(pid_file)
     try:
-        if data and int(data.get("pid", 0)) == os.getpid():
+        if data and int(data.get("pid", 0)) == os.getpid() and data.get("token") == _PID_TOKEN:
             pid_file.unlink()
     except (OSError, ValueError, TypeError):
         pass
+
+
+def _owns_pid_file(pid_file: Path) -> bool:
+    data = _read_lock(pid_file)
+    try:
+        return bool(data and int(data.get("pid", 0)) == os.getpid() and data.get("token") == _PID_TOKEN)
+    except (ValueError, TypeError):
+        return False
 
 
 def _redact(value, depth: int = 0):
@@ -311,11 +365,10 @@ async def run_once(root: Path | None = None, previous: dict[str, tuple[int, int]
     files = changed_files(before, after)
     if not files:
         return {"status": "idle", "changed_files": []}
-    result = await auto_trigger(
+    result = await _auto_trigger_from_watch(
         changed_files=files,
         task="auto_watch detected workspace file changes",
         stage="post_edit",
-        mode=os.getenv("HARNESS_AUTO_MODE", "max"),
     )
     return {"status": "triggered", "changed_files": files, "auto_trigger": result}
 
@@ -329,8 +382,8 @@ async def watch_forever() -> None:
     if not root.exists():
         print(f"[auto_watch] workspace root does not exist: {root}")
         return
-    interval = _safe_float_env("HARNESS_AUTO_WATCH_INTERVAL", 3.0, 0.5)
-    debounce = _safe_float_env("HARNESS_AUTO_WATCH_DEBOUNCE", 2.0, 0.5)
+    interval = _safe_float_env("HARNESS_AUTO_WATCH_INTERVAL", 3.0, 0.5, 300.0)
+    debounce = _safe_float_env("HARNESS_AUTO_WATCH_DEBOUNCE", 2.0, 0.5, 300.0)
     lock = root / LOCK_FILE
     pid_file = root / PID_FILE
     pid_fd = _claim_pid_file(pid_file)
@@ -338,33 +391,57 @@ async def watch_forever() -> None:
         print(f"[auto_watch] already running for {root}")
         return
     last = snapshot(root)
+    missing_root_count = 0
     print(f"[auto_watch] watching {root} interval={interval}s debounce={debounce}s")
 
     try:
         while True:
             await asyncio.sleep(interval)
+            if not _enabled():
+                print("[auto_watch] disabled by runtime feature flags, exiting")
+                return
+            if not root.exists():
+                missing_root_count += 1
+                if missing_root_count >= 3:
+                    print(f"[auto_watch] workspace root disappeared, exiting: {root}")
+                    return
+                continue
+            missing_root_count = 0
             _heartbeat_pid_fd(pid_fd)
+            if not _owns_pid_file(pid_file):
+                print(f"[auto_watch] pid ownership changed, exiting: {root}")
+                return
             current = snapshot(root)
             files = changed_files(last, current)
             if not files:
                 last = current
                 continue
             await asyncio.sleep(debounce)
+            if not _owns_pid_file(pid_file):
+                print(f"[auto_watch] pid ownership changed, exiting: {root}")
+                return
             current = snapshot(root)
             files = changed_files(last, current)
             if not files:
                 last = current
                 continue
+            if not _owns_pid_file(pid_file):
+                print(f"[auto_watch] pid ownership changed, exiting: {root}")
+                return
             lock_info = _acquire_lock(lock)
             if lock_info is None:
+                if root.exists():
+                    last = current
                 continue
             lock_token = lock_info
             try:
-                result = await auto_trigger(
+                if not _owns_pid_file(pid_file):
+                    print(f"[auto_watch] pid ownership changed, exiting: {root}")
+                    return
+                result = await _auto_trigger_from_watch(
                     changed_files=files[:MAX_LOG_FILES],
                     task="auto_watch detected workspace file changes",
                     stage="post_edit",
-                    mode=os.getenv("HARNESS_AUTO_MODE", "max"),
                 )
                 _append_log(root, {
                     "ts": time.time(),
@@ -376,7 +453,7 @@ async def watch_forever() -> None:
                 _append_log(root, {"ts": time.time(), "changed_files": files, "error": str(e)})
             finally:
                 _release_lock(lock, lock_token)
-                last = snapshot(root)
+                last = current
     finally:
         try:
             os.close(pid_fd)

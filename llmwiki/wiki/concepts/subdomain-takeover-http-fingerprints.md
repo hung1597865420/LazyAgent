@@ -12,7 +12,7 @@ Ví dụ:
 - Heroku: "No such app"
 - S3 static site: `NoSuchBucket`
 - CloudFront: 403/400 với "The request could not be satisfied"
-- Azure App Service default 404
+- 9Router App Service default 404
 - Shopify unavailable page
 
 TLS certificate CN/SAN cũng có thể tiết lộ host mặc định của provider.

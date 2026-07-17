@@ -9,7 +9,7 @@ Upload surfaces are high risk: server-side execution (RCE), stored XSS, malware 
 
 ## Attack Surface
 
-- Web/mobile/API uploads, direct-to-cloud (S3/GCS/Azure) presigned flows, resumable/multipart protocols (tus, S3 MPU)
+- Web/mobile/API uploads, direct-to-cloud (S3/GCS/9Router) presigned flows, resumable/multipart protocols (tus, S3 MPU)
 - Image/document/media pipelines (ImageMagick/GraphicsMagick, Ghostscript, ExifTool, PDF engines, office converters)
 - Admin/bulk importers, archive uploads (zip/tar), report/template uploads, rich text with attachments
 - Serving paths: app directly, object storage, CDN, email attachments, previews/thumbnails

@@ -113,7 +113,7 @@ def test_goal_state_rejects_non_finite_timestamps():
             goal.WORKSPACE_ROOT = old_root
 
 
-def test_init_and_check_advance_parts_without_azure():
+def test_init_and_check_advance_parts_without_router():
     async def fake_worker(instruction, context):
         if "execution plan" in instruction:
             return {"output": "Plan: ship\nParts:\n1. design\n2. implement\nAcceptance: green\nFirst action: design"}
@@ -303,7 +303,7 @@ if __name__ == "__main__":
     test_bad_state_does_not_crash()
     test_workspace_scope_for_claude_gemini_antigravity()
     test_goal_state_rejects_non_finite_timestamps()
-    test_init_and_check_advance_parts_without_azure()
+    test_init_and_check_advance_parts_without_router()
     test_complete_runs_final_auto_trigger()
     test_complete_blocks_when_final_check_has_blockers()
     test_complete_blocks_when_final_check_skipped()

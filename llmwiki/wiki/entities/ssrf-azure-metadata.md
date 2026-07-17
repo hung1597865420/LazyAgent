@@ -1,10 +1,10 @@
 ---
-title: Azure Metadata Endpoint
+title: 9Router Metadata Endpoint
 type: entity
 related: [[SSRF High-Value Targets]]
 ---
 
-Các endpoint Azure được nhắc đến:
+Các endpoint 9Router được nhắc đến:
 
 - `http://169.254.169.254/metadata/instance?api-version=2021-02-01`
 - header `Metadata: true`

@@ -30,9 +30,10 @@ from openai import (
 )
 from config import (
     MODELS, MAX_OUTPUT_TOKENS, MAX_RETRIES, REQUEST_TIMEOUT,
-    ROLE_TIMEOUTS, get_azure_client, get_responses_client,
+    ROLE_TIMEOUTS, get_llm_client, get_router_responses_client,
     WORKSPACE_ROOT, get_spare_models,
 )
+from runtime_flags import bool_flag
 from pydantic import BaseModel
 
 _log = logging.getLogger("harness.agents")
@@ -168,23 +169,41 @@ def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
     m = model.lower()
     input_rate = 2.0
     output_rate = 6.0
-    if "pro" in m:
-        input_rate = 5.0
+    if "sonnet" in m:
+        input_rate = 3.0
         output_rate = 15.0
-    elif "reasoning" in m or "grok" in m:
-        input_rate = 10.0
-        output_rate = 30.0
-    elif "mini" in m:
+    elif "gemini" in m and ("extra-low" in m or "-low" in m):
         input_rate = 0.15
         output_rate = 0.60
-    elif "codex" in m or "gpt-5.3" in m or "gpt-5.4" in m or "kimi" in m:
-        input_rate = 1.5
-        output_rate = 4.5
+    elif "gemini" in m:
+        input_rate = 1.0
+        output_rate = 4.0
     cost = (prompt_tokens * input_rate + completion_tokens * output_rate) / 1_000_000
     return round(cost, 6)
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_bool(name: str, default: bool = False) -> bool:
+    try:
+        return bool_flag(name, default, root=_finops_workspace_root())
+    except Exception:
+        return _env_bool(name, default)
+
+
+def enforce_llm_budget(model: str, messages: list[dict], max_output_tokens: int) -> None:
+    """Keep the hard LLM kill-switch; FinOps cost guard no longer blocks calls."""
+    if not _runtime_bool("HARNESS_LLM_ENABLED", True):
+        raise RuntimeError("HARNESS_LLM_ENABLED=0: 9Router LLM calls are disabled")
+    return
+
 def log_step_to_db(run_id: str, agent_role: str, model: str, prompt_tokens: int, completion_tokens: int, latency_ms: int, cache_hit: bool):
-    if not run_id:
+    if not run_id or not _runtime_bool("HARNESS_FINOPS_ENABLED", True):
         return
     step_id = f"step-{uuid.uuid4().hex[:8]}"
     cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)
@@ -203,7 +222,7 @@ def log_step_to_db(run_id: str, agent_role: str, model: str, prompt_tokens: int,
         _log.warning("FinOps ghi log step thất bại: %s", e)
 
 def log_run_to_db(run_id: str, workflow_type: str, duration_ms: int):
-    if not run_id:
+    if not run_id or not _runtime_bool("HARNESS_FINOPS_ENABLED", True):
         return
     try:
         def _insert(conn: sqlite3.Connection):
@@ -229,8 +248,8 @@ class AgentRole(str, Enum):
     REVIEWER    = "reviewer"
     TESTER      = "tester"
     SECURITY    = "security"
-    INTEGRITY   = "integrity"   # data integrity + synthesis guard — gpt-5.3-codex-4
-    SCANNER     = "scanner"     # static analysis: dead_code/complexity/duplicate/perf — gpt-5.3-codex-4 (high TPM)
+    INTEGRITY   = "integrity"   # data integrity + synthesis guard
+    SCANNER     = "scanner"     # static analysis: dead_code/complexity/duplicate/perf
     DEBUGGER    = "debugger"
     WORKER      = "worker"
 
@@ -471,13 +490,10 @@ ROLE_TEMPERATURE: dict[AgentRole, float] = {
 }
 
 
-# ── Core LLM call: adaptive API + params, retry, spare fallback ──────────────
-# Hai loại deployment trên Azure AI Foundry:
-#   - chat:      *.services.ai.azure.com/models  (Kimi, grok, gpt-5.4 thường...)
-#   - responses: *.cognitiveservices.azure.com   (dòng pro/codex CHỈ chạy API này)
-# Pre-seed theo tên model, sai thì flip adaptive (1 lần) từ error. Param quirks
-# (max_tokens vs max_completion_tokens, temperature) cũng học từ BadRequestError
-# và cache per-model thay vì hardcode.
+# ── Core LLM call: adaptive params, retry, spare fallback ────────────────────
+# 9Router local proxy exposes OpenAI-compatible Chat Completions for all
+# configured models. Param quirks are learned from BadRequestError and cached
+# per model instead of hardcoding.
 
 _MODEL_QUIRKS: dict[str, dict[str, Any]] = {}
 _model_quirks_lock = threading.Lock()
@@ -497,12 +513,12 @@ def _responses_queue_timeout(timeout: float) -> float:
     return max(0.01, value)
 
 
-def _get_responses_client() -> OpenAI:
+def _get_router_responses_client() -> OpenAI:
     global _responses_client
     if _responses_client is None:
         with _responses_client_lock:
             if _responses_client is None:
-                _responses_client = get_responses_client()
+                _responses_client = get_router_responses_client()
     return _responses_client
 
 
@@ -512,9 +528,7 @@ def _quirks_for(model: str) -> dict[str, Any]:
     with _model_quirks_lock:
         if model not in _MODEL_QUIRKS:
             from config import IS_OPENAI_COMPAT
-            responses_only = (not IS_OPENAI_COMPAT) and (
-                "codex" in model or re.search(r"-pro(-\d+)?$", model) is not None
-            )
+            responses_only = False
             _MODEL_QUIRKS[model] = {
                 "api":         "responses" if responses_only else "chat",
                 "api_locked":  False,  # chỉ cho flip api 1 lần, tránh ping-pong
@@ -552,7 +566,7 @@ def _chat_call(
 
 def _responses_call(model: str, messages: list[dict], max_output_tokens: int, timeout: float) -> tuple[str, int, int]:
     # Reasoning models: không temperature; JSON ép qua prompt (parser có fallback)
-    client = _get_responses_client()
+    client = _get_router_responses_client()
     instructions = "\n\n".join(
         m["content"] for m in messages if m["role"] == "system"
     ) or None
@@ -567,7 +581,7 @@ def _responses_call(model: str, messages: list[dict], max_output_tokens: int, ti
             timeout=timeout,
         )
 
-    # Azure Responses endpoint có thể ignore SDK timeout — enforce ở Python level.
+    # 9Router Responses endpoint có thể ignore SDK timeout — enforce ở Python level.
     # Shared bounded pool prevents unbounded thread growth when requests time out.
     queue_timeout = _responses_queue_timeout(timeout)
     acquired = _RESPONSES_SEM.acquire(timeout=queue_timeout)
@@ -627,6 +641,7 @@ def chat_completion(
     while True:
         quirks = _quirks_for(current_model)
         try:
+            enforce_llm_budget(current_model, messages, max_output_tokens)
             if quirks["api"] == "responses":
                 text, p_tok, c_tok = _responses_call(current_model, messages, max_output_tokens, timeout)
             else:
@@ -735,7 +750,7 @@ class Agent:
         self.role          = role
         self.model         = ROLE_TO_MODEL[role]
         self.system_prompt = system_prompt or SYSTEM_PROMPTS[role]
-        self.client        = client or get_azure_client()
+        self.client        = client or get_llm_client()
         self.history: list[AgentMessage] = []
         self._history_lock = threading.RLock()
 

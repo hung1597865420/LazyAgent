@@ -10,8 +10,8 @@ Claude Code là coder chính. Harness cung cấp 6 MCP tool hỗ trợ, dùng đ
 | Tool | Model | Dùng khi nào |
 |------|-------|--------------|
 | `panel_review` | reviewer + security + tester (parallel) → synthesizer merge | Sau khi viết/sửa code — 3 góc nhìn độc lập, trả findings JSON có file/line/severity/fix |
-| `consult` | analyzer (grok reasoning) | Trước khi implement phần khó — approach, trade-offs, edge cases |
-| `alt_implementation` | code_a (Kimi) + code_b (gpt-5.4) parallel | Cần 2 phương án để so sánh, hợp với module độc lập |
+| `consult` | analyzer (sonnet reasoning) | Trước khi implement phần khó — approach, trade-offs, edge cases |
+| `alt_implementation` | code_a (Gemini High) + code_b (ag/claude-sonnet-4-6) parallel | Cần 2 phương án để so sánh, hợp với module độc lập |
 | `suggest_fix` | debugger | Đưa code + error → root cause + patch dạng diff |
 | `ask_codebase` | manager (1M context, cap 2.5MB) | Hỏi đáp flow xuyên nhiều file, trích dẫn file:line |
 | `quick_task` | worker (mini) | Boilerplate, fixtures, mock data, docs |
@@ -22,20 +22,20 @@ Kèm `run_single_agent` (escape hatch) và `list_agents`.
 
 | File | Mô tả |
 |------|-------|
-| `config.py` | ModelConfig 10 role, SPARE_MODELS, WORKSPACE_ROOT, limits, Azure client |
+| `config.py` | ModelConfig 10 role, SPARE_MODELS, WORKSPACE_ROOT, limits, 9Router client |
 | `agents.py` | `Agent` class + `_chat_completion`: adaptive params, retry 429, fallback spare |
 | `support_tools.py` | Logic 6 support tool, đọc file từ workspace (chặn path ngoài root) |
 | `mcp_server.py` | MCP server đăng ký 8 tool |
 | `harness.py` | Pipeline 10-agent cũ (chỉ còn web UI dùng), prompt riêng `PIPELINE_*` |
 | `server.py` | FastAPI + SSE cho web UI (`index.html`) — secondary, không phải flow chính |
-| `smoke_test.py` | 20 test offline, không gọi Azure: `python smoke_test.py` |
+| `smoke_test.py` | 20 test offline, không gọi 9Router: `python smoke_test.py` |
 
 ## Điểm kỹ thuật đáng nhớ
 
-- **Hai loại API trên cùng resource Azure** (verify live 13/13 ngày 2026-06-12):
-  - Chat Completions: `https://<resource>.services.ai.azure.com/models` — Kimi, grok,
-    gpt-5.4 thường, api-version `2024-05-01-preview`
-  - Responses API: `https://<resource>.cognitiveservices.azure.com` — dòng **pro/codex
+- **Hai loại API trên cùng resource 9Router** (verify live 13/13 ngày 2026-06-12):
+  - Chat Completions: `http://localhost:20128/v1` — Gemini High, sonnet,
+    ag/claude-sonnet-4-6 thường, api-version `2024-05-01-preview`
+  - Responses API: `http://localhost:20128/v1` — dòng **Sonnet/Gemini
     CHỈ chạy API này** (chat completions trả "operation is unsupported"), api-version
     `2025-04-01-preview`. Cùng API key.
   - `agents.py::_quirks_for` pre-seed theo tên model (codex/-pro → responses), đoán sai
@@ -56,8 +56,8 @@ Kèm `run_single_agent` (escape hatch) và `list_agents`.
 
 ```bash
 pip install -r requirements.txt        # fastapi>=0.136 (starlette 1.x cần bản mới)
-# Điền .env: AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY (đang là placeholder!)
-# Đối chiếu 10 deployment name trong .env với Azure AI Foundry
+# Điền .env: ROUTER_BASE_URL + ROUTER_API_KEY (đang là placeholder!)
+# Đối chiếu 10 deployment name trong .env với 9Router Proxy
 # WORKSPACE_ROOT trỏ vào repo đang làm việc
 
 python smoke_test.py                   # verify offline, phải 20/20 pass
@@ -76,7 +76,7 @@ claude mcp add --scope user agent-harness -- python "C:/path/to/harness/mcp_serv
 
 `install.ps1` tự làm 4 bước: pip install → đăng ký MCP scope user → merge CLAUDE.md
 + hook vào `~/.claude/` (qua `merge_settings.py`, idempotent — chạy lại không tạo trùng)
-→ smoke test. Lưu ý: mọi máy dùng chung Azure resource nên chia sẻ chung rate limit
+→ smoke test. Lưu ý: mọi máy dùng chung 9Router resource nên chia sẻ chung rate limit
 (100k tokens/phút, 100 requests/phút mỗi deployment).
 
 # Web UI (tùy chọn):

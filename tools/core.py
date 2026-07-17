@@ -20,7 +20,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 from agents import Agent, AgentRole, AgentResult
-from config import WORKSPACE_ROOT, get_azure_client
+from config import WORKSPACE_ROOT, get_llm_client
+from runtime_flags import bool_flag
 
 _log = logging.getLogger("harness.core")
 LESSON_INDEX_FILE = ".harness_lessons.jsonl"
@@ -50,12 +51,28 @@ _LESSON_GLOBAL_REJECT_PATTERNS = (
     r"(?i)\b\.env\b|\blocalhost\b|\b127\.0\.0\.1\b",
     r"(?i)[a-z]:\\users\\|/users/|/home/",
 )
-_LESSON_CURATOR_AZURE_ROLES = (AgentRole.TESTER, AgentRole.SECURITY, AgentRole.REVIEWER)
+_LESSON_CURATOR_LLM_ROLES = (AgentRole.TESTER, AgentRole.SECURITY, AgentRole.REVIEWER)
+_LESSON_SECRET_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|auth|bearer|credential)")
+_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})")
 _MEMORY_SIGNAL_GLOBAL_TYPES = {"user_preference", "policy_guardrail"}
 _MEMORY_LLM_TOOLS = {
     "ask_codebase", "panel_review", "consult", "alt_implementation", "suggest_fix",
     "quick_task", "lesson_curator", "goal_runner", "auto_trigger", "prod_readiness_gate",
     "context_auditor", "swarm_debug", "incident_responder", "run_single_agent",
+}
+CHECKPOINT_FIELDS = ("symptom", "root_cause", "exact_fix", "verification", "diff_hash")
+CHECKPOINT_FIELD_LIMITS = {
+    "symptom": 300,
+    "root_cause": 500,
+    "exact_fix": 500,
+    "verification": 240,
+    "diff_hash": 80,
+}
+_LESSON_INJECTION_MIN_SCORE = {
+    "tool_performance": 12,
+    "checked_edit": 8,
+    "edit_event": 999,
+    "project_seen": 999,
 }
 
 # ── Helper functions for CLI execution and LLM analysis ────────────────────────
@@ -77,7 +94,7 @@ def _run_cmd_safe(cmd: list[str], timeout: float = 15.0, cwd: str | None = None)
 
 async def _llm_analyze(prompt: str, context: str = "", role: AgentRole = AgentRole.WORKER) -> str:
     """Gọi Agent để phân tích văn bản/ngữ cảnh."""
-    client = get_azure_client()
+    client = get_llm_client()
     agent = Agent(role, client)
     res = await agent.run_async(prompt, context)
     return res.result if res.status == "success" else f"Error from Agent: {res.error}"
@@ -153,6 +170,7 @@ def read_workspace_files(
     total = 0
     loaded = 0
     root = os.path.realpath(_get_active_workspace())
+    root_cmp = os.path.normcase(root)
 
     for p in paths:
         if not p or not isinstance(p, str) or not p.strip():
@@ -164,7 +182,7 @@ def read_workspace_files(
             warnings.append(f"{p}: không thể resolve path — {e}")
             continue
         try:
-            outside = os.path.commonpath([full, root]) != root
+            outside = os.path.commonpath([os.path.normcase(full), root_cmp]) != root_cmp
         except ValueError:
             outside = True  # different drives on Windows
         if outside:
@@ -236,7 +254,29 @@ def get_lesson_db_path(*, global_scope: bool = False) -> str:
     return get_runtime_path(LESSON_DB_FILE)
 
 
+def _decode_unicode_escapes_safe(text: str) -> str:
+    def replace(match: re.Match) -> str:
+        try:
+            codepoint = int(match.group(1) or match.group(2), 16)
+            if 0xD800 <= codepoint <= 0xDFFF:
+                return match.group(0)
+            return chr(codepoint)
+        except (TypeError, ValueError, OverflowError):
+            return match.group(0)
+
+    return _UNICODE_ESCAPE_RE.sub(replace, text)
+
+
 def _redact_lesson_string(value: str) -> str:
+    stripped = value.strip()
+    if stripped[:1] in {"{", "["}:
+        try:
+            parsed = json.loads(stripped)
+        except (TypeError, json.JSONDecodeError):
+            pass
+        else:
+            return json.dumps(_redact_lesson_value(parsed), ensure_ascii=False, default=str)[:2000]
+    value = _decode_unicode_escapes_safe(value)
     text = re.sub(
         r"(?i)\bauthorization\s*[:=]\s*bearer\s+[A-Za-z0-9._~+/=-]+",
         "authorization=[REDACTED]",
@@ -278,10 +318,76 @@ def _redact_lesson_value(value, _seen: set[int] | None = None, _depth: int = 0):
             return "[CYCLE]"
         _seen.add(marker)
         try:
-            return {str(k)[:80]: _redact_lesson_value(v, _seen, _depth + 1) for k, v in value.items()}
+            redacted = {}
+            for k, v in value.items():
+                key_text = _decode_unicode_escapes_safe(str(k))[:80]
+                sensitive_key = bool(_LESSON_SECRET_KEY_RE.search(key_text))
+                safe_key = "[REDACTED_KEY]" if sensitive_key else _redact_lesson_string(key_text)
+                redacted[safe_key] = "[REDACTED]" if sensitive_key else _redact_lesson_value(v, _seen, _depth + 1)
+            return redacted
         finally:
             _seen.discard(marker)
     return value
+
+
+def _checkpoint_field(name: str, value) -> str:
+    text = _redact_lesson_string(str(value or "").strip())
+    if not text:
+        return ""
+    return text[:CHECKPOINT_FIELD_LIMITS.get(name, 300)]
+
+
+def _infer_root_cause(text: str) -> str:
+    body = str(text or "")
+    patterns = (
+        r"(?is)\broot\s*cause\s*[:：-]\s*(.+?)(?:\n\s*(?:fix|solution|verification|test|patch)\b|$)",
+        r"(?is)\bnguyên\s+nhân\s*[:：-]\s*(.+?)(?:\n\s*(?:cách|sửa|kiểm|test|xác)\b|$)",
+        r"(?is)\bcause\s*[:：-]\s*(.+?)(?:\n\s*(?:fix|solution|verification|test|patch)\b|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, body)
+        if match:
+            candidate = re.sub(r"\s+", " ", match.group(1)).strip()
+            if candidate:
+                return _checkpoint_field("root_cause", candidate)
+    return ""
+
+
+def build_lesson_checkpoint(
+    *,
+    symptom: str = "",
+    root_cause: str = "",
+    exact_fix: str = "",
+    verification: str = "",
+    files: list[str] | None = None,
+    diff: str = "",
+    diff_hash: str = "",
+) -> dict:
+    """Return additive checkpoint fields for lesson records.
+
+    Storage remains JSONL-compatible; callers merge this dict into normal lesson
+    payloads. Values are redacted before truncation so secrets cannot survive in
+    clipped text.
+    """
+    checkpoint: dict[str, object] = {}
+    for name, value in (
+        ("symptom", symptom),
+        ("root_cause", root_cause),
+        ("exact_fix", exact_fix),
+        ("verification", verification),
+    ):
+        cleaned = _checkpoint_field(name, value)
+        if cleaned:
+            checkpoint[name] = cleaned
+    if diff_hash:
+        checkpoint["diff_hash"] = _checkpoint_field("diff_hash", diff_hash)
+    elif diff:
+        checkpoint["diff_hash"] = hashlib.sha256(str(diff).encode("utf-8", errors="replace")).hexdigest()[:16]
+    if files:
+        checkpoint["files"] = [str(path)[:240] for path in files[:20]]
+    if checkpoint:
+        checkpoint["checkpoint"] = True
+    return checkpoint
 
 
 def _lesson_key_exists_jsonl(path: Path, lesson_key: str) -> bool:
@@ -456,7 +562,11 @@ def _lesson_file_lock(path: Path):
 
 def _lesson_text_blob(entry: dict) -> str:
     parts = []
-    for key in ("source", "lesson_type", "title", "summary", "error_signature", "fix_summary", "tags", "steps", "files", "refs"):
+    for key in (
+        "source", "lesson_type", "title", "summary", "error_signature", "fix_summary",
+        "symptom", "root_cause", "exact_fix", "verification", "diff_hash",
+        "tags", "steps", "files", "refs",
+    ):
         value = entry.get(key)
         if value:
             parts.append(json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, (dict, list)) else str(value))
@@ -549,6 +659,10 @@ def _global_lesson_payload(entry: dict, decision: dict) -> dict:
         "title": str(entry.get("title") or "")[:160],
         "outcome": str(entry.get("outcome") or "learned"),
         "summary": str(entry.get("summary") or "")[:1000],
+        "symptom": str(entry.get("symptom") or "")[:300],
+        "root_cause": str(entry.get("root_cause") or "")[:500],
+        "exact_fix": str(entry.get("exact_fix") or "")[:500],
+        "verification": str(entry.get("verification") or "")[:240],
         "steps": steps,
         "tags": tag_list,
         "refs": entry.get("refs") or {},
@@ -690,7 +804,7 @@ def _lesson_curator_candidate(item: dict, decision: dict) -> bool:
     )
 
 
-async def _azure_curate_one(item: dict, static_decision: dict, *, timeout: float) -> dict:
+async def _llm_curate_one(item: dict, static_decision: dict, *, timeout: float) -> dict:
     lesson = {
         "source": item.get("source"),
         "lesson_type": item.get("lesson_type"),
@@ -699,6 +813,11 @@ async def _azure_curate_one(item: dict, static_decision: dict, *, timeout: float
         "summary": item.get("summary"),
         "fix_summary": item.get("fix_summary"),
         "error_signature": item.get("error_signature"),
+        "symptom": item.get("symptom"),
+        "root_cause": item.get("root_cause"),
+        "exact_fix": item.get("exact_fix"),
+        "verification": item.get("verification"),
+        "diff_hash": item.get("diff_hash"),
         "steps": _clean_lesson_steps(item.get("steps")),
         "tags": item.get("tags"),
         "files": item.get("files"),
@@ -713,11 +832,11 @@ async def _azure_curate_one(item: dict, static_decision: dict, *, timeout: float
         "Do NOT promote project-specific edits, panel_review findings, tracebacks, timeouts, secrets, local paths, or .env details."
     )
     context = json.dumps(lesson, ensure_ascii=False, default=str)[:12000]
-    roles = _LESSON_CURATOR_AZURE_ROLES
+    roles = _LESSON_CURATOR_LLM_ROLES
 
     async def run(role: AgentRole) -> dict:
         try:
-            res = await Agent(role, get_azure_client()).run_async(
+            res = await Agent(role, get_llm_client()).run_async(
                 prompt,
                 context,
                 json_mode=True,
@@ -761,10 +880,10 @@ async def _azure_curate_one(item: dict, static_decision: dict, *, timeout: float
     return {
         "classification": classification,
         "promote_global": promote,
-        "reason": str(chosen.get("reason") or static_decision.get("reason") or "azure adjudicated")[:500],
+        "reason": str(chosen.get("reason") or static_decision.get("reason") or "router adjudicated")[:500],
         "confidence": confidence,
         "adjudication_status": adjudication_status,
-        "azure_votes": votes,
+        "llm_votes": votes,
         "normalized_title": chosen.get("normalized_title"),
         "normalized_summary": chosen.get("normalized_summary"),
         "tags": chosen.get("tags"),
@@ -778,7 +897,7 @@ async def lesson_curator(
     promote: bool = True,
     dry_run: bool = False,
     mode: str = "max",
-    azure_limit: int = 20,
+    llm_limit: int = 20,
     timeout: float = 15.0,
     allow_untrusted_promote: bool = False,
 ) -> dict:
@@ -794,7 +913,7 @@ async def lesson_curator(
             allow_untrusted_promote=allow_untrusted_promote,
         )
         result["mode"] = "safe"
-        result["azure_used"] = False
+        result["llm_used"] = False
         return result
 
     rows = read_lessons(wanted, include_global=False)
@@ -802,18 +921,18 @@ async def lesson_curator(
     counts: dict[str, int] = {}
     warnings: list[str] = []
     promoted = 0
-    azure_used = 0
-    azure_cap = max(0, min(100, int(azure_limit or 20)))
+    llm_used = 0
+    router_cap = max(0, min(100, int(llm_limit or 20)))
     timeout = max(5.0, min(180.0, float(timeout or 15.0)))
     for item in rows:
         static_decision = curate_lesson(item)
         decision = static_decision
-        if azure_used < azure_cap and _lesson_curator_candidate(item, static_decision):
-            decision = await _azure_curate_one(item, static_decision, timeout=timeout)
-            azure_used += 1
+        if llm_used < router_cap and _lesson_curator_candidate(item, static_decision):
+            decision = await _llm_curate_one(item, static_decision, timeout=timeout)
+            llm_used += 1
             if decision.get("adjudication_status") in {"partial", "failed"}:
                 warnings.append(
-                    f"lesson {item.get('lesson_key') or item.get('title')}: Azure adjudication {decision.get('adjudication_status')}"
+                    f"lesson {item.get('lesson_key') or item.get('title')}: 9Router adjudication {decision.get('adjudication_status')}"
                 )
         classification = str(decision.get("classification") or "unknown")
         counts[classification] = counts.get(classification, 0) + 1
@@ -842,13 +961,13 @@ async def lesson_curator(
             "reason": decision.get("reason"),
             "confidence": decision.get("confidence"),
             "adjudication_status": decision.get("adjudication_status"),
-            "azure_votes": decision.get("azure_votes"),
+            "llm_votes": decision.get("llm_votes"),
         })
     return {
         "status": "completed",
         "mode": "max",
-        "azure_roles": [role.value for role in _LESSON_CURATOR_AZURE_ROLES],
-        "azure_used": azure_used,
+        "llm_roles": [role.value for role in _LESSON_CURATOR_LLM_ROLES],
+        "llm_used": llm_used,
         "scanned": len(rows),
         "promoted": promoted,
         "dry_run": dry_run,
@@ -870,6 +989,8 @@ def _auto_promote_lesson(payload: dict) -> bool:
 
 
 def append_lesson(entry: dict, *, global_scope: bool = False) -> bool:
+    if not bool_flag("HARNESS_LESSONS_ENABLED", True, root=_get_active_workspace()):
+        return False
     payload = {"ts": time.time(), **_redact_lesson_value(entry)}
     payload = _apply_lesson_lifecycle(payload, global_scope=global_scope)
     if not global_scope and _lesson_should_curate(payload):
@@ -1083,7 +1204,7 @@ def _memory_find_model(value) -> str:
         for key in ("model", "model_used", "deployment"):
             if value.get(key):
                 return str(value.get(key))[:80]
-        for key in ("panel", "azure_votes", "model_attempts"):
+        for key in ("panel", "llm_votes", "model_attempts"):
             found = _memory_find_model(value.get(key))
             if found:
                 return found
@@ -1164,12 +1285,28 @@ def record_failure_causality_memory(
                 "summary": str(item.get("summary") or item.get("message") or item.get("detail") or "")[:300],
             })
     key = f"failure:{diff_hash or _memory_digest(files, task)}:{_memory_digest(failed_tools, top_failures, n=10)}"
+    symptom = f"Auto-trigger batch blocked by {', '.join(failed_tools[:8]) or blockers_count}."
+    root_cause = "; ".join(
+        f"{item.get('tool')}: {item.get('summary') or item.get('error') or item.get('verdict')}"
+        for item in top_failures[:3]
+        if item.get("tool")
+    )
+    exact_fix = "Inspect the failed tool output, fix the touched files, then rerun auto_trigger/panel_review for the same batch."
+    verification = f"Not verified yet; blockers_count={blockers_count}."
     stored = append_lesson({
         "source": "auto_trigger",
         "lesson_type": "failure_causality",
         "title": f"Failure after edit batch {batch_id}",
         "outcome": "blocked",
         "summary": f"Batch touched {len(files)} files; blockers={blockers_count}; failed_tools={', '.join(failed_tools[:8])}.",
+        **build_lesson_checkpoint(
+            symptom=symptom,
+            root_cause=root_cause,
+            exact_fix=exact_fix,
+            verification=verification,
+            files=files,
+            diff_hash=diff_hash,
+        ),
         "files": files[:20],
         "task": task[:500],
         "diff_hash": diff_hash,
@@ -1240,10 +1377,15 @@ def _lesson_identity(lesson: dict) -> str:
     key = str(lesson.get("lesson_key") or "").strip()
     if key:
         return key
-    return "|".join(str(lesson.get(k, ""))[:200] for k in ("source", "title", "summary", "error_signature", "fix_summary"))
+    return "|".join(str(lesson.get(k, ""))[:200] for k in (
+        "source", "title", "summary", "error_signature", "fix_summary",
+        "symptom", "root_cause", "exact_fix",
+    ))
 
 
 def read_lessons(limit: int = 20, *, include_global: bool = False) -> list[dict]:
+    if not bool_flag("HARNESS_LESSONS_ENABLED", True, root=_get_active_workspace()):
+        return []
     wanted = max(1, min(200, int(limit or 20)))
     rows = _read_lessons_from(Path(get_runtime_path(LESSON_INDEX_FILE)), wanted, "local")
     if include_global:
@@ -1272,7 +1414,8 @@ def _lesson_score(target_terms: set[str], lesson: dict, target_text: str = "") -
     title = _lesson_blob(lesson, ("title",))
     tags = _lesson_blob(lesson, ("tags", "lesson_type", "source"))
     body = _lesson_blob(lesson, (
-        "summary", "error_signature", "fix_summary", "files", "steps", "procedure",
+        "summary", "error_signature", "fix_summary", "symptom", "root_cause",
+        "exact_fix", "verification", "diff_hash", "files", "steps", "procedure",
         "workflow", "commands", "refs", "domain", "provider",
     ))
     score = 0
@@ -1290,14 +1433,38 @@ def _lesson_score(target_terms: set[str], lesson: dict, target_text: str = "") -
     return score
 
 
+def _lesson_min_injection_score(lesson: dict) -> int:
+    lesson_type = str(lesson.get("lesson_type") or "").strip().lower()
+    return _LESSON_INJECTION_MIN_SCORE.get(lesson_type, 1)
+
+
+def _lesson_checkpoint_summary(lesson: dict) -> str:
+    lines = []
+    for label, key in (
+        ("symptom", "symptom"),
+        ("root_cause", "root_cause"),
+        ("exact_fix", "exact_fix"),
+        ("verification", "verification"),
+        ("diff_hash", "diff_hash"),
+    ):
+        value = str(lesson.get(key) or "").strip()
+        if value:
+            lines.append(f"{label}: {value}")
+    if lines:
+        return "\n  ".join(lines)
+    return str(lesson.get("fix_summary") or lesson.get("summary") or "")[:260]
+
+
 def load_relevant_lessons_context(target_text: str, limit: int = 3) -> str:
+    if not bool_flag("HARNESS_LESSONS_ENABLED", True, root=_get_active_workspace()):
+        return ""
     terms = _lesson_terms(target_text)
     if not terms:
         return ""
     scored = []
     for lesson in read_lessons(100, include_global=True):
         score = _lesson_score(terms, lesson, target_text)
-        if score > 0:
+        if score >= _lesson_min_injection_score(lesson):
             scored.append((score, lesson))
     scored.sort(key=lambda item: (-item[0], -float(item[1].get("ts") or 0)))
     lines = []
@@ -1307,7 +1474,7 @@ def load_relevant_lessons_context(target_text: str, limit: int = 3) -> str:
         lesson_type = str(lesson.get("lesson_type") or ("fix" if lesson.get("error_signature") else "lesson"))
         scope = str(lesson.get("_lesson_scope") or "local")
         files = ", ".join(str(x) for x in (lesson.get("files") or [])[:5]) if isinstance(lesson.get("files"), list) else str(lesson.get("files") or "")
-        fix = str(lesson.get("fix_summary") or lesson.get("summary") or "")[:260]
+        fix = _lesson_checkpoint_summary(lesson)
         ref = str(lesson.get("wiki_ref") or "")
         steps = _clean_lesson_steps(lesson.get("steps"))
         step_text = " | ".join(f"{idx + 1}. {step}" for idx, step in enumerate(steps[:5]))[:500]
@@ -2287,9 +2454,9 @@ def _cleanup_session_backups(backup_paths: list[str]):
 async def _extract_and_save_lesson(error: str, files: Optional[list[str]], patch: str) -> None:
     try:
         from agents import Agent, AgentRole
-        from config import get_azure_client
+        from config import get_llm_client
         
-        client = get_azure_client()
+        client = get_llm_client()
         system_prompt = (
             "Bạn là Wiki Ingestion Agent. Nhiệm vụ của bạn là đúc rút kinh nghiệm sửa lỗi (Lesson Learned) "
             "từ lỗi gốc và bản vá thành công vừa qua của dự án.\n\n"
@@ -2361,11 +2528,20 @@ async def _extract_and_save_lesson(error: str, files: Optional[list[str]], patch
 
         append_lesson({
             "source": "wiki_lesson",
+            "lesson_type": "fix",
             "title": title,
             "outcome": "fixed",
             "files": files or [],
             "error_signature": (error or "")[:500],
             "fix_summary": content[:600],
+            **build_lesson_checkpoint(
+                symptom=error or "",
+                root_cause=_infer_root_cause(content),
+                exact_fix=content[:600],
+                verification=f"Lesson saved to llmwiki/wiki/concepts/{os.path.basename(filepath)}",
+                files=files or [],
+                diff=patch or "",
+            ),
             "wiki_ref": f"llmwiki/wiki/concepts/{os.path.basename(filepath)}",
             "tags": ["suggest_fix", "lesson"],
         })

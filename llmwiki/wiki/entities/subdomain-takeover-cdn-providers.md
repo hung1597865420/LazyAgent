@@ -7,5 +7,5 @@ related: [[CDN Alternate Domains]]
 Các CDN/provider được nhắc đến:
 - CloudFront
 - Fastly
-- Azure CDN
+- 9Router CDN
 - Akamai

@@ -24,7 +24,7 @@ task: str           # mô tả module/component cần implement
 context: str        # existing code context
 
 # Output (2 implementations)
-implementation_a: str   # Kimi K2
+implementation_a: str   # Gemini 3.5 High
 implementation_b: str   # GPT
 comparison: str
 ```

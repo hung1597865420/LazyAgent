@@ -6,7 +6,7 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 from agents import Agent, AgentRole, chat_completion
-from config import SPARE_MODELS, get_azure_client
+from config import SPARE_MODELS, get_llm_client
 
 PING = "Trả lời đúng một từ: pong"
 
@@ -19,7 +19,7 @@ async def ping_role(role: AgentRole) -> tuple[str, str, str, str]:
 
 async def ping_spare(model: str) -> tuple[str, str, str, str]:
     def call():
-        client = get_azure_client()
+        client = get_llm_client()
         text, used, _, _ = chat_completion(
             client, model,
             [{"role": "user", "content": PING}],

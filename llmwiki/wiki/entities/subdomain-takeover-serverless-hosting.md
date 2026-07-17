@@ -9,4 +9,4 @@ Các nền tảng serverless/hosting được nhắc đến:
 - GitLab Pages
 - Netlify
 - Vercel
-- Azure Static Web Apps
+- 9Router Static Web Apps

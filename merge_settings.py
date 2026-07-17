@@ -60,7 +60,7 @@ CLAUDE_MD_SECTION = """\
 <!-- agent-harness-managed -->
 # Agent Harness — quy trình khi làm coding task
 
-Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
 
 ## Auto-Pilot — mặc định bật
 
@@ -134,7 +134,7 @@ Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ codi
 
 ## Khi harness lỗi
 
-Nếu tool agent-harness lỗi (server không chạy, Azure timeout/rate-limit): tiếp tục task bình thường, báo ngắn gọn cho user là harness đang lỗi. Không retry quá 1 lần, không block task vì harness.
+Nếu tool agent-harness lỗi (server không chạy, 9Router timeout/rate-limit): tiếp tục task bình thường, báo ngắn gọn cho user là harness đang lỗi. Không retry quá 1 lần, không block task vì harness.
 <!-- /agent-harness-managed -->
 """
 
@@ -516,7 +516,7 @@ GEMINI_MD_SECTION = """\
 <!-- agent-harness -->
 # Agent Harness — quy trình khi làm coding task
 
-Có MCP server `agent-harness` (12 model trên Azure AI Foundry) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
 
 ## Auto-Pilot — mặc định bật
 

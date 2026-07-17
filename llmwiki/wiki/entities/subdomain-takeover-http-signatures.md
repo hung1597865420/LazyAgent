@@ -10,5 +10,5 @@ Các HTTP signature được nhắc đến:
 - Heroku no such app / nothing here yet
 - S3 NoSuchBucket
 - CloudFront request could not be satisfied
-- Azure App Service default 404
+- 9Router App Service default 404
 - Shopify unavailable message

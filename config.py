@@ -1,6 +1,6 @@
 """
 Agent Harness - Configuration
-12-Agent Support Toolbox cho Claude Code | Azure AI Foundry
+12-Agent Support Toolbox cho Claude Code | 9Router Proxy
 """
 import os
 import math
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import AzureOpenAI, OpenAI
+from openai import OpenAI
 
 dotenv_disabled = os.getenv("HARNESS_DISABLE_DOTENV", "").lower() in ("1", "true", "yes")
 if not dotenv_disabled:
@@ -21,54 +21,53 @@ if not dotenv_disabled:
 
 @dataclass
 class ModelConfig:
-    # ── Orchestration (2x pro) ────────────────────────────────────────────────
-    manager:     str   # gpt-5.4-pro-3   — ask_codebase: Q&A trên codebase lớn (1M context)
-    synthesizer: str   # gpt-5.4-4       — merge/dedupe findings, fast JSON synthesis
+    # Non-code/light roles use Gemini 3.5 Low; code/review roles use Gemini 3.5 High + Sonnet 4.6.
+    manager:     str
+    synthesizer: str
 
-    # ── Analysis ─────────────────────────────────────────────────────────────
-    analyzer:    str   # grok-4-20-reasoning — consult: design questions, trade-offs
+    analyzer:    str
 
-    # ── Code (dual parallel) ─────────────────────────────────────────────────
-    code_a:      str   # gpt-5.3-codex   — alt_implementation approach 1, code-focused
-    code_b:      str   # gpt-5.4         — alt_implementation approach 2
+    code_a:      str
+    code_b:      str
 
-    # ── Review panel (3x codex parallel + 1x integrity sequential) ──────────────
-    reviewer:    str   # gpt-5.3-codex   — code quality, bugs, anti-patterns
-    tester:      str   # gpt-5.3-codex-2 — test gaps, edge cases
-    security:    str   # gpt-5.3-codex-3 — OWASP, vulns, auth, injection
-    integrity:   str   # gpt-5.3-codex-4 — data integrity + synthesis guard (runs after panel)
-    scanner:     str   # gpt-5.3-codex-4 — static analysis: dead_code/complexity/duplicate/perf (high TPM)
+    reviewer:    str
+    tester:      str
+    security:    str
+    integrity:   str
+    scanner:     str
 
-    # ── Fix ───────────────────────────────────────────────────────────────────
-    debugger:    str   # gpt-5.4-2       — suggest_fix: root cause + patch
+    debugger:    str
 
-    # ── Worker ───────────────────────────────────────────────────────────────
-    worker:      str   # gpt-5.4-mini    — quick_task: boilerplate, format, docs
+    worker:      str
 
 
 def get_model_config() -> ModelConfig:
     def model_env(key: str, default: str) -> str:
         return (os.getenv(key, default) or "").strip() or default
 
+    gemini_low = "ag/gemini-3.5-flash-extra-low"
+    gemini_high = "ag/gemini-3-flash-agent"
+    sonnet = "ag/claude-sonnet-4-6"
+
     return ModelConfig(
-        manager     = model_env("MODEL_MANAGER",     "gpt-5.4-pro-3"),  # true 1M context
-        synthesizer = model_env("MODEL_SYNTHESIZER", "gpt-5.4-4"),
-        analyzer    = model_env("MODEL_ANALYZER",    "grok-4-20-reasoning"),
-        code_a      = model_env("MODEL_CODE_A",      "gpt-5.3-codex"),
-        code_b      = model_env("MODEL_CODE_B",      "gpt-5.4"),
-        reviewer    = model_env("MODEL_REVIEWER",    "gpt-5.3-codex"),
-        tester      = model_env("MODEL_TESTER",      "gpt-5.3-codex-2"),
-        security    = model_env("MODEL_SECURITY",    "gpt-5.3-codex-3"),
-        integrity   = model_env("MODEL_INTEGRITY",   "gpt-5.3-codex-4"),
-        scanner     = model_env("MODEL_SCANNER",     "gpt-5.3-codex-4"),
-        debugger    = model_env("MODEL_DEBUGGER",    "gpt-5.4-2"),
-        worker      = model_env("MODEL_WORKER",      "gpt-5.4-mini"),
+        manager     = model_env("MODEL_MANAGER",     gemini_high),
+        synthesizer = model_env("MODEL_SYNTHESIZER", gemini_high),
+        analyzer    = model_env("MODEL_ANALYZER",    sonnet),
+        code_a      = model_env("MODEL_CODE_A",      gemini_high),
+        code_b      = model_env("MODEL_CODE_B",      sonnet),
+        reviewer    = model_env("MODEL_REVIEWER",    gemini_high),
+        tester      = model_env("MODEL_TESTER",      gemini_high),
+        security    = model_env("MODEL_SECURITY",    sonnet),
+        integrity   = model_env("MODEL_INTEGRITY",   sonnet),
+        scanner     = model_env("MODEL_SCANNER",     gemini_high),
+        debugger    = model_env("MODEL_DEBUGGER",    gemini_high),
+        worker      = model_env("MODEL_WORKER",      gemini_low),
     )
 
 
 # ── Spare deployments — fallback khi rate-limit dai dẳng ─────────────────────
-DEFAULT_SPARE_MODELS = "gpt-5.4-4,gpt-5.4-3,gpt-5.3-codex-4,gpt-5.4,gpt-5.4-2,gpt-4.1-mini"
-DEFAULT_EXTRA_DEPLOYMENTS = "gpt-4.1-mini"
+DEFAULT_SPARE_MODELS = "ag/gemini-3-flash-agent,ag/gemini-3.5-flash-extra-low,ag/claude-sonnet-4-6"
+DEFAULT_EXTRA_DEPLOYMENTS = "ag/gemini-3-flash-agent,ag/gemini-3.5-flash-extra-low,ag/claude-sonnet-4-6"
 
 
 def _csv_values(raw: str) -> list[str]:
@@ -152,7 +151,7 @@ REQUEST_TIMEOUT:   float = _safe_float("REQUEST_TIMEOUT",  90.0,  min_val=1.0)
 ROLE_TIMEOUTS: dict[str, float] = {
     "manager":     _safe_float("ROLE_TIMEOUT_MANAGER",     300.0, min_val=30.0),  # codebase lớn cần thời gian
     "synthesizer": _safe_float("ROLE_TIMEOUT_SYNTHESIZER", 120.0, min_val=30.0),
-    "analyzer":    _safe_float("ROLE_TIMEOUT_ANALYZER",    300.0, min_val=30.0),  # grok reasoning chậm
+    "analyzer":    _safe_float("ROLE_TIMEOUT_ANALYZER",    300.0, min_val=30.0),
     "code_a":      _safe_float("ROLE_TIMEOUT_CODE_A",       90.0, min_val=30.0),
     "code_b":      _safe_float("ROLE_TIMEOUT_CODE_B",       90.0, min_val=30.0),
     "reviewer":    _safe_float("ROLE_TIMEOUT_REVIEWER",    180.0, min_val=10.0),
@@ -165,87 +164,34 @@ ROLE_TIMEOUTS: dict[str, float] = {
 }
 
 
-# True khi dùng endpoint OpenAI-compatible ngoài Azure (9Router, OpenRouter, LiteLLM...)
-# → tắt Responses API path, dùng Chat Completions cho tất cả model
-IS_OPENAI_COMPAT: bool = "azure.com" not in os.getenv("AZURE_OPENAI_ENDPOINT", "")
+# 9Router local proxy is OpenAI-compatible; use Chat Completions for all configured models.
+IS_OPENAI_COMPAT: bool = True
 
 
-def get_azure_client() -> OpenAI:
-    """Tự nhận diện loại endpoint:
-    - Endpoint không chứa azure.com  → OpenAI-compatible proxy (9Router, OpenRouter…)
-    - *.services.ai.azure.com        → Azure AI Foundry model inference (OpenAI SDK + base_url)
-    - *.openai.azure.com             → Azure OpenAI cổ điển (AzureOpenAI client)
-    """
-    endpoint    = os.getenv("AZURE_OPENAI_ENDPOINT")
-    api_key     = os.getenv("AZURE_OPENAI_API_KEY")
-    api_version = os.getenv("AZURE_API_VERSION", "2024-05-01-preview")
+def get_llm_client() -> OpenAI:
+    """Return the OpenAI-compatible 9Router client."""
+    endpoint = os.getenv("ROUTER_BASE_URL", "http://localhost:20128")
+    api_key = os.getenv("ROUTER_API_KEY", "dummy")
 
     if not endpoint or not api_key:
         raise ValueError(
-            "Thiếu AZURE_OPENAI_ENDPOINT hoặc AZURE_OPENAI_API_KEY trong .env"
+            "Thiếu ROUTER_BASE_URL hoặc ROUTER_API_KEY trong .env"
         )
 
-    if "azure.com" not in endpoint:
-        # OpenAI-compatible proxy: 9Router, OpenRouter, LiteLLM, vLLM...
-        # Responses API bị tắt tự động qua IS_OPENAI_COMPAT
-        base_url = endpoint.rstrip("/")
-        if not base_url.endswith("/v1"):
-            base_url += "/v1"
-        return OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=REQUEST_TIMEOUT,
-            max_retries=0,
-        )
-
-    if "services.ai.azure.com" in endpoint:
-        # Chấp nhận cả Target URI đầy đủ lẫn base URL — chuẩn hóa về .../models
-        base_url = endpoint.split("/chat/completions")[0].rstrip("/")
-        if not base_url.endswith("/models"):
-            base_url += "/models"
-        return OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            default_query={"api-version": api_version},
-            timeout=REQUEST_TIMEOUT,
-            max_retries=0,  # retry tự xử lý trong agents._chat_completion
-        )
-
-    return AzureOpenAI(
-        azure_endpoint=endpoint,
+    base_url = endpoint.split("/chat/completions")[0].rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url += "/v1"
+    return OpenAI(
+        base_url=base_url,
         api_key=api_key,
-        api_version=api_version,
-        timeout=REQUEST_TIMEOUT,
-        max_retries=0,  # retry tự xử lý trong agents._chat_completion
-    )
-
-
-def get_responses_client() -> OpenAI:
-    """Client cho Responses API — dòng pro/codex CHỈ chạy API này.
-    Host: *.cognitiveservices.azure.com (suy ra từ endpoint chính nếu không set riêng).
-    """
-    api_key  = os.getenv("AZURE_OPENAI_API_KEY")
-    endpoint = os.getenv("AZURE_RESPONSES_ENDPOINT")
-
-    if not api_key:
-        raise ValueError("Thiếu AZURE_OPENAI_API_KEY trong .env")
-    if not endpoint:
-        main = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-        host = main.split("://")[-1].split("/")[0]
-        resource = host.split(".")[0]
-        if not resource:
-            raise ValueError("Không suy ra được AZURE_RESPONSES_ENDPOINT từ AZURE_OPENAI_ENDPOINT")
-        endpoint = f"https://{resource}.cognitiveservices.azure.com"
-    # Chấp nhận cả Target URI đầy đủ (.../openai/responses?...) lẫn base URL
-    endpoint = endpoint.split("/openai")[0].rstrip("/")
-
-    return AzureOpenAI(
-        azure_endpoint=endpoint,
-        api_key=api_key,
-        api_version=os.getenv("AZURE_RESPONSES_API_VERSION", "2025-04-01-preview"),
         timeout=REQUEST_TIMEOUT,
         max_retries=0,
     )
+
+
+def get_router_responses_client() -> OpenAI:
+    """Compatibility hook for old Responses path; 9Router uses the same OpenAI-compatible client."""
+    return get_llm_client()
 
 
 MODELS = get_model_config()

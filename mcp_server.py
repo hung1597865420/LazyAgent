@@ -25,7 +25,8 @@ from mcp.server.stdio import stdio_server
 from mcp import types
 
 from agents import Agent, AgentRole, get_finops_stats
-from config import MODELS, WORKSPACE_ROOT, get_azure_client, get_model_config
+from config import MODELS, WORKSPACE_ROOT, get_llm_client, get_model_config
+from runtime_flags import bool_flag
 import support_tools as st
 
 logging.basicConfig(
@@ -39,7 +40,7 @@ app = Server("agent-harness")
 
 # Registry giữ background tasks tránh GC + cho phép harvest khi cancel
 _background_tasks: set[asyncio.Task] = set()
-# Giới hạn đồng thời để tránh Azure rate-limit khi spam cancel
+# Giới hạn đồng thời để tránh 9Router rate-limit khi spam cancel
 _TOOL_SEM = asyncio.Semaphore(8)
 _LAZY_SETTINGS_MERGE_DONE = False
 _HOT_RELOAD_LOCK = asyncio.Lock()
@@ -177,7 +178,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Auto-Pilot: sau Edit/Write hoặc trước khi hoàn thành, tự chọn và chạy các harness checks phù hợp "
                 "(secret/env/config/devops/complexity/dead-code/duplicate/panel_review). "
-                "mode=max để vắt Azure mạnh nhất; tránh gửi .env thật vào panel_review."
+                "mode=max để vắt 9Router mạnh nhất; tránh gửi .env thật vào panel_review."
             ),
             inputSchema={
                 "type": "object",
@@ -186,7 +187,7 @@ async def list_tools() -> list[types.Tool]:
                     "diff": {"type": "string", "description": "Unified diff hoặc summary diff nếu có"},
                     "task": {"type": "string", "description": "Task/user request hiện tại để chọn checks"},
                     "stage": {"type": "string", "enum": ["post_edit", "final", "pre_complete"], "description": "Vị trí gọi auto-pilot"},
-                    "mode": {"type": "string", "enum": ["max", "safe"], "description": "max=vắt Azure mạnh nhất; safe=chỉ chạy khi có rủi ro rõ"},
+                    "mode": {"type": "string", "enum": ["max", "safe"], "description": "max=vắt 9Router mạnh nhất; safe=chỉ chạy khi có rủi ro rõ"},
                 },
             },
         ),
@@ -345,7 +346,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="context_auditor",
-            description="Audit context assembly for size, warnings, goal injection, and line-context presence without calling Azure.",
+            description="Audit context assembly for size, warnings, goal injection, and line-context presence without calling 9Router.",
             inputSchema={"type": "object", "properties": {
                 "question": {"type": "string"},
                 "files": _FILES_SCHEMA,
@@ -354,7 +355,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="ask_codebase_health",
-            description="Dry-run local ask_codebase context path to catch overlarge or weak context before Azure.",
+            description="Dry-run local ask_codebase context path to catch overlarge or weak context before 9Router.",
             inputSchema={"type": "object", "properties": {
                 "question": {"type": "string"},
                 "files": _FILES_SCHEMA,
@@ -380,19 +381,19 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="harness_doctor",
-            description="Self-check harness readiness: git, Azure env, rules stamp, runner lock, and agent CLI adapters.",
+            description="Self-check harness readiness: git, 9Router env, rules stamp, runner lock, and agent CLI adapters.",
             inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
             name="lesson_curator",
-            description="Classify local lessons, filter noise, and promote safe reusable procedure/workflow lessons to global memory. mode=max uses Azure 3-agent adjudication.",
+            description="Classify local lessons, filter noise, and promote safe reusable procedure/workflow lessons to global memory. mode=max uses 9Router 3-agent adjudication.",
             inputSchema={"type": "object", "properties": {
                 "limit": {"type": "integer", "description": "Số local lessons gần nhất cần scan"},
                 "promote": {"type": "boolean", "description": "True để promote lesson đủ điều kiện lên global"},
                 "dry_run": {"type": "boolean", "description": "True chỉ phân loại, không ghi global"},
-                "mode": {"type": "string", "enum": ["safe", "max"], "description": "safe=static rules, max=Azure 3-agent adjudication"},
-                "azure_limit": {"type": "integer", "description": "Số lesson candidate tối đa gửi Azure"},
-                "timeout": {"type": "number", "description": "Timeout mỗi Azure agent, mặc định 15s"},
+                "mode": {"type": "string", "enum": ["safe", "max"], "description": "safe=static rules, max=9Router 3-agent adjudication"},
+                "llm_limit": {"type": "integer", "description": "Số lesson candidate tối đa gửi 9Router"},
+                "timeout": {"type": "number", "description": "Timeout mỗi 9Router agent, mặc định 15s"},
                 "allow_untrusted_promote": {"type": "boolean", "description": "Mặc định false; true mới cho phép promote source không nằm trong trusted allowlist"},
             }},
         ),
@@ -418,7 +419,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="consult",
-            description="Hỏi Grok (deep reasoning) trước khi implement: approach, trade-offs, edge cases. Kể cả quyết định nhỏ 'A hay B'.",
+            description="Hỏi Sonnet (deep reasoning) trước khi implement: approach, trade-offs, edge cases. Kể cả quyết định nhỏ 'A hay B'.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -458,7 +459,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="ask_codebase",
-            description="Q&A codebase lớn: đọc rộng, relevance-prune trước Azure, fallback local có file:line nếu model timeout/empty. Gọi TRƯỚC khi Read nếu task >1 file.",
+            description="Q&A codebase lớn: đọc rộng, relevance-prune trước 9Router, fallback local có file:line nếu model timeout/empty. Gọi TRƯỚC khi Read nếu task >1 file.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -550,7 +551,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="visual_reviewer",
-            description="Screenshot URL + Vision LLM audit giao diện. So sánh với baseline nếu có.",
+            description="Screenshot URL + Vision LLM audit giao diện theo Executive Command UI criteria. So sánh với baseline nếu có.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -683,7 +684,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="a11y_auditor",
-            description="Kiểm tra lỗi accessibility WCAG trong HTML/CSS/JSX.",
+            description="Kiểm tra accessibility WCAG và Executive Command UI criteria trong HTML/CSS/JSX.",
             inputSchema={
                 "type": "object",
                 "properties": {"files": _FILES_SCHEMA}
@@ -1089,6 +1090,8 @@ def _collect_lesson_text(value, depth: int = 0) -> str:
 
 
 def _schedule_mcp_tool_lesson(name: str, arguments: dict, response: list[types.TextContent]) -> None:
+    if not bool_flag("HARNESS_LESSONS_ENABLED", True, root=_active_workspace()):
+        return
     if "/" in name:
         tool_name = name.split("/", 1)[-1]
     else:
@@ -1118,6 +1121,8 @@ def _schedule_mcp_tool_lesson(name: str, arguments: dict, response: list[types.T
 
 
 def _schedule_mcp_memory_events(name: str, arguments: dict, response: list[types.TextContent], started_at: float) -> None:
+    if not bool_flag("HARNESS_LESSONS_ENABLED", True, root=_active_workspace()):
+        return
     tool_name = name.split("/", 1)[-1] if "/" in str(name) else str(name)
     if tool_name in {"list_agents", "finops_stats"}:
         return
@@ -1302,7 +1307,7 @@ def _active_workspace() -> str:
 
 
 def _auto_watch_enabled() -> bool:
-    return os.getenv("HARNESS_AUTO_WATCH", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return bool_flag("HARNESS_AUTO_WATCH", False, root=_active_workspace())
 
 
 def _project_watcher_alive(root: str) -> bool:
@@ -1417,8 +1422,17 @@ def _kick_project_auto_watch() -> None:
                 if os.name == "nt":
                     popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 subprocess.Popen([_watcher_python(), str(script)], **popen_kwargs)
-            _auto_watch_roots.add(root)
-            _log.info("Started Auto-Watch for %s", root)
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                if _project_watcher_alive(root):
+                    break
+                time.sleep(0.1)
+            if _project_watcher_alive(root):
+                _auto_watch_roots.add(root)
+                _log.info("Started Auto-Watch for %s", root)
+            else:
+                _auto_watch_roots.discard(root)
+                _log.warning("Auto-Watch start attempted but no heartbeat appeared for %s", root)
         except Exception as e:
             _log.debug("Auto-Watch start skipped for %s: %s", root, e)
         finally:
@@ -1768,23 +1782,23 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 return _json_response({"error": "invalid_argument", "detail": "mode must be one of: safe, max"})
             try:
                 raw_limit = args.get("limit", 100)
-                raw_azure_limit = args.get("azure_limit", 20)
+                raw_llm_limit = args.get("llm_limit", 20)
                 raw_timeout = args.get("timeout", 15.0)
-                if any(isinstance(v, str) and len(v) > 20 for v in (raw_limit, raw_azure_limit, raw_timeout)):
+                if any(isinstance(v, str) and len(v) > 20 for v in (raw_limit, raw_llm_limit, raw_timeout)):
                     raise ValueError("numeric argument too long")
                 limit = int(raw_limit)
-                azure_limit = int(raw_azure_limit)
+                llm_limit = int(raw_llm_limit)
                 timeout = float(raw_timeout)
             except (TypeError, ValueError):
-                return _json_response({"error": "invalid_argument", "detail": "limit/azure_limit must be integers and timeout must be numeric"})
-            if limit <= 0 or azure_limit < 0 or timeout < 5.0 or not math.isfinite(timeout):
-                return _json_response({"error": "invalid_argument", "detail": "limit must be > 0, azure_limit >= 0, timeout >= 5"})
+                return _json_response({"error": "invalid_argument", "detail": "limit/llm_limit must be integers and timeout must be numeric"})
+            if limit <= 0 or llm_limit < 0 or timeout < 5.0 or not math.isfinite(timeout):
+                return _json_response({"error": "invalid_argument", "detail": "limit must be > 0, llm_limit >= 0, timeout >= 5"})
             return _json_response(await st.lesson_curator(
                 limit=limit,
                 promote=promote,
                 dry_run=dry_run,
                 mode=mode,
-                azure_limit=azure_limit,
+                llm_limit=llm_limit,
                 timeout=timeout,
                 allow_untrusted_promote=allow_untrusted,
             ))
@@ -1838,7 +1852,7 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
             if role_str not in STR_TO_ROLE:
                 return _json_response({"error": f"Invalid role: {role_str}. Lựa chọn hợp lệ: {list(STR_TO_ROLE.keys())}"})
             role = STR_TO_ROLE[role_str]
-            client = get_azure_client()
+            client = get_llm_client()
             result = await Agent(role, client).run_async(
                 args.get("task", ""), args.get("context", ""),
             )

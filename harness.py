@@ -17,7 +17,7 @@ import time
 from typing import Callable, Awaitable
 from pydantic import BaseModel
 from agents import Agent, AgentRole, AgentResult
-from config import get_azure_client, MODELS
+from config import get_llm_client, MODELS
 
 
 class HarnessRun(BaseModel):
@@ -104,7 +104,7 @@ class AgentHarness:
     """
 
     def __init__(self, progress_callback: ProgressCallback | None = None):
-        self.client      = get_azure_client()
+        self.client      = get_llm_client()
         self.progress_cb = progress_callback
 
     async def _emit(self, event: str, message: str):

@@ -6,10 +6,12 @@ import asyncio
 import logging
 from typing import Optional
 from agents import Agent, AgentRole
-from config import get_azure_client
+from config import get_llm_client
 from .core import (
     _assemble_context,
     append_lesson,
+    build_lesson_checkpoint,
+    _infer_root_cause,
     _result_meta,
     _extract_and_apply_patch,
     _extract_and_save_lesson,
@@ -51,7 +53,7 @@ async def suggest_fix(
     warnings.extend(assemble_warnings)
 
     task = f"Lỗi/bug cần fix:\n{error}"
-    client = get_azure_client()
+    client = get_llm_client()
     agent = Agent(AgentRole.DEBUGGER, client)
     
     attempts = 0
@@ -101,11 +103,20 @@ async def suggest_fix(
             patch_msg = f"{msg} (Vá thành công sau {attempts} lần vá và bài test pass)"
             append_lesson({
                 "source": "suggest_fix",
+                "lesson_type": "fix",
                 "title": (error or "suggest_fix lesson").splitlines()[0][:160],
                 "outcome": "fixed",
                 "files": files or [],
                 "error_signature": (error or "")[:500],
                 "fix_summary": patch_msg,
+                **build_lesson_checkpoint(
+                    symptom=error or "",
+                    root_cause=_infer_root_cause(result.result or ""),
+                    exact_fix=patch_msg,
+                    verification=f"Test suite passed after {attempts} patch attempt(s).",
+                    files=files or [],
+                    diff=result.result or "",
+                ),
                 "tags": ["suggest_fix", "self_healing"],
             })
             asyncio.create_task(_extract_and_save_lesson(error, files, result.result or ""))

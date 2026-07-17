@@ -14,7 +14,7 @@ async def config_security_audit() -> dict:
     warnings = []
     
     secret_patterns = [
-        (r"(?i)(api[_-]?key|secret|password|access[_-]?token|azure[_-]?api[_-]?key|openai[_-]?api[_-]?key)\s*[:=]\s*['\"]([a-zA-Z0-9_\-\.]{20,80})['\"]", "API Key / Credentials"),
+        (r"(?i)(api[_-]?key|secret|password|access[_-]?token|router[_-]?api[_-]?key|openai[_-]?api[_-]?key)\s*[:=]\s*['\"]([a-zA-Z0-9_\-\.]{20,80})['\"]", "API Key / Credentials"),
         (r"-----BEGIN [A-Z ]+ PRIVATE KEY-----", "Private Key"),
         (r"(?i)\b(?:db_password|database_url)\b\s*[:=]\s*['\"]([^'\"]+)['\"]", "Database Password/URL")
     ]
@@ -53,7 +53,7 @@ async def config_security_audit() -> dict:
                         masked_val = val[:4] + "..." + val[-4:] if len(val) > 8 else "********"
                         masked_str = matched_str.replace(val, masked_val)
                         
-                        dummy_indicators = ["your_", "mock_", "dummy_", "placeholder", "azure_openai_api_key"]
+                        dummy_indicators = ["your_", "mock_", "dummy_", "placeholder", "router_openai_api_key"]
                         is_dummy = any(indicator in val.lower() for indicator in dummy_indicators) and "1yozh" not in val.lower()
                         if is_dummy:
                             continue

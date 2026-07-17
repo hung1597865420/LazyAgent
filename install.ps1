@@ -27,7 +27,7 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
 }
 
 if (-not (Test-Path "$dir\.env")) {
-    Write-Host "[error] Thieu file .env (chua Azure credentials)." -ForegroundColor Red
+    Write-Host "[error] Thieu file .env (chua 9Router credentials)." -ForegroundColor Red
     Write-Host "        Copy file .env tu may goc vao $dir roi chay lai."
     exit 1
 }

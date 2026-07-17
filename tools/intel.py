@@ -9,6 +9,7 @@ from typing import Optional
 from config import WORKSPACE_ROOT
 from agents import AgentRole
 from .core import _run_cmd_safe, _llm_analyze, _git_diff, read_workspace_files
+from .ui_criteria import EXECUTIVE_COMMAND_UI_CRITERIA
 
 
 async def pr_generator(diff: Optional[str] = None, branch: Optional[str] = None) -> dict:
@@ -338,15 +339,23 @@ async def a11y_auditor(files: Optional[list[str]] = None) -> dict:
         "Bạn là Accessibility (A11y) Expert. Hãy kiểm tra các file giao diện trong context "
         "đối chiếu với chuẩn WCAG 2.1 AA (như thiếu alt ở img, thiếu label ở input, sai cấu trúc headings, "
         "tương phản kém, thiếu thuộc tính aria).\n"
+        "Ngoài WCAG, hãy audit theo design system Executive Command dưới đây. Đừng chỉ bắt lỗi kỹ thuật; "
+        "hãy flag cả lỗi khiến UI lệch chuẩn corporate precision, thiếu state, sai palette, sai typography, "
+        "responsive yếu, form/login không đủ trạng thái, motion không tôn trọng reduced motion, hoặc layout "
+        "làm giảm khả năng thao tác lặp lại.\n\n"
+        f"{EXECUTIVE_COMMAND_UI_CRITERIA}\n\n"
         "Trả về kết quả dưới dạng JSON block thuần túy:\n"
         "{\n"
         "  \"score\": 80,\n"
+        "  \"design_system_score\": 80,\n"
         "  \"issues\": [\n"
         "    {\n"
         "      \"file\": \"tên_file.html\",\n"
         "      \"line\": 15,\n"
         "      \"severity\": \"critical\"|\"high\"|\"medium\"|\"low\",\n"
-        "      \"standard\": \"WCAG 1.1.1 Non-text Content\",\n"
+        "      \"standard\": \"WCAG 1.1.1 Non-text Content hoặc Executive Command: Interaction states\",\n"
+        "      \"criterion\": \"contrast|semantic_html|keyboard|forms|palette|typography|layout|responsive|motion|state_design\",\n"
+        "      \"design_system_violation\": true,\n"
         "      \"issue\": \"Thẻ img thiếu thuộc tính alt\",\n"
         "      \"suggested_fix\": \"Thêm alt='Mô tả ảnh' cho thẻ img\"\n"
         "    }\n"

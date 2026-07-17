@@ -11,4 +11,4 @@ Các yếu tố liên quan:
 - managed cert issuance
 - domain binding verification khác nhau theo provider
 
-Đây là bề mặt takeover phổ biến ở CloudFront, Fastly, Azure CDN, Akamai.
+Đây là bề mặt takeover phổ biến ở CloudFront, Fastly, 9Router CDN, Akamai.

@@ -16,10 +16,10 @@ from .runner import RUNNER_LOCK_FILE, _read_lock
 LEDGER_FILE = ".harness_run_ledger.jsonl"
 
 POLICY_PROFILES: dict[str, dict[str, Any]] = {
-    "fast": {"mode": "safe", "max_iterations": 3, "final_prod_gate": False, "azure": "minimal"},
-    "balanced": {"mode": "max", "max_iterations": 8, "final_prod_gate": True, "azure": "contextual"},
-    "prod": {"mode": "max", "max_iterations": 12, "final_prod_gate": True, "azure": "heavy"},
-    "paranoid": {"mode": "max", "max_iterations": 20, "final_prod_gate": True, "azure": "max"},
+    "fast": {"mode": "safe", "max_iterations": 3, "final_prod_gate": False, "llm": "minimal"},
+    "balanced": {"mode": "max", "max_iterations": 8, "final_prod_gate": True, "llm": "contextual"},
+    "prod": {"mode": "max", "max_iterations": 12, "final_prod_gate": True, "llm": "heavy"},
+    "paranoid": {"mode": "max", "max_iterations": 20, "final_prod_gate": True, "llm": "max"},
 }
 
 
@@ -190,7 +190,7 @@ async def agent_adapters() -> dict[str, Any]:
 
 
 async def context_auditor(question: str = "", files: list[str] | None = None, context: str | None = None) -> dict[str, Any]:
-    """Audit assembled context size, warning count, and likely usefulness without calling Azure."""
+    """Audit assembled context size, warning count, and likely usefulness without calling 9Router."""
     ctx, warnings = _assemble_context(files=files, context=context or question)
     size = len(ctx.encode("utf-8", errors="replace"))
     has_citations = ":1:" in ctx or any(f"`{f}`" in ctx for f in files or [])
@@ -214,15 +214,15 @@ async def context_auditor(question: str = "", files: list[str] | None = None, co
 
 
 async def ask_codebase_health(question: str = "harness codebase health", files: list[str] | None = None, context: str | None = None) -> dict[str, Any]:
-    """Dry-run the local ask_codebase context path to catch overlarge/weak context before Azure."""
+    """Dry-run the local ask_codebase context path to catch overlarge/weak context before 9Router."""
     audit = await context_auditor(question=question, files=files, context=context)
     advice = []
     if audit["verdict"] == "too_large":
-        advice.append("Narrow files or rely on ask_codebase auto-selection before Azure.")
+        advice.append("Narrow files or rely on ask_codebase auto-selection before 9Router.")
     if audit["warnings_count"]:
         advice.append("Review warnings; skipped files may remove needed evidence.")
     if not advice:
-        advice.append("Context path looks usable; Azure timeout risk is mostly model/quota, not local context assembly.")
+        advice.append("Context path looks usable; 9Router timeout risk is mostly model/quota, not local context assembly.")
     return {"status": "completed", "audit": audit, "advice": advice}
 
 
@@ -272,8 +272,7 @@ async def harness_doctor() -> dict[str, Any]:
     checks = {
         "workspace": _display_path(str(_root())),
         "git": {"ok": rc == 0, "head": head.strip(), "error": git_err},
-        "azure_env": bool(os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY")),
-        "responses_env": bool(os.getenv("AZURE_RESPONSES_ENDPOINT")),
+        "llm_env": bool(os.getenv("ROUTER_BASE_URL") and os.getenv("ROUTER_API_KEY")),
         "rules_version": _rules_version(),
         "goal_state": bool(load_goal_state()),
         "runner_lock": _lock_status(),
@@ -283,8 +282,8 @@ async def harness_doctor() -> dict[str, Any]:
     problems = []
     if not checks["git"]["ok"]:
         problems.append("workspace is not a git repo")
-    if not checks["azure_env"]:
-        problems.append("Azure env is missing; LLM tools will degrade/fail")
+    if not checks["llm_env"]:
+        problems.append("9Router env is missing; LLM tools will degrade/fail")
     if not any(v.get("available") for v in checks["agent_adapters"].values() if isinstance(v, dict)):
         problems.append("no agent CLI adapter detected; goal_runner needs HARNESS_GOAL_AGENT_CMD or claude/gemini/codex")
     return {"status": "completed", "ready": not problems, "checks": checks, "problems": problems}

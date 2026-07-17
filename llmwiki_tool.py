@@ -4,7 +4,7 @@ import shutil
 import json
 import unicodedata
 from pathlib import Path
-from config import WORKSPACE_ROOT as CONFIG_WORKSPACE_ROOT, get_azure_client
+from config import WORKSPACE_ROOT as CONFIG_WORKSPACE_ROOT, get_llm_client
 from agents import Agent, AgentRole
 
 # Global wiki — path tĩnh, không đổi theo project
@@ -22,7 +22,7 @@ MAX_SEED_DOC_BYTES = 500_000
 MAX_SEED_TOTAL_BYTES = 5_000_000
 SENSITIVE_DOC_PATTERNS = (
     "-----BEGIN PRIVATE KEY-----",
-    "AZURE_OPENAI_API_KEY=",
+    "ROUTER_API_KEY=",
     "OPENAI_API_KEY=",
     "ANTHROPIC_API_KEY=",
     "GITHUB_TOKEN=",
@@ -237,7 +237,7 @@ async def wiki_ingest(target: str = "local") -> dict:
     processed_count = 0
     details = []
     
-    client = get_azure_client()
+    client = get_llm_client()
     agent = Agent(AgentRole.WORKER, client=client, system_prompt=WIKI_INGEST_PROMPT)
     
     for fname in raw_files:

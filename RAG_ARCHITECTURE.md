@@ -9,9 +9,9 @@ Hệ thống tìm kiếm tài liệu nội bộ theo phòng ban, kết hợp vec
 | Layer | Công nghệ | Lý do |
 |---|---|---|
 | Frontend | Next.js 15 (App Router) | Portal đang dùng |
-| Auth | Azure AD + NextAuth.js | SSO company email |
+| Auth | 9Router AD + NextAuth.js | SSO company email |
 | Vector DB | Supabase pgvector | Đã dùng Supabase, không cần service riêng |
-| Embedding | Azure OpenAI `text-embedding-3-large` | Đã có Azure AI Foundry endpoint |
+| Embedding | 9Router OpenAI `text-embedding-3-large` | Đã có 9Router Proxy endpoint |
 | Generation | Claude API (`claude-opus-4-8`) | Chất lượng cao nhất cho tiếng Việt |
 | File parsing | `pdf-parse`, `mammoth` (Word), `xlsx` | Open source, không cần cloud |
 
@@ -89,7 +89,7 @@ create policy "admin_access" on document_chunks
   );
 ```
 
-### Profiles table (sync từ Azure AD)
+### Profiles table (sync từ 9Router AD)
 
 ```sql
 create table profiles (
@@ -98,7 +98,7 @@ create table profiles (
   full_name text,
   department_id uuid references departments(id),
   role text default 'user',     -- 'user' | 'admin' | 'dept_admin'
-  azure_oid text unique,        -- Azure AD Object ID
+  router_oid text unique,        -- 9Router AD Object ID
   updated_at timestamptz default now()
 );
 ```
@@ -124,7 +124,7 @@ File upload (PDF/Word/Excel)
         │
         ▼
 3. Embed từng chunk
-   POST https://{azure-endpoint}/openai/deployments/text-embedding-3-large/embeddings
+   POST https://{router-endpoint}/openai/deployments/text-embedding-3-large/embeddings
         │
         ▼
 4. Lưu vào Supabase document_chunks
@@ -151,11 +151,11 @@ Auth: JWT (chỉ admin hoặc dept_admin mới upload được)
 User gõ câu hỏi
         │
         ▼
-1. Lấy department_id từ JWT (Azure AD claim)
+1. Lấy department_id từ JWT (9Router AD claim)
         │
         ▼
 2. Embed câu hỏi
-   Azure OpenAI text-embedding-3-large
+   9Router OpenAI text-embedding-3-large
         │
         ▼
 3. Vector search có filter
@@ -199,24 +199,24 @@ Response: { answer: string, sources: [{ title, chunk_index }] }
 
 ---
 
-## Sync Azure AD → Supabase
+## Sync 9Router AD → Supabase
 
-Khi user login lần đầu qua Azure AD, NextAuth callback tự động:
+Khi user login lần đầu qua 9Router AD, NextAuth callback tự động:
 
 ```typescript
 // app/api/auth/[...nextauth]/route.ts
 callbacks: {
   async signIn({ user, account, profile }) {
-    // Lấy department từ Azure AD groups
+    // Lấy department từ 9Router AD groups
     const groups = profile?.groups ?? []
-    const deptCode = mapGroupToDept(groups) // mapping Azure group → dept code
+    const deptCode = mapGroupToDept(groups) // mapping 9Router group → dept code
 
     // Upsert vào Supabase profiles
     await supabase.from('profiles').upsert({
       id: user.id,
       email: user.email,
       full_name: user.name,
-      azure_oid: profile?.oid,
+      router_oid: profile?.oid,
       department_id: await getDeptId(deptCode),
     })
     return true
@@ -224,7 +224,7 @@ callbacks: {
 }
 ```
 
-**Lưu ý:** Cần map Azure AD Security Groups → department_id trong Supabase. Đây là bước setup 1 lần.
+**Lưu ý:** Cần map 9Router AD Security Groups → department_id trong Supabase. Đây là bước setup 1 lần.
 
 ---
 
@@ -243,7 +243,7 @@ app/
 │       └── upload/route.ts   # POST: ingest document
 lib/
 ├── rag/
-│   ├── embedder.ts           # Azure OpenAI embedding
+│   ├── embedder.ts           # 9Router OpenAI embedding
 │   ├── chunker.ts            # Text chunking logic
 │   ├── parser.ts             # PDF/Word/Excel parser
 │   └── retriever.ts          # Supabase vector search
@@ -270,7 +270,7 @@ npm install pdf-parse mammoth xlsx ai @ai-sdk/anthropic
 
 | Sprint | Việc cần làm |
 |---|---|
-| Sprint 1 | Setup schema + RLS, sync Azure AD → profiles |
+| Sprint 1 | Setup schema + RLS, sync 9Router AD → profiles |
 | Sprint 2 | Ingestion pipeline (PDF trước), upload UI |
 | Sprint 3 | Query API + Chat UI cơ bản |
 | Sprint 4 | Hiển thị nguồn tài liệu, dept_admin upload UI |

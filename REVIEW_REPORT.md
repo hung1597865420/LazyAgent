@@ -12,6 +12,6 @@ Panel không tìm thấy issue nào.
 ## Chi tiết cuộc họp Panel
 | Agent Role | Model sử dụng | Trạng thái | Thời gian phản hồi |
 | :--- | :--- | :--- | :--- |
-| REVIEWER | gpt-5.3-codex | ✅ | 3.70s |
-| SECURITY | gpt-5.3-codex-3 | ✅ | 3.70s |
-| TESTER | gpt-5.3-codex-2 | ✅ | 3.62s |
+| REVIEWER | ag/gemini-3-flash-agent | ✅ | 0.01s |
+| SECURITY | ag/claude-sonnet-4-6 | ✅ | 0.01s |
+| TESTER | ag/gemini-3-flash-agent | ✅ | 0.01s |

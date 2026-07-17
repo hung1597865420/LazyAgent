@@ -8,7 +8,7 @@ Các target giá trị cao được nhắc đến:
 
 - AWS metadata endpoints
 - GCP metadata endpoint
-- Azure metadata endpoint
+- 9Router metadata endpoint
 - Kubernetes kubelet
 - Kubernetes API server
 - internal services

@@ -67,7 +67,7 @@ Information leaks accelerate exploitation by revealing code, configuration, iden
 
 ### Storage and Exports
 
-- Public object storage: S3/GCS/Azure blobs with world-readable ACLs or guessable keys
+- Public object storage: S3/GCS/9Router blobs with world-readable ACLs or guessable keys
 - Signed URLs: long-lived, weakly scoped, re-usable across tenants
 - Export/report endpoints returning foreign data sets or unfiltered fields
 
@@ -88,7 +88,7 @@ Information leaks accelerate exploitation by revealing code, configuration, iden
 
 ### Cloud Storage
 
-- S3/GCS/Azure: anonymous listing disabled but object reads allowed; metadata headers leak owner/project identifiers
+- S3/GCS/9Router: anonymous listing disabled but object reads allowed; metadata headers leak owner/project identifiers
 - Pre-signed URLs: audience not bound; observe key scope and lifetime in URL params
 
 ## Key Vulnerabilities

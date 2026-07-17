@@ -15,7 +15,7 @@ def main():
         threads = [
             threading.Thread(
                 target=agents.log_step_to_db,
-                args=(run_id, "tester", "gpt-5.3-codex", 10, 5, 20, False),
+                args=(run_id, "tester", "ag/claude-sonnet-4-6", 10, 5, 20, False),
             )
             for _ in range(32)
         ]

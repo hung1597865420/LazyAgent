@@ -84,7 +84,7 @@ type: index
 - [firestore-rules-security](concepts/firestore-rules-security.md) — Firestore security rules issues
 - [graphql-and-sqlalchemy-alternative-stacks](concepts/graphql-and-sqlalchemy-alternative-stacks.md) — GraphQL and SQLAlchemy alternative stacks
 - [guard-bypass](concepts/guard-bypass.md) — NestJS guard bypass techniques
-- [harness-architecture](concepts/harness-architecture.md) — MCP flow, routing rules, Azure endpoint constraints
+- [harness-architecture](concepts/harness-architecture.md) — MCP flow, routing rules, 9Router endpoint constraints
 - [header-injection-attack-surface](concepts/header-injection-attack-surface.md) — Header injection attack surface
 - [header-injection-bypass-techniques](concepts/header-injection-bypass-techniques.md) — Header injection bypass techniques
 - [header-injection-cache-poisoning](concepts/header-injection-cache-poisoning.md) — Header injection cache poisoning
@@ -708,7 +708,7 @@ type: index
 - [ssrf-address-artifacts](entities/ssrf-address-artifacts.md) — SSRF address artifact entities
 - [ssrf-attack-surface](entities/ssrf-attack-surface.md) — SSRF attack surface entities
 - [ssrf-aws-metadata](entities/ssrf-aws-metadata.md) — SSRF AWS metadata endpoint entities
-- [ssrf-azure-metadata](entities/ssrf-azure-metadata.md) — SSRF Azure metadata endpoint entities
+- [ssrf-router-metadata](entities/ssrf-router-metadata.md) — SSRF 9Router metadata endpoint entities
 - [ssrf-blind-artifacts](entities/ssrf-blind-artifacts.md) — Blind SSRF artifact entities
 - [ssrf-chaining-artifacts](entities/ssrf-chaining-artifacts.md) — SSRF chaining artifact entities
 - [ssrf-direct-url-params](entities/ssrf-direct-url-params.md) — SSRF direct URL parameter entities
@@ -806,6 +806,7 @@ type: index
 ## Sources
 
 - [frameworks_django](sources/frameworks_django.md) — Source page: Django framework security
+- [170726-runtime-feature-flags](sources/draft/170726-runtime-feature-flags.md) — Draft: runtime feature flags for background automation
 - [frameworks_fastapi](sources/frameworks_fastapi.md) — Source page: FastAPI framework security
 - [frameworks_nestjs](sources/frameworks_nestjs.md) — Source page: NestJS framework security
 - [frameworks_nextjs](sources/frameworks_nextjs.md) — Source page: Next.js framework security

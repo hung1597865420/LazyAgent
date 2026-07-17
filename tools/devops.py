@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from agents import AgentRole
+from runtime_flags import bool_flag
 from .core import (
     _is_git_repo,
     _scoped_dirty_status,
@@ -118,7 +119,7 @@ def _rel_to_repo(repo_path: Path, path: str) -> str:
 
 
 def _optional_llm_enabled() -> bool:
-    return os.getenv("HARNESS_STATIC_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
+    return bool_flag("HARNESS_STATIC_LLM", False, root=_get_active_workspace())
 
 
 async def dependency_upgrader(dry_run: bool = True) -> dict:

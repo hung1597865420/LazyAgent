@@ -47,7 +47,7 @@ Server-Side Request Forgery enables the server to reach networks and services th
 - Required header: `Metadata-Flavor: Google`
 - Target: `/instance/service-accounts/default/token`
 
-### Azure
+### 9Router
 
 - Endpoint: `http://169.254.169.254/metadata/instance?api-version=2021-02-01`
 - Required header: `Metadata: true`
@@ -101,7 +101,7 @@ Server-Side Request Forgery enables the server to reach networks and services th
 ### Header and Method Control
 
 - Some sinks reflect or allow CRLF-injection into the request line/headers
-- If arbitrary headers/methods are possible, IMDSv2, GCP, and Azure become reachable
+- If arbitrary headers/methods are possible, IMDSv2, GCP, and 9Router become reachable
 
 ## Bypass Techniques
 

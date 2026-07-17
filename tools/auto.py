@@ -14,6 +14,7 @@ import sys
 import time
 from typing import Any
 
+from runtime_flags import bool_flag, choice_flag
 from .core import _get_active_workspace, append_lesson, load_relevant_lessons_context
 
 
@@ -34,7 +35,11 @@ DEFAULT_SAFE_TOOLS = 6
 
 
 def _auto_enabled() -> bool:
-    return os.getenv("HARNESS_AUTO_PILOT", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return bool_flag("HARNESS_AUTO_PILOT", True, root=_get_active_workspace())
+
+
+def _auto_llm_enabled() -> bool:
+    return bool_flag("HARNESS_AUTO_LLM", False, root=_get_active_workspace())
 
 
 def _auto_tool_timeout_seconds() -> float:
@@ -94,6 +99,47 @@ def _tool_priority(name: str) -> int:
         "incremental_refactor_guard": 62,
     }
     return priorities.get(name, 80)
+
+
+LLM_AUTO_TOOLS = {
+    "panel_review",
+    "a11y_auditor",
+    "i18n_auditor",
+    "polyglot_reviewer",
+    "license_scanner",
+    "incident_responder",
+    "migration_validator",
+    "sql_query_analyzer",
+    "openapi_spec_sync",
+    "api_contract_tester",
+    "breaking_change_detector",
+    "performance_regression_detector",
+    "data_flow_taint_analyzer",
+    "container_linter",
+    "ci_pipeline_validator",
+    "auth_matrix_auditor",
+    "release_orchestrator",
+    "provenance_checker",
+}
+
+RUNTIME_ARTIFACT_NAMES = {"REVIEW_REPORT.md"}
+RUNTIME_ARTIFACT_PATHS = {("llmwiki", "raw", ".bootstrapped")}
+RUNTIME_ARTIFACT_PREFIXES = (".harness_",)
+
+
+def _is_runtime_artifact(path: str) -> bool:
+    norm = str(path or "").replace("\\", "/").strip("/")
+    if not norm:
+        return True
+    parts = tuple(p for p in norm.split("/") if p)
+    name = parts[-1] if parts else norm
+    if parts in RUNTIME_ARTIFACT_PATHS or name in RUNTIME_ARTIFACT_NAMES:
+        return True
+    if len(parts) >= 2 and parts[0] == ".claude" and parts[1] == "audit":
+        return True
+    if len(parts) == 1 and name.startswith(RUNTIME_ARTIFACT_PREFIXES):
+        return True
+    return any(part.startswith(".harness_sandbox_") or part.startswith(".harness_worktree_") for part in parts)
 
 
 def _consume_task_exception(task: asyncio.Task) -> None:
@@ -489,9 +535,23 @@ async def auto_trigger(
 
     from .goal import get_active_goal, goal_progress_summary
 
-    files = _norm_files(changed_files)
+    raw_files = _norm_files(changed_files)
+    files = [f for f in raw_files if not _is_runtime_artifact(f)]
+    ignored_runtime_files = [f for f in raw_files if _is_runtime_artifact(f)]
+    if raw_files and not files:
+        return {
+            "status": "skipped",
+            "reason": "runtime-artifact-only change",
+            "files": [],
+            "ignored_runtime_files": ignored_runtime_files,
+        }
     diff_hash = hashlib.sha256((diff or "").encode("utf-8", errors="replace")).hexdigest()[:16] if diff else ""
-    mode = str(mode if mode is not None else os.getenv("HARNESS_AUTO_MODE", "max")).strip().lower()
+    mode = str(mode if mode is not None else choice_flag(
+        "HARNESS_AUTO_MODE",
+        "safe",
+        {"safe", "max"},
+        root=_get_active_workspace(),
+    )).strip().lower()
     if mode not in {"safe", "max"}:
         return {"error": "invalid_argument", "detail": "mode must be one of: safe, max"}
     stage = str(stage or "post_edit").strip().lower()
@@ -644,6 +704,26 @@ async def auto_trigger(
         orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode)
         return {"status": "skipped", "reason": "no matching automatic checks", "files": files, "prior_lessons": prior_lessons, "orchestrator": orchestrator}
 
+    warnings = []
+    if not _auto_llm_enabled():
+        before = len(job_specs)
+        job_specs = [spec for spec in job_specs if spec[0] not in LLM_AUTO_TOOLS]
+        if before != len(job_specs):
+            warnings.append("9Router LLM auto-checks skipped; set HARNESS_AUTO_LLM=1 to allow them explicitly")
+
+    if not job_specs:
+        from .orchestrator import orchestrate
+        orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode)
+        return {
+            "status": "skipped",
+            "reason": "only 9Router LLM checks matched and HARNESS_AUTO_LLM is off",
+            "files": files,
+            "ignored_runtime_files": ignored_runtime_files,
+            "prior_lessons": prior_lessons,
+            "orchestrator": orchestrator,
+            "warnings": warnings,
+        }
+
     indexed_specs = list(enumerate(job_specs))
     indexed_specs.sort(key=lambda item: (_tool_priority(item[1][0]), item[0]))
     max_tools = _auto_max_tools(mode)
@@ -686,7 +766,6 @@ async def auto_trigger(
         if r.get("ok") is False or str(r.get("verdict", "")).lower() == "fix_first"
     ]
     failed_tools = [str(r.get("tool", "")) for r in blockers if r.get("tool")]
-    warnings = []
     if skipped_tools:
         warnings.append(f"auto_trigger budget selected {len(selected)} of {len(job_specs)} matching checks; skipped_tools lists deferred checks")
     if pending:
@@ -756,6 +835,7 @@ async def auto_trigger(
         "batch_id": batch_id,
         "diff_hash": diff_hash,
         "files": files,
+        "ignored_runtime_files": ignored_runtime_files,
         "goal_active": bool(active_goal),
         "goal": goal_text or None,
         "selected_tools": selected,

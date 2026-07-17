@@ -11,7 +11,7 @@ import json
 import unicodedata
 from pathlib import Path
 from typing import Any, Optional
-from config import get_azure_client
+from config import get_llm_client
 from agents import Agent, AgentRole, AgentResult
 from .core import (
     read_workspace_files,
@@ -99,7 +99,7 @@ def _ask_codebase_model_chain() -> list[str]:
     raw = (
         os.getenv("HARNESS_ASK_CODEBASE_MODEL_CHAIN")
         or os.getenv("HARNESS_ASK_CODEBASE_MODEL")
-        or "gpt-5.4-4,gpt-5.4-3,gpt-5.3-codex-4"
+        or "ag/gemini-3-flash-agent,ag/claude-sonnet-4-6"
     )
     models: list[str] = []
     seen: set[str] = set()
@@ -109,7 +109,7 @@ def _ask_codebase_model_chain() -> list[str]:
         if model and key not in seen:
             seen.add(key)
             models.append(model)
-    return models or ["gpt-5.4-4"]
+    return models or ["ag/gemini-3-flash-agent"]
 
 
 _ASK_CODEBASE_MAX_FILES = 15
@@ -517,7 +517,7 @@ def _extractive_codebase_answer(question: str, context: str, files: Optional[lis
     file_list = ", ".join(files or []) or "index/navigation context"
 
     lines = [
-        f"Fallback local vì Manager/Azure không trả answer usable: {reason}.",
+        f"Fallback local vì Manager/9Router không trả answer usable: {reason}.",
         f"Context đã load: {file_list}.",
         "",
     ]
@@ -778,7 +778,7 @@ async def ask_codebase(
     answer_text = ""
     answer_truncated = False
     for model in config_meta["model_chain"]:
-        agent = Agent(AgentRole.MANAGER, get_azure_client())
+        agent = Agent(AgentRole.MANAGER, get_llm_client())
         agent.model = model
         try:
             result = await asyncio.wait_for(
@@ -863,7 +863,7 @@ async def ask_codebase(
 
 async def quick_task(instruction: str, context: Optional[str] = None) -> dict:
     """Việc vặt nhanh-rẻ qua model mini."""
-    result = await Agent(AgentRole.WORKER, get_azure_client()).run_async(
+    result = await Agent(AgentRole.WORKER, get_llm_client()).run_async(
         instruction, context or "",
     )
     return {
@@ -907,7 +907,7 @@ async def swarm_step_architect(error_log: str, files: Optional[list[str]] = None
         "}"
     )
     
-    client = get_azure_client()
+    client = get_llm_client()
     res_arch = await Agent(AgentRole.ANALYZER, client).run_async(architect_prompt)
     if res_arch.status != "success":
         return {"error": f"Architect Agent lỗi: {res_arch.error}", "logs": swarm_logs}
@@ -971,7 +971,7 @@ async def swarm_step_tester(error_log: str, root_cause: str, target_files: list[
             "- Không ghi text giải thích ngoài code block."
         )
         
-        client = get_azure_client()
+        client = get_llm_client()
         res_test = await Agent(AgentRole.TESTER, client).run_async(tester_prompt)
         if res_test.status != "success":
             return {"error": f"Tester Agent lỗi: {res_test.error}", "logs": swarm_logs}
@@ -1029,7 +1029,7 @@ async def swarm_step_coder(error_log: str, suggested_approach: str, target_files
         "```"
     )
     
-    client = get_azure_client()
+    client = get_llm_client()
     res_code = await Agent(AgentRole.CODE_A, client).run_async(coder_prompt)
     if res_code.status != "success":
         return {"error": f"Coder Agent lỗi: {res_code.error}", "logs": swarm_logs}
@@ -1105,7 +1105,7 @@ async def swarm_step_reviewer(target_files: list[str], patch: str) -> dict:
         "}"
     )
     
-    client = get_azure_client()
+    client = get_llm_client()
     res_rev = await Agent(AgentRole.REVIEWER, client).run_async(reviewer_prompt)
     
     reviewer_verdict = "reject"

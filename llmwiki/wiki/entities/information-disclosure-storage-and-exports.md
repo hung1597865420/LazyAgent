@@ -9,7 +9,7 @@ Các surface storage/export được nhắc đến:
 - public object storage
 - S3
 - GCS
-- Azure blobs
+- 9Router blobs
 - signed URLs
 - export/report endpoints
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from agents import AgentRole
+from runtime_flags import bool_flag
 from .core import _get_active_workspace, _git_diff, _llm_analyze, _parse_json_object, _run_cmd_safe
 
 _SKIP_DIRS = {
@@ -79,17 +80,19 @@ def _finding(file: str, category: str, severity: str, issue: str, fix: str = "")
 
 
 def _llm_enabled(mode: str | None = None) -> bool:
-    if (mode or "").strip().lower() == "max":
+    root = _get_active_workspace()
+    auto_llm = bool_flag("HARNESS_AUTO_LLM", False, root=root)
+    if (mode or "").strip().lower() == "max" and auto_llm:
         return True
-    return os.getenv("HARNESS_STATIC_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
+    return bool_flag("HARNESS_STATIC_LLM", False, root=root)
 
 
-async def _azure_enrich(tool: str, result: dict[str, Any], role: AgentRole, mode: str | None = None) -> dict[str, Any]:
+async def _llm_enrich(tool: str, result: dict[str, Any], role: AgentRole, mode: str | None = None) -> dict[str, Any]:
     if not _llm_enabled(mode):
-        result["llm_analysis"] = {"summary": "Azure enrichment skipped. Use mode=max or HARNESS_STATIC_LLM=1."}
+        result["llm_analysis"] = {"summary": "9Router enrichment skipped. Use mode=max or HARNESS_STATIC_LLM=1."}
         return result
     prompt = (
-        f"You are the Agent Harness {tool} Azure reviewer. Triage the static JSON result below. "
+        f"You are the Agent Harness {tool} 9Router reviewer. Triage the static JSON result below. "
         "Return strict JSON with keys: verdict_adjustment, risk_summary, priority_actions, false_positive_notes. "
         "Do not include secrets; treat redacted values as redacted."
     )
@@ -99,7 +102,7 @@ async def _azure_enrich(tool: str, result: dict[str, Any], role: AgentRole, mode
         parsed = _parse_json_object(raw) or {"summary": raw[:1000]}
         result["llm_analysis"] = parsed
     except Exception as exc:
-        result["llm_analysis"] = {"warning": f"Azure enrichment failed: {exc}"}
+        result["llm_analysis"] = {"warning": f"9Router enrichment failed: {exc}"}
     return result
 
 
@@ -153,7 +156,7 @@ async def release_orchestrator(
         "next_actions": _release_next_actions(verdict),
         "warnings": warnings,
     }
-    return await _azure_enrich("release_orchestrator", result, AgentRole.INTEGRITY, mode)
+    return await _llm_enrich("release_orchestrator", result, AgentRole.INTEGRITY, mode)
 
 
 def _release_next_actions(verdict: str) -> list[str]:
@@ -206,7 +209,7 @@ async def provenance_checker(files: list[str] | None = None, context: str | None
         "findings_count": len(findings),
         "warnings": [],
     }
-    return await _azure_enrich("provenance_checker", result, AgentRole.SECURITY, mode)
+    return await _llm_enrich("provenance_checker", result, AgentRole.SECURITY, mode)
 
 
 async def auth_matrix_auditor(files: list[str] | None = None, diff: str | None = None, context: str | None = None, mode: str = "safe") -> dict[str, Any]:
@@ -245,7 +248,7 @@ async def auth_matrix_auditor(files: list[str] | None = None, diff: str | None =
         "findings_count": len(findings),
         "warnings": [] if endpoints else ["No route handlers detected."],
     }
-    return await _azure_enrich("auth_matrix_auditor", result, AgentRole.SECURITY, mode)
+    return await _llm_enrich("auth_matrix_auditor", result, AgentRole.SECURITY, mode)
 
 
 def _extract_route(raw: str) -> str:
@@ -305,7 +308,7 @@ async def harness_trace_viewer(limit: int = 20, include_logs: bool = False, mode
         "summary": f"{len(traces)} trace/log records found.",
         "warnings": warnings,
     }
-    return await _azure_enrich("harness_trace_viewer", result, AgentRole.ANALYZER, mode)
+    return await _llm_enrich("harness_trace_viewer", result, AgentRole.ANALYZER, mode)
 
 
 async def incremental_refactor_guard(
@@ -345,7 +348,7 @@ async def incremental_refactor_guard(
         "findings_count": len(changes),
         "warnings": warnings,
     }
-    return await _azure_enrich("incremental_refactor_guard", result, AgentRole.REVIEWER, mode)
+    return await _llm_enrich("incremental_refactor_guard", result, AgentRole.REVIEWER, mode)
 
 
 def _diff_symbol_changes(diff: str) -> list[dict[str, Any]]:

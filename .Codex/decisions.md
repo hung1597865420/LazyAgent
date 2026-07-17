@@ -18,9 +18,9 @@
 **Decision:** MCP server calls `merge_settings.lazy_merge_if_needed()` on `list_tools` and first tool call, guarded by `RULES_VERSION` stamp at `~/.claude/.harness_rules_version`, so Claude/Gemini/Codex rules update automatically after harness upgrades.
 **Alternatives bỏ:** Requiring users to run `python merge_settings.py` manually after every tool/rule change; unconditional startup writes that slow or dirty every MCP launch.
 
-### 2026-07-13 — Autonomous gap tools with Azure enrichment
-**Decision:** Add `release_orchestrator`, `provenance_checker`, `auth_matrix_auditor`, `harness_trace_viewer`, and `incremental_refactor_guard` as static-first MCP tools that call Azure enrichment in `mode=max` or when `HARNESS_STATIC_LLM=1`.
-**Alternatives bỏ:** Pure-offline gap tools; user explicitly wants harness to exploit Azure as much as possible while keeping smoke/fallback deterministic.
+### 2026-07-13 — Autonomous gap tools with 9Router enrichment
+**Decision:** Add `release_orchestrator`, `provenance_checker`, `auth_matrix_auditor`, `harness_trace_viewer`, and `incremental_refactor_guard` as static-first MCP tools that call 9Router enrichment in `mode=max` or when `HARNESS_STATIC_LLM=1`.
+**Alternatives bỏ:** Pure-offline gap tools; user explicitly wants harness to exploit 9Router as much as possible while keeping smoke/fallback deterministic.
 
 ### 2026-07-13 — Direct prompt goal runner
 **Decision:** Add `goal_runner` plus `goal_runner.py` so the harness can receive one prompt directly, initialize goal state, delegate implementation to an agent CLI, run Auto-Pilot checks, ask `goal_supervisor`, and finalize through `prod_readiness_gate`.
@@ -37,3 +37,7 @@
 ### 2026-07-13 — Contextual auto-trigger coverage
 **Decision:** Expand `auto_trigger` and `prod_readiness_gate` from a small default check set to contextual DB/API/UI/CI/container/dependency/test/performance selectors, while skipping tools that lack required input.
 **Alternatives bỏ:** Calling all 76 tools every time; too slow, expensive, noisy, and unsafe for URL/load/visual/doc-writing tools.
+
+### 2026-07-17 — Structured lesson checkpoints
+**Decision:** Extend lesson JSONL records additively with optional checkpoint fields: `symptom`, `root_cause`, `exact_fix`, `verification`, and `diff_hash`; inject those fields preferentially while keeping old lesson records readable.
+**Alternatives bỏ:** Creating a separate checkpoint store or running an extra LLM extraction pass for every lesson; both add complexity/cost and weaken the existing lesson dedupe path.

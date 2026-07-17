@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 from agents import Agent, AgentRole, chat_completion
-from config import get_azure_client, WORKSPACE_ROOT, MODELS
+from config import get_llm_client, WORKSPACE_ROOT, MODELS
 from .core import (
     _assemble_context,
     read_workspace_files,
@@ -25,6 +25,7 @@ from .core import (
     _parse_json_object,
     _result_meta
 )
+from .ui_criteria import EXECUTIVE_COMMAND_UI_CRITERIA
 
 
 async def auto_tester(files: list[str], findings: list[dict]) -> dict:
@@ -47,7 +48,7 @@ async def auto_tester(files: list[str], findings: list[dict]) -> dict:
         "- Hãy đặt tên file test dạng `test_auto_generated.py`."
     )
     
-    client = get_azure_client()
+    client = get_llm_client()
     agent = Agent(AgentRole.CODE_A, client)
     res = await agent.run_async(prompt, ctx)
     if res.status != "success" or not res.result:
@@ -168,6 +169,13 @@ def _clean_review_url(value: str, label: str) -> tuple[str, str]:
     return clean, ""
 
 
+def _normalize_optional_url(value: Optional[str]) -> str:
+    clean = value or ""
+    for marker in ("\ufeff", "\u200b", "\u200c", "\u200d"):
+        clean = clean.replace(marker, "")
+    return clean.strip()
+
+
 def _skip_scan_dir(path: str) -> bool:
     parts = set(Path(path).parts)
     return (
@@ -179,20 +187,30 @@ def _skip_scan_dir(path: str) -> bool:
 async def visual_reviewer(url: str, baseline_url: Optional[str] = None) -> dict:
     """Chụp ảnh màn hình URL và audit giao diện bằng Vision LLM."""
     warnings = []
+    neutral_drift = {
+        "mode": "static_single_page",
+        "visual_drift_applicable": False,
+        "baseline_captured": False,
+        "drift_detected": False,
+        "visual_drift_summary": "not_applicable_without_valid_baseline",
+    }
     if not url or not url.strip():
-        return {"error": "Cần cung cấp URL để phân tích giao diện", "warnings": warnings}
+        return {"error": "Cần cung cấp URL để phân tích giao diện", "warnings": warnings, **neutral_drift}
         
     clean_url, url_error = _clean_review_url(url, "URL")
     if url_error:
-        return {"error": url_error, "warnings": warnings}
+        return {"error": url_error, "warnings": warnings, **neutral_drift}
     clean_base = None
-    if baseline_url:
-        clean_base, base_error = _clean_review_url(baseline_url, "Baseline URL")
+    baseline_raw = _normalize_optional_url(baseline_url)
+    if baseline_raw:
+        clean_base, base_error = _clean_review_url(baseline_raw, "Baseline URL")
         if base_error:
-            return {"error": base_error, "warnings": warnings}
+            return {"error": base_error, "warnings": warnings, **neutral_drift}
 
     screenshot_b64 = None
     baseline_b64 = None
+    capture_mode = "static_single_page"
+    visual_drift_applicable = False
     
     try:
         from playwright.async_api import async_playwright  # type: ignore
@@ -211,12 +229,25 @@ async def visual_reviewer(url: str, baseline_url: Optional[str] = None) -> dict:
                 
                 await page.goto(clean_url, wait_until="networkidle", timeout=20000)
                 img_bytes = await page.screenshot(full_page=False)
+                if not img_bytes:
+                    raise RuntimeError("current screenshot is empty")
                 screenshot_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                capture_mode = "playwright_single_page"
                 
                 if clean_base:
-                    await page.goto(clean_base, wait_until="networkidle", timeout=20000)
-                    base_bytes = await page.screenshot(full_page=False)
-                    baseline_b64 = base64.b64encode(base_bytes).decode("utf-8")
+                    try:
+                        await page.goto(clean_base, wait_until="networkidle", timeout=20000)
+                        base_bytes = await page.screenshot(full_page=False)
+                        if not base_bytes:
+                            raise RuntimeError("baseline screenshot is empty")
+                        baseline_b64 = base64.b64encode(base_bytes).decode("utf-8")
+                        capture_mode = "playwright_compare"
+                        visual_drift_applicable = True
+                    except Exception as base_error:
+                        warnings.append(
+                            f"Không thể capture baseline screenshot: {base_error}. "
+                            "Tiếp tục audit ảnh hiện tại; visual drift không được đánh giá."
+                        )
                     
                 await browser.close()
         except Exception as e:
@@ -224,19 +255,24 @@ async def visual_reviewer(url: str, baseline_url: Optional[str] = None) -> dict:
             warnings.append(f"Không thể capture screenshot qua playwright: {e}.{hint} Fallback sang phân tích mã nguồn.")
             has_playwright = False
             
-    client = get_azure_client()
+    client = get_llm_client()
     model = MODELS.code_b
     
     system_prompt = (
         "Bạn là Visual UI Auditor Agent chuyên nghiệp.\n"
         "Nhiệm vụ của bạn là đánh giá chất lượng thiết kế giao diện (UI/UX, Responsive, Contrast, Aesthetics) từ ảnh chụp màn hình.\n"
+        "Hãy dùng Executive Command design system làm tiêu chí mặc định cho UI enterprise/corporate precision. "
+        "Đánh giá cả tính thẩm mỹ lẫn khả năng vận hành: hierarchy, density, palette, typography, component states, "
+        "responsive, accessibility, motion, form/login behavior và visual drift.\n\n"
+        f"{EXECUTIVE_COMMAND_UI_CRITERIA}\n\n"
         "Nếu được cung cấp 2 ảnh (ảnh hiện tại và ảnh gốc/baseline), hãy so sánh xem có bất kỳ sự lệch pha (visual drift), vỡ layout, lệch pixel hay không.\n"
         "Hãy trả về kết quả dưới định dạng JSON với cấu trúc:\n"
         "{\n"
         "  \"drift_detected\": true|false,\n"
         "  \"score\": 85,\n"
+        "  \"design_system_score\": 85,\n"
         "  \"issues\": [\n"
-        "    {\"element\": \"...\", \"problem\": \"...\", \"severity\": \"critical|high|medium|low\", \"suggested_fix\": \"...\"}\n"
+        "    {\"element\": \"...\", \"criterion\": \"palette|typography|layout|responsive|motion|state_design|accessibility|visual_drift\", \"problem\": \"...\", \"severity\": \"critical|high|medium|low\", \"suggested_fix\": \"...\"}\n"
         "  ],\n"
         "  \"aesthetics_verdict\": \"Một câu tóm tắt về mặt mỹ thuật và thẩm mỹ UI\"\n"
         "}\n"
@@ -249,7 +285,16 @@ async def visual_reviewer(url: str, baseline_url: Optional[str] = None) -> dict:
     
     if screenshot_b64:
         user_content = [
-            {"type": "text", "text": f"URL được kiểm thử: {clean_url}\n" + (f"URL baseline: {clean_base}" if clean_base else "")},
+            {
+                "type": "text",
+                "text": (
+                    f"URL được kiểm thử: {clean_url}\n"
+                    f"Capture mode: {capture_mode}\n"
+                    f"Visual drift applicable: {visual_drift_applicable}\n"
+                    + (f"URL baseline: {clean_base}\n" if clean_base else "")
+                    + ("Nếu visual_drift_applicable=false, không được kết luận drift so sánh baseline; chỉ audit ảnh hiện tại." if not visual_drift_applicable else "")
+                ),
+            },
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}}
         ]
         if baseline_b64:
@@ -275,6 +320,12 @@ async def visual_reviewer(url: str, baseline_url: Optional[str] = None) -> dict:
                 }
             audit_report["model_used"] = model_used
             audit_report["captured_screenshot"] = True
+            audit_report["mode"] = capture_mode
+            audit_report["visual_drift_applicable"] = visual_drift_applicable
+            audit_report["baseline_captured"] = baseline_b64 is not None
+            if not visual_drift_applicable:
+                audit_report["drift_detected"] = False
+                audit_report["visual_drift_summary"] = "not_applicable_without_valid_baseline"
             audit_report["warnings"] = warnings
             return audit_report
         except Exception as e:
@@ -298,7 +349,10 @@ async def visual_reviewer(url: str, baseline_url: Optional[str] = None) -> dict:
             warnings.extend(file_warns)
             
         prompt = (
-            f"Hãy phân tích tĩnh mã nguồn HTML/CSS sau để phát hiện các lỗi responsive, tương phản màu sắc hoặc anti-patterns layout:\n"
+            "Hãy phân tích tĩnh mã nguồn HTML/CSS sau theo Executive Command design system, "
+            "để phát hiện lỗi responsive, tương phản màu sắc, typography, component state, motion, form/login behavior "
+            "hoặc anti-patterns layout:\n\n"
+            f"{EXECUTIVE_COMMAND_UI_CRITERIA}\n\n"
             f"URL cần phân tích: {clean_url}\n\n"
             f"Mã nguồn tham khảo:\n{ctx_text}"
         )
@@ -317,6 +371,10 @@ async def visual_reviewer(url: str, baseline_url: Optional[str] = None) -> dict:
             ],
             "aesthetics_verdict": "Phân tích tĩnh code hoàn tất (thiếu screenshot thực tế)",
             "captured_screenshot": False,
+            "mode": capture_mode,
+            "visual_drift_applicable": False,
+            "baseline_captured": False,
+            "visual_drift_summary": "not_applicable_without_screenshot",
             "warnings": warnings,
             "agent": _result_meta(res)
         }

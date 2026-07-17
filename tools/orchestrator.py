@@ -103,7 +103,7 @@ def _policy(tags: list[str], mode: str) -> dict[str, Any]:
         "ask_user_required_for": ask_user,
         "forbidden": forbidden,
         "sandbox": {"network": "allowed_by_tool_policy", "filesystem": "workspace-first", "secrets": "redact"},
-        "quota": {"azure": "bounded by per-tool timeouts", "context": "inject summaries before raw logs"},
+        "quota": {"llm": "bounded by per-tool timeouts", "context": "inject summaries before raw logs"},
     }
 
 
@@ -151,9 +151,9 @@ def _rollback(stage: str, files: list[str], diff_hash: str) -> dict[str, Any]:
 
 def _model_governance() -> dict[str, Any]:
     return {
-        "ask_codebase": ["gpt-5.4-4", "gpt-5.4-3", "gpt-5.3-codex-4"],
+        "ask_codebase": ["ag/gemini-3-flash-agent", "ag/claude-sonnet-4-6"],
         "timeouts": "bounded; fallback/degraded must be explicit",
-        "anti_pattern": "do not report green when Azure times out",
+        "anti_pattern": "do not report green when 9Router times out",
     }
 
 

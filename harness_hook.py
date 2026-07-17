@@ -64,6 +64,15 @@ def _activate_workspace(root: Path) -> None:
     os.environ["CLAUDE_PROJECT_DIR"] = str(root)
 
 
+def _feature_enabled(name: str, default: bool, root: Path) -> bool:
+    try:
+        from runtime_flags import bool_flag
+
+        return bool_flag(name, default, root=root)
+    except Exception:
+        return default
+
+
 def _record_project_seen(root: Path) -> None:
     _activate_workspace(root)
     try:
@@ -126,14 +135,17 @@ def _record_edit(payload: dict, root: Path, tool: str) -> None:
 def main() -> int:
     payload = _payload()
     root = _project_dir(payload)
+    if not _feature_enabled("HARNESS_HOOKS_ENABLED", True, root):
+        return 0
     prompt = _prompt_text(payload)
     if prompt:
-        _record_project_seen(root)
-        _inject_prior_lessons(root, prompt)
+        if _feature_enabled("HARNESS_LESSONS_ENABLED", True, root):
+            _record_project_seen(root)
+            _inject_prior_lessons(root, prompt)
         return 0
 
     tool = _tool_name(payload)
-    if tool in EDIT_TOOLS:
+    if tool in EDIT_TOOLS and _feature_enabled("HARNESS_LESSONS_ENABLED", True, root):
         _record_edit(payload, root, tool)
     return 0
 

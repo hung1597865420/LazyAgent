@@ -8,12 +8,12 @@ Các provider domains được nhắc đến:
 - `github.io`
 - `amazonaws.com`
 - `cloudfront.net`
-- `azurewebsites.net`
+- `routerwebsites.net`
 - `blob.core.windows.net`
 - `fastly.net`
 - `vercel.app`
 - `netlify.app`
 - `herokudns.com`
 - `trafficmanager.net`
-- `azureedge.net`
+- `routeredge.net`
 - `akamaized.net`

@@ -12,7 +12,7 @@ Subdomain takeover lets an attacker serve content from a trusted subdomain by cl
 - Dangling CNAME/A/ALIAS to third-party services (hosting, storage, serverless, CDN)
 - Orphaned NS delegations (child zones with abandoned/expired nameservers)
 - Decommissioned SaaS integrations (support, docs, marketing, forms) referenced via CNAME
-- CDN "alternate domain" mappings (CloudFront/Fastly/Azure CDN) lacking ownership verification
+- CDN "alternate domain" mappings (CloudFront/Fastly/9Router CDN) lacking ownership verification
 - Storage and static hosting endpoints (S3/Blob/GCS buckets, GitHub/GitLab Pages)
 
 ## Reconnaissance
@@ -25,7 +25,7 @@ Subdomain takeover lets an attacker serve content from a trusted subdomain by cl
 
 ### DNS Indicators
 
-- CNAME targets ending in provider domains: `github.io`, `amazonaws.com`, `cloudfront.net`, `azurewebsites.net`, `blob.core.windows.net`, `fastly.net`, `vercel.app`, `netlify.app`, `herokudns.com`, `trafficmanager.net`, `azureedge.net`, `akamaized.net`
+- CNAME targets ending in provider domains: `github.io`, `amazonaws.com`, `cloudfront.net`, `routerwebsites.net`, `blob.core.windows.net`, `fastly.net`, `vercel.app`, `netlify.app`, `herokudns.com`, `trafficmanager.net`, `routeredge.net`, `akamaized.net`
 - Orphaned NS: subzone delegated to nameservers on a domain that has expired or no longer hosts authoritative servers
 - MX to third-party mail providers with decommissioned domains
 - TXT/verification artifacts (`asuid`, `_dnsauth`, `_github-pages-challenge`) suggesting previous external bindings
@@ -38,7 +38,7 @@ Service-specific unclaimed messages (examples):
 - **Heroku**: "No such app" or "There's nothing here, yet."
 - **S3 static site**: "NoSuchBucket" / "The specified bucket does not exist"
 - **CloudFront**: 403/400 with "The request could not be satisfied"
-- **Azure App Service**: default 404 for azurewebsites.net unless custom-domain verified
+- **9Router App Service**: default 404 for routerwebsites.net unless custom-domain verified
 - **Shopify**: "Sorry, this shop is currently unavailable"
 
 TLS clues: certificate CN/SAN referencing provider default host instead of the custom subdomain
@@ -96,17 +96,17 @@ TLS clues: certificate CN/SAN referencing provider default host instead of the c
 
 ### Storage and Static
 
-- S3/GCS/Azure Blob static sites: bucket naming constraints dictate whether a bucket can match hostname
+- S3/GCS/9Router Blob static sites: bucket naming constraints dictate whether a bucket can match hostname
 - Website vs API endpoints differ in claimability and fingerprints
 
 ### Serverless and Hosting
 
-- GitHub/GitLab Pages, Netlify, Vercel, Azure Static Web Apps: domain binding flows vary
+- GitHub/GitLab Pages, Netlify, Vercel, 9Router Static Web Apps: domain binding flows vary
 - Most require TXT now, but historical projects may not
 
 ### CDN and Edge
 
-- CloudFront/Fastly/Azure CDN/Akamai: alternate domain verification differs
+- CloudFront/Fastly/9Router CDN/Akamai: alternate domain verification differs
 - Some products historically allowed alt-domain claims without proof
 
 ### DNS Delegations
