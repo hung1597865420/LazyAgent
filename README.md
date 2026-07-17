@@ -70,6 +70,19 @@ Policy hiện tại: non-code/docs dùng `ag/gemini-3.5-flash-extra-low`; code t
 
 Dependencies Python tối thiểu nằm trong `requirements.txt`: `openai`, `python-dotenv`, `pydantic`, `mcp`, `fastapi`, `uvicorn`, `playwright`, `pytest`, `coverage`, `httpx`, `tree-sitter-languages`.
 
+### 2.1.1. Quick start cho máy/user mới
+
+Checklist ngắn nhất để người khác clone/copy repo này rồi chạy được:
+
+1. Cài Python 3.10+, Git, Claude Code CLI nếu dùng Claude, và 9Router local proxy/key.
+2. Copy `.env.example` thành `.env`, điền `ROUTER_BASE_URL`, `ROUTER_API_KEY`, và giữ `WORKSPACE_ROOT=` trống để MCP tự bám theo project đang mở.
+3. Chạy `python -m pip install -r requirements.txt`.
+4. Chạy `python merge_settings.py` để ghi MCP config + runtime rules cho Claude, Gemini/Antigravity, Codex và user-level agents.
+5. Nếu dùng Claude Code, chạy thêm `claude mcp add --scope user agent-harness -- python "<absolute-path>\\mcp_server.py"` hoặc dùng `install.ps1`.
+6. Restart agent/IDE đang dùng, rồi kiểm tra bằng `harness-toggle.bat status`, `list_agents`, và một static tool như `secret_scanner`.
+
+Không commit `.env`, `harness.features.json` cá nhân, `.harness_finops.db`, `.harness_lessons.jsonl`, hoặc các file runtime `.harness_*`. Nếu muốn chuyển máy kèm knowledge, copy `llmwiki/` của project và optional global wiki `~/.claude/llmwiki/`, nhưng vẫn để secret nằm riêng trên từng máy.
+
 ### 2.2. Chuẩn bị `.env`
 
 Tạo `.env` từ `.env.example` rồi điền credentials thật. Không commit `.env`.
@@ -187,11 +200,12 @@ Mở PowerShell ngay trong folder harness rồi chạy:
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Script làm đúng 4 bước:
+Script làm đúng các bước chính:
 1. Check `python`/`py`, check `claude`, check `.env`.
 2. Chạy `python -m pip install -r requirements.txt` và `python -m playwright install chromium`.
 3. Chạy `claude mcp remove --scope user agent-harness` rồi `claude mcp add --scope user agent-harness -- <python> <folder>\mcp_server.py` để idempotent.
-4. Chạy `python merge_settings.py` và `python smoke_test.py`.
+4. Chạy `python merge_settings.py` để ghi rules/profile policy vào `~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, `~/.codex/AGENTS.md`, `~/AGENTS.md`, đồng thời ghi MCP config cho Claude/Gemini/Codex.
+5. Chạy `python smoke_test.py` nếu runtime profile không phải `off`.
 
 Sau đó restart Claude Code và gõ:
 
@@ -209,6 +223,7 @@ python -m playwright install chromium
 claude mcp remove --scope user agent-harness || true
 claude mcp add --scope user agent-harness -- python "/absolute/path/to/mcp_server.py"
 python merge_settings.py
+# Chỉ chạy full smoke khi profile không phải off.
 python smoke_test.py
 ```
 
@@ -258,19 +273,20 @@ Nếu dùng `uv`, `conda`, hoặc venv riêng, thay `python` trong lệnh `claud
 
 Chạy theo thứ tự này để biết full harness đã hoạt động:
 
-1. **Smoke offline:** `python smoke_test.py`.
-2. **MCP handshake:** restart client, `/mcp`, thấy `agent-harness connected`.
-3. **Registry:** gọi `list_agents`; phải thấy 12 role và model deployment.
-4. **Static tools không tốn token:** gọi `index_codebase(force=true)`, `semantic_search("mcp server")`, `secret_scanner(paths=[".env.example"])`.
-5. **9Router LLM path:** gọi `quick_task(instruction="Trả lời một câu ngắn: harness OK")`.
-6. **Review path:** tạo diff nhỏ rồi gọi `panel_review(files=["file_vua_sua.py"])`.
-7. **Visual path:** chạy app local rồi gọi `visual_reviewer(url="http://localhost:<port>")`.
-8. **Wiki path:** gọi `wiki_query("keyword")`; project mới sẽ tự tạo `llmwiki/` và auto-ingest docs sẵn có.
-9. **Auto path:** gọi `auto_trigger(changed_files=["src/app.py"], task="verify install", stage="post_edit", mode="safe")`.
-10. **Prod gate path:** gọi `prod_readiness_gate(changed_files=["README.md"], task="ready for production deploy?", mode="safe")`; trước deploy thật dùng `mode="max"`.
-11. **Goal path:** gọi `goal_autopilot(mode="status")`, rồi chạy E2E init/check/complete trên workspace tạm nếu muốn test đủ final check.
-12. **Direct runner path:** chạy `python goal_runner.py "update README smoke" --dry-run --mode safe`; chạy thật thì bỏ `--dry-run` và bảo đảm có `HARNESS_GOAL_AGENT_CMD` hoặc CLI `claude`/`gemini`/`codex`.
-13. **FinOps:** gọi `finops_stats` để chắc LLM calls được log.
+1. **Profile status:** `harness-toggle.bat status`. Nếu đang `off`, chỉ làm các bước read-only/static; full smoke sẽ fail hoặc bị chặn đúng policy vì `off` tắt Auto-Pilot/lessons/LLM.
+2. **Smoke offline:** `python smoke_test.py` khi profile là `light` trở lên; không dùng lệnh này để ép profile `off` chạy full automation.
+3. **MCP handshake:** restart client, `/mcp`, thấy `agent-harness connected`.
+4. **Registry:** gọi `list_agents`; phải thấy 12 role và model deployment.
+5. **Static tools không tốn token:** gọi `index_codebase(force=true)`, `semantic_search("mcp server")`, `secret_scanner(paths=[".env.example"])`.
+6. **9Router LLM path:** gọi `quick_task(instruction="Trả lời một câu ngắn: harness OK")`.
+7. **Review path:** tạo diff nhỏ rồi gọi `panel_review(files=["file_vua_sua.py"])`.
+8. **Visual path:** chạy app local rồi gọi `visual_reviewer(url="http://localhost:<port>")`.
+9. **Wiki path:** gọi `wiki_query("keyword")`; project mới sẽ tự tạo `llmwiki/` và auto-ingest docs sẵn có.
+10. **Auto path:** gọi `auto_trigger(changed_files=["src/app.py"], task="verify install", stage="post_edit", mode="safe")`.
+11. **Prod gate path:** gọi `prod_readiness_gate(changed_files=["README.md"], task="ready for production deploy?", mode="safe")`; trước deploy thật dùng `mode="max"`.
+12. **Goal path:** gọi `goal_autopilot(mode="status")`, rồi chạy E2E init/check/complete trên workspace tạm nếu muốn test đủ final check.
+13. **Direct runner path:** chạy `python goal_runner.py "update README smoke" --dry-run --mode safe`; chạy thật thì bỏ `--dry-run` và bảo đảm có `HARNESS_GOAL_AGENT_CMD` hoặc CLI `claude`/`gemini`/`codex`.
+14. **FinOps:** gọi `finops_stats` để chắc LLM calls được log.
 
 #### Goal Autopilot verification
 
@@ -533,7 +549,9 @@ Nói ngắn: **MCP config = tay chân**, **memory/rules = não biết dùng tay 
 |---|---|---|
 | Claude Code | `~/.claude/claude_mcp_config.json` + `claude mcp add --scope user` | `~/.claude/CLAUDE.md` |
 | Gemini / Antigravity | `~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity-ide/mcp_config.json` | `~/.gemini/GEMINI.md` |
-| Codex | `~/.codex/config.toml` | Project/user `AGENTS.md` hoặc Codex instructions |
+| Codex | `~/.codex/config.toml` | `~/.codex/AGENTS.md` + fallback `~/AGENTS.md` |
+
+`merge_settings.py` là nguồn sync chính. Sau khi pull/update harness, chạy lại lệnh này hoặc để MCP lazy-merge khi client gọi tool đầu tiên; sau đó restart/reconnect agent vì nhiều client cache rules/tool schema trong session cũ.
 
 MCP JSON chuẩn cho client hỗ trợ `mcpServers`:
 
@@ -570,6 +588,17 @@ Không cần copy schema của 77 tools vào rules file. Tool schema nằm trong
 
 Use MCP server `agent-harness`.
 
+Runtime Profile Policy:
+- Read the active profile before deciding to call tools.
+- Never change `harness.features.json` or raise profile unless the human explicitly asks.
+- If profile is `off`, do only read-only/static local work. Do not call LLM tools, `goal_runner`, Auto-Pilot max, watcher, hooks, lessons, or FinOps writes.
+- If profile is `light`, static-first checks are allowed; no automatic LLM enrichment or watcher.
+- If profile is `standard`, static watcher/Auto-Pilot are allowed; manual LLM tools may be called only when the human/rules clearly ask, but no auto LLM/background LLM.
+- If profile is `balanced`/`4`, consult/panel_review/ask_codebase may run when coding rules match; no watcher LLM or max fan-out by default.
+- If profile is `review`/`5`, Auto-Pilot LLM and static LLM are allowed for batch review; watcher stays non-LLM.
+- If profile is `heavy`/`7`, Auto-Pilot max, static LLM, and watcher safe LLM are allowed for hard refactor/debug.
+- If profile is `max`, full audit/release checks are allowed only because the human chose that profile.
+
 Before coding:
 - Use `consult` for design/security/auth/API/schema/concurrency decisions.
 - Use `alt_implementation` for reusable modules or unclear approaches.
@@ -594,7 +623,7 @@ File đích theo agent:
 |---|---|
 | Claude Code | `~/.claude/CLAUDE.md` |
 | Gemini / Antigravity | `~/.gemini/GEMINI.md` |
-| Codex | `AGENTS.md` hoặc instructions của Codex runtime |
+| Codex | `~/.codex/AGENTS.md` và fallback `~/AGENTS.md`; project `AGENTS.md` chỉ dùng khi repo riêng cần override |
 | Cursor | `.cursor/rules/agent-harness.mdc` |
 | Windsurf | `.windsurf/rules/agent-harness.md` |
 | Agent custom | System prompt / developer instructions của agent đó |
@@ -610,6 +639,7 @@ Bạn đang thấy rule Agent Harness nào? Khi nào phải gọi consult/panel_
 Kỳ vọng agent trả lời được:
 
 - Có MCP server `agent-harness`.
+- Biết runtime profile hiện tại quyết định được gọi LLM/tool nền tới mức nào.
 - Trước phần design/security/concurrency/API/schema phải gọi `consult`.
 - Sau batch code phải gọi `auto_trigger(stage="final")` hoặc `panel_review`.
 - UI/API/DB/security/release có tool contextual riêng.
@@ -620,7 +650,7 @@ Nếu agent không trả lời đúng:
 |---|---|
 | Claude Code | Chạy lại `python merge_settings.py`, restart Claude Code, kiểm tra `~/.claude/CLAUDE.md` có block `agent-harness-managed` |
 | Gemini / Antigravity | Chạy lại `python merge_settings.py`, restart IDE, kiểm tra `~/.gemini/GEMINI.md` có block `agent-harness` |
-| Codex | Copy policy vào `AGENTS.md` của project hoặc user instructions mà Codex runtime thật sự đọc; reconnect session |
+| Codex | Chạy lại `python merge_settings.py`, restart/reconnect Codex, kiểm tra `~/.codex/AGENTS.md` và `~/AGENTS.md` có block `agent-harness-managed` |
 | Cursor | Đặt rule trong `.cursor/rules/agent-harness.mdc`, bật rule scope phù hợp, reload window |
 | Windsurf | Đặt rule trong `.windsurf/rules/agent-harness.md`, reload workspace |
 | Agent custom | Đưa policy vào system/developer prompt, không chỉ để trong README |
@@ -676,9 +706,11 @@ Nguyên tắc bảo mật cho bridge:
    robocopy ".\llmwiki" "$env:USERPROFILE\.claude\llmwiki" /E
    ```
 
-5. Với agent ngoài Claude/Gemini/Codex, thêm MCP config trỏ tới `mcp_server.py`.
-6. Với agent ngoài Claude/Gemini, thêm rules file tương ứng từ policy tối thiểu ở trên.
-7. Nếu agent không support MCP, dùng CLI/HTTP bridge thay vì gọi MCP trực tiếp.
+5. Chạy `python merge_settings.py` để đồng bộ rules/profile policy cho Claude, Gemini/Antigravity, Codex và user-level agents.
+6. Với agent ngoài Claude/Gemini/Codex, thêm MCP config trỏ tới `mcp_server.py`.
+7. Với agent ngoài Claude/Gemini/Codex, thêm rules file tương ứng từ policy tối thiểu ở trên.
+8. Chọn profile bằng `harness-toggle.bat`; nếu mở bằng double-click thì menu là user-approved, nếu gọi CLI ghi profile thì cần `HARNESS_ALLOW_PROFILE_WRITE=1`.
+9. Nếu agent không support MCP, dùng CLI/HTTP bridge thay vì gọi MCP trực tiếp.
 
 Sau đó user chỉ cần prompt cho agent chính. Harness tự lo phần còn lại:
 
@@ -1117,12 +1149,14 @@ Khi đề xuất giải pháp công nghệ, Claude tuân thủ nghiêm ngặt 3 
 
 ## 8. Hướng Dẫn Sử Dụng Trong Quy Trình Hàng Ngày
 
-Khi cài đặt thành công, Claude Code sẽ tự động vận hành hệ thống thông qua các cấu hình tích hợp sẵn. Bạn cũng có thể điều khiển thủ công theo các cách sau:
+Khi cài đặt thành công, Claude Code/Gemini/Codex sẽ vận hành harness theo rules đã sync và theo runtime profile hiện tại. Bạn cũng có thể điều khiển thủ công theo các cách sau:
 
 ### Chế độ Tự Động (Khuyến nghị)
-Claude Code sẽ tự đọc file `~/.claude/CLAUDE.md` và áp dụng các rule tự động:
-* Khi bạn bắt đầu viết các logic phức tạp, Claude Code sẽ tự động chạy tool `consult` để hỏi ý kiến thiết kế trước.
-* Khi bạn hoàn thành coding, trước khi báo cáo kết quả, Claude Code sẽ tự động kích hoạt `panel_review` để kiểm duyệt lỗi.
+Agent chính sẽ tự đọc rules tương ứng (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, `~/.codex/AGENTS.md`, hoặc `~/AGENTS.md`) và áp dụng trong phạm vi profile:
+* Profile `off`: agent chỉ được chạy read-only/static local, không gọi LLM tools.
+* Profile `light`/`standard`: agent ưu tiên static checks; không tự bật LLM nền.
+* Profile `balanced` trở lên: khi bạn bắt đầu viết logic phức tạp, agent có thể chạy `consult` theo rule; trước khi báo xong coding, agent có thể chạy `panel_review` một lần cho cả batch thay đổi.
+* Không profile nào cho phép agent tự nâng profile hoặc tự ghi `harness.features.json` nếu user chưa yêu cầu rõ.
 
 ### Chế độ Thủ Công qua Claude CLI
 Bạn có thể yêu cầu trực tiếp Claude Code kích hoạt các tool MCP của Agent Harness:
