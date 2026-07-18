@@ -15,7 +15,7 @@ GEMINI_MARKER = "<!-- agent-harness -->"
 CODEX_PROFILE_MARKER = "<!-- agent-harness-runtime-profile-policy -->"
 HOOK_ID = "agent-harness-panel-reminder"
 LESSON_HOOK_ID = "agent-harness-lesson-recorder"
-RULES_VERSION = "2026-07-17-runtime-profile-policy-r1"
+RULES_VERSION = "2026-07-18-integration-bridges-r1"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -92,6 +92,14 @@ Nếu profile không cho phép tool LLM, thay bằng static/local tương đươ
 - Docs-gate chỉ được tự ghi backlog hoặc tự cập nhật docs nhẹ khi phù hợp; TUYỆT ĐỐI không hỏi user kiểu "có muốn bổ sung tài liệu cho 5 prompt vừa rồi không?". User chỉ gõ prompt chính, không bị ngắt bởi maintenance docs.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` sẽ tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
+
+## Distilled Integrations — Hallmark + Spec Kit
+
+- Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
+- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
+- `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
+- `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
+- Profile vẫn thắng: `off` chỉ được gọi bridge read-only (`status`, `preflight`, `audit_plan`, `snapshot`); không tự init/scaffold/write preflight, không gọi Hallmark/Spec Kit LLM workflow, không gọi `goal_runner`; dùng static/local fallback và báo `profile off đang chặn LLM`.
 
 ## Bắt buộc
 
@@ -561,6 +569,14 @@ Trước khi tự gọi bất kỳ Agent Harness tool nào có thể dùng LLM h
 | `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
 
 Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
+
+## Distilled Integrations — Hallmark + Spec Kit
+
+- Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
+- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
+- `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
+- `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
+- Profile vẫn thắng: `off` chỉ được gọi bridge read-only (`status`, `preflight`, `audit_plan`, `snapshot`); không tự init/scaffold/write preflight, không gọi Hallmark/Spec Kit LLM workflow, không gọi `goal_runner`; dùng static/local fallback và báo `profile off đang chặn LLM`.
 <!-- /agent-harness-runtime-profile-policy -->
 """
 
@@ -626,6 +642,14 @@ Nếu profile không cho phép tool LLM, thay bằng static/local tương đươ
 - Docs-gate chỉ được tự ghi backlog hoặc tự cập nhật docs nhẹ khi phù hợp; TUYỆT ĐỐI không hỏi user kiểu "có muốn bổ sung tài liệu cho 5 prompt vừa rồi không?". User chỉ gõ prompt chính, không bị ngắt bởi maintenance docs.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
+
+## Distilled Integrations — Hallmark + Spec Kit
+
+- Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
+- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
+- `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
+- `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
+- Profile vẫn thắng: `off` chỉ được gọi bridge read-only (`status`, `preflight`, `audit_plan`, `snapshot`); không tự init/scaffold/write preflight, không gọi Hallmark/Spec Kit LLM workflow, không gọi `goal_runner`; dùng static/local fallback và báo `profile off đang chặn LLM`.
 
 ## Bắt buộc
 

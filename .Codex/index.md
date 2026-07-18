@@ -8,6 +8,10 @@
 - harness-toggle.bat — Windows profile switcher for harness.features.json and Auto-Watch processes.
 - tools/ — Modular tool implementations for review, security, testing, devops, wiki, analysis, quality.
 - tools/goal.py — Prompt-only goal autopilot state machine and alignment check.
+- tools/integrations.py — Static Hallmark/Spec Kit router plus guarded `hallmark_bridge` and `speckit_bridge` tools.
+- tools/scope_guard.py — Static scope-creep diff classifier for dependency/config/API rename/large-hunk drift.
+- tools/office_bridge.py — Optional OfficeCLI bridge for read/validate/dump Office docs with guarded mutation actions.
+- tools/quota.py — Read-only 9Router + FinOps quota reminder with local budget fallback.
 - tools/runner.py — Direct prompt runner that drives goal, agent CLI, checks, supervisor, and final gate.
 - tools/ops.py — Harness ops tools for doctor, context audit, ledger, profiles, adapters, benchmark, and patch safety.
 - tools/prod.py — Production readiness gate that aggregates final checks into a hard deploy verdict.

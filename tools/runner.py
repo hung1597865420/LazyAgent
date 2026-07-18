@@ -22,6 +22,7 @@ from typing import Any
 from .auto import auto_trigger
 from .core import _get_active_workspace, _git_diff, _run_cmd_safe, load_relevant_lessons_context, record_procedure_lesson
 from .goal import goal_autopilot, goal_supervisor, load_goal_state
+from .integrations import agent_guidance_for_task
 from .prod import prod_readiness_gate
 
 BLOCKING_PROD_VERDICTS = {"fix_required", "blocked_needs_user", "rollback_required"}
@@ -273,6 +274,11 @@ def _agent_prompt(prompt: str, supervisor: dict[str, Any], root: Path | None = N
         prior_lessons = ""
     prior_lessons = _cap_lesson_block(prior_lessons)
     prior_block = f"\nPrior lessons:\n{prior_lessons}\n" if prior_lessons else ""
+    try:
+        integration_guidance = agent_guidance_for_task(prompt, root=root)
+    except Exception:
+        integration_guidance = ""
+    integration_block = f"\n{integration_guidance}\n\n" if integration_guidance else ""
     return (
         "You are the implementation agent for Agent Harness direct goal runner.\n"
         "Implement the current part directly in the workspace. Keep changes scoped. "
@@ -281,6 +287,7 @@ def _agent_prompt(prompt: str, supervisor: dict[str, Any], root: Path | None = N
         "If this run discovers a reusable non-error workflow/procedure, print one final single-line marker:\n"
         "HARNESS_LESSON_JSON: {\"title\":\"...\",\"summary\":\"...\",\"steps\":[\"...\"],\"tags\":[\"...\"]}\n"
         "Only emit the marker for durable, reusable knowledge; do not include secrets.\n\n"
+        f"{integration_block}"
         f"{prior_block}"
         f"Goal:\n{_cap_agent_field(prompt)}\n\n"
         f"Current part:\n{_cap_agent_field(part)}\n\n"

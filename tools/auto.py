@@ -16,6 +16,7 @@ from typing import Any
 
 from runtime_flags import bool_flag, choice_flag
 from .core import _get_active_workspace, append_lesson, load_relevant_lessons_context
+from .integrations import integration_router
 
 
 DOC_EXTS = {".md", ".txt", ".rst", ".adoc"}
@@ -566,11 +567,19 @@ async def auto_trigger(
     text = "\n".join([goal_text, task or "", diff or "", "\n".join(files)])
     prior_lessons = load_relevant_lessons_context(text)
     task_context = "\n\n".join(x for x in [task_with_goal or "", f"Prior lessons:\n{prior_lessons}" if prior_lessons else ""] if x).strip()
+    integration_routes = integration_router(task=task_with_goal or task, changed_files=files, diff=diff)
 
     if _docs_only(files) and mode != "max" and not active_goal:
         from .orchestrator import orchestrate
         orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode)
-        return {"status": "skipped", "reason": "docs-only change", "files": files, "prior_lessons": prior_lessons, "orchestrator": orchestrator}
+        return {
+            "status": "skipped",
+            "reason": "docs-only change",
+            "files": files,
+            "prior_lessons": prior_lessons,
+            "integration_routes": integration_routes,
+            "orchestrator": orchestrator,
+        }
 
     code_files = [f for f in files if _ext(f) in CODE_EXTS]
     panel_files = _safe_panel_files(code_files or files)
@@ -596,7 +605,14 @@ async def auto_trigger(
     if _docs_only(files) and not active_goal and not has_release:
         from .orchestrator import orchestrate
         orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode)
-        return {"status": "skipped", "reason": "docs-only change", "files": files, "prior_lessons": prior_lessons, "orchestrator": orchestrator}
+        return {
+            "status": "skipped",
+            "reason": "docs-only change",
+            "files": files,
+            "prior_lessons": prior_lessons,
+            "integration_routes": integration_routes,
+            "orchestrator": orchestrator,
+        }
     has_ui = bool(ui_files) or _has_any(text, {"a11y", "accessibility", "i18n", "translation", "wcag"})
     has_deps = bool(dependency_files)
     has_tests = bool(test_files) or _has_any(text, {"pytest", "coverage", "flaky", "mutation test", "benchmark"})
@@ -628,6 +644,8 @@ async def auto_trigger(
         add("config_security_audit", "tools.security", "config_security_audit")
     if code_files and (mode == "max" or risky):
         add("complexity_analyzer", "tools.analysis", "complexity_analyzer", paths=code_files)
+    if files and (diff or stage in {"final", "pre_complete"} or mode == "max"):
+        add("scope_creep_detector", "tools.scope_guard", "scope_creep_detector", changed_files=files, diff=diff, task=task_context or task_with_goal)
     if mode == "max" and code_files and (
         stage in {"final", "pre_complete"}
         or bool(ci_files or container_files or dependency_files)
@@ -702,7 +720,14 @@ async def auto_trigger(
     if not job_specs:
         from .orchestrator import orchestrate
         orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode)
-        return {"status": "skipped", "reason": "no matching automatic checks", "files": files, "prior_lessons": prior_lessons, "orchestrator": orchestrator}
+        return {
+            "status": "skipped",
+            "reason": "no matching automatic checks",
+            "files": files,
+            "prior_lessons": prior_lessons,
+            "integration_routes": integration_routes,
+            "orchestrator": orchestrator,
+        }
 
     warnings = []
     if not _auto_llm_enabled():
@@ -720,6 +745,7 @@ async def auto_trigger(
             "files": files,
             "ignored_runtime_files": ignored_runtime_files,
             "prior_lessons": prior_lessons,
+            "integration_routes": integration_routes,
             "orchestrator": orchestrator,
             "warnings": warnings,
         }
@@ -818,6 +844,7 @@ async def auto_trigger(
             "failed_tools": failed_tools,
             "blockers_count": len(blockers),
             "prior_lessons": prior_lessons,
+            "integration_routes": integration_routes,
             "lessons_recorded": lessons_recorded,
             "causality_recorded": causality_recorded,
             "orchestrator": orchestrator,
@@ -845,6 +872,7 @@ async def auto_trigger(
         "blockers_count": len(blockers),
         "failed_tools": failed_tools,
         "prior_lessons": prior_lessons,
+        "integration_routes": integration_routes,
         "lessons_recorded": lessons_recorded,
         "causality_recorded": causality_recorded,
         "orchestrator": orchestrator,

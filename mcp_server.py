@@ -192,6 +192,113 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="integration_router",
+            description=(
+                "Static router for distilled Hallmark UI flow and Spec Kit spec-first flow. "
+                "Does not call LLM or mutate files; reports who should call each flow under the current profile."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "diff": {"type": "string", "description": "Unified diff hoặc summary diff nếu có"},
+                    "task": {"type": "string", "description": "Task/user request hiện tại"},
+                },
+            },
+        ),
+        types.Tool(
+            name="hallmark_bridge",
+            description=(
+                "Hallmark-compatible UI bridge: status/preflight/audit_plan are static; "
+                "write_preflight writes .hallmark/preflight.json only when allowed by profile and allow_mutation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "preflight", "audit_plan", "write_preflight"]},
+                    "task": {"type": "string"},
+                    "files": _FILES_SCHEMA,
+                    "allow_mutation": {"type": "boolean"},
+                },
+            },
+        ),
+        types.Tool(
+            name="speckit_bridge",
+            description=(
+                "Spec Kit bridge: status/snapshot read existing spec artifacts; "
+                "init can call specify CLI and scaffold can write specs/<feature> docs when profile/allow_mutation permit."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "snapshot", "init", "scaffold"]},
+                    "task": {"type": "string"},
+                    "feature": {"type": "string"},
+                    "integration": {"type": "string", "enum": ["claude", "codex", "gemini", "agy"]},
+                    "allow_mutation": {"type": "boolean"},
+                },
+            },
+        ),
+        types.Tool(
+            name="scope_creep_detector",
+            description=(
+                "Static scope guard distilled from awesome-llm-apps: compares git diff against the stated task "
+                "and flags likely unrelated dependency/config/CI/API rename/large-hunk changes. Local only, no LLM."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "diff": {"type": "string", "description": "Unified diff. If omitted, tool runs local git diff with --no-ext-diff --no-textconv."},
+                    "task": {"type": "string", "description": "Stated user intent/task to compare against changed paths/content."},
+                    "staged": {"type": "boolean", "description": "Use git diff --cached when diff is omitted."},
+                    "base": {"type": "string", "description": "Optional base ref for git diff base...HEAD when diff is omitted."},
+                    "hunk_threshold": {"type": "integer", "description": "Added+removed line threshold for large_hunk signal. Default 80."},
+                },
+            },
+        ),
+        types.Tool(
+            name="office_bridge",
+            description=(
+                "Optional OfficeCLI bridge for .docx/.xlsx/.pptx. status/help/view/validate/get/query/dump are read-only; "
+                "create/set/add/remove/batch/watch/resident actions require allow_mutation=true and a profile above off. "
+                "Never installs OfficeCLI or DesktopCommander."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": [
+                        "status", "help", "view", "validate", "get", "query", "dump", "plugins",
+                        "create", "set", "add", "remove", "batch", "raw_set", "open", "save", "close", "watch", "unwatch", "goto",
+                    ]},
+                    "file": {"type": "string", "description": "Workspace-relative .docx/.xlsx/.pptx path."},
+                    "mode": {"type": "string", "description": "view mode: outline/text/issues/html/screenshot/stats/etc."},
+                    "path": {"type": "string", "description": "OfficeCLI path for get/dump subtree or advanced commands."},
+                    "selector": {"type": "string", "description": "OfficeCLI selector for query."},
+                    "command": {"type": "string", "description": "Extra OfficeCLI command tail for help or advanced mutation actions."},
+                    "output": {"type": "string", "description": "Workspace-relative output path for view/dump where supported."},
+                    "allow_mutation": {"type": "boolean"},
+                    "timeout": {"type": "integer", "description": "Command timeout seconds. Default 120."},
+                },
+            },
+        ),
+        types.Tool(
+            name="router_quota_status",
+            description=(
+                "Read-only token/quota reminder for 9Router + local FinOps. "
+                "Reads /api/usage/stats and optional /api/usage/[connectionId]; never calls LLM, never blocks requests."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "period": {"type": "string", "enum": ["today", "24h", "7d", "30d", "60d", "all"], "description": "9Router usage period. Default 30d."},
+                    "router_base_url": {"type": "string", "description": "9Router base URL, default ROUTER_BASE_URL or http://localhost:20128."},
+                    "connection_ids": {"type": "array", "items": {"type": "string"}, "description": "Optional 9Router connection IDs to probe provider quota."},
+                    "timeout": {"type": "number", "description": "HTTP timeout seconds. Default 2.5."},
+                },
+            },
+        ),
+        types.Tool(
             name="prod_readiness_gate",
             description=(
                 "Production readiness gate: gom auto_trigger final + security/env/secret/review/release checks "
@@ -1124,7 +1231,7 @@ def _schedule_mcp_memory_events(name: str, arguments: dict, response: list[types
     if not bool_flag("HARNESS_LESSONS_ENABLED", True, root=_active_workspace()):
         return
     tool_name = name.split("/", 1)[-1] if "/" in str(name) else str(name)
-    if tool_name in {"list_agents", "finops_stats"}:
+    if tool_name in {"list_agents", "finops_stats", "router_quota_status"}:
         return
     if not _mcp_memory_slots.acquire(blocking=False):
         _log.debug("MCP memory events skipped for %s: background task cap reached", tool_name)
@@ -1540,7 +1647,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         return res
     finally:
         current_run_id.reset(run_token)
-        if name not in ("list_agents", "finops_stats"):
+        if name not in ("list_agents", "finops_stats", "router_quota_status"):
             def _log_task(t: asyncio.Task, _rid=run_id, _n=name, _s=start_time) -> None:
                 try:
                     suffix = "_cancelled" if t.cancelled() else ("_error" if t.exception() else "")
@@ -1583,6 +1690,81 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 task=args.get("task"),
                 stage=stage,
                 mode=mode,
+            ))
+
+        if name == "integration_router":
+            return _json_response(st.integration_router(
+                task=args.get("task"),
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+            ))
+
+        if name == "hallmark_bridge":
+            allow_mutation, mutation_error = _parse_bool_arg(args, "allow_mutation")
+            if mutation_error:
+                return _json_response({"error": "invalid_argument", "detail": mutation_error})
+            return _json_response(st.hallmark_bridge(
+                action=args.get("action", "status"),
+                task=args.get("task"),
+                files=args.get("files"),
+                allow_mutation=allow_mutation,
+            ))
+
+        if name == "speckit_bridge":
+            allow_mutation, mutation_error = _parse_bool_arg(args, "allow_mutation")
+            if mutation_error:
+                return _json_response({"error": "invalid_argument", "detail": mutation_error})
+            return _json_response(st.speckit_bridge(
+                action=args.get("action", "status"),
+                task=args.get("task"),
+                feature=args.get("feature"),
+                integration=args.get("integration", "codex"),
+                allow_mutation=allow_mutation,
+            ))
+
+        if name == "scope_creep_detector":
+            staged, staged_error = _parse_bool_arg(args, "staged")
+            if staged_error:
+                return _json_response({"error": "invalid_argument", "detail": staged_error})
+            try:
+                hunk_threshold = int(args.get("hunk_threshold", 80) or 80)
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "hunk_threshold must be an integer"})
+            return _json_response(st.scope_creep_detector(
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+                task=args.get("task"),
+                staged=staged,
+                base=args.get("base"),
+                hunk_threshold=hunk_threshold,
+            ))
+
+        if name == "office_bridge":
+            allow_mutation, mutation_error = _parse_bool_arg(args, "allow_mutation")
+            if mutation_error:
+                return _json_response({"error": "invalid_argument", "detail": mutation_error})
+            try:
+                timeout = int(args.get("timeout", 120) or 120)
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "timeout must be an integer"})
+            return _json_response(st.office_bridge(
+                action=args.get("action", "status"),
+                file=args.get("file"),
+                mode=args.get("mode"),
+                path=args.get("path"),
+                selector=args.get("selector"),
+                command=args.get("command"),
+                output=args.get("output"),
+                allow_mutation=allow_mutation,
+                timeout=timeout,
+            ))
+
+        if name == "router_quota_status":
+            return _json_response(st.router_quota_status(
+                period=args.get("period", "30d"),
+                router_base_url=args.get("router_base_url"),
+                connection_ids=args.get("connection_ids"),
+                timeout=args.get("timeout", 2.5),
             ))
 
         if name == "prod_readiness_gate":

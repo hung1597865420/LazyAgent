@@ -233,6 +233,7 @@ tools = asyncio.run(mcp_server.list_tools())
 tool_names = {t.name for t in tools}
 expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "provenance_checker",
             "auth_matrix_auditor", "harness_trace_viewer", "incremental_refactor_guard",
+            "hallmark_bridge", "integration_router", "speckit_bridge", "office_bridge", "scope_creep_detector",
             "goal_autopilot", "goal_supervisor", "goal_runner", "panel_review", "consult", "alt_implementation", "suggest_fix",
             "goal_runner_control", "run_ledger", "policy_profile", "agent_adapters", "context_auditor",
             "ask_codebase_health", "patch_safety_check", "benchmark_runner", "harness_doctor", "lesson_curator",
@@ -250,7 +251,8 @@ expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "prov
             "migration_validator", "sql_query_analyzer", "openapi_spec_sync",
             "breaking_change_detector", "flaky_test_detector", "duplicate_code_scanner",
             "container_linter", "dependency_graph_visualizer", "ci_pipeline_validator",
-            "mutation_tester", "data_flow_taint_analyzer", "performance_regression_detector"}
+            "mutation_tester", "data_flow_taint_analyzer", "performance_regression_detector",
+            "router_quota_status"}
 check(f"MCP đăng ký đủ {len(expected)} tool", tool_names == expected,
       f"thiếu {expected - tool_names}, thừa {tool_names - expected}")
 for t in tools:
@@ -275,6 +277,39 @@ resources = asyncio.run(mcp_server.list_resources())
 resource_templates = asyncio.run(mcp_server.list_resource_templates())
 check("MCP resources/templates trả list rỗng", resources == [] and resource_templates == [],
       f"resources={resources}, templates={resource_templates}")
+office_status = asyncio.run(mcp_server.call_tool("office_bridge", {"action": "status"}))
+office_status_json = json.loads(office_status[0].text)
+check("office_bridge status optional không auto-install",
+      office_status_json.get("status") == "completed"
+      and "officecli_found" in office_status_json
+      and office_status_json.get("action") == "status",
+      str(office_status_json))
+scope_fixture_diff = """diff --git a/src/parser.py b/src/parser.py
+--- a/src/parser.py
++++ b/src/parser.py
+@@ -1,2 +1,4 @@
+ def parse_payload(payload):
++    if payload is None:
++        return None
+     return payload["value"]
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,2 +1,2 @@
+ name: CI
+-on: [push]
++on: [push, pull_request]
+"""
+scope_res = asyncio.run(mcp_server.call_tool("scope_creep_detector", {
+    "diff": scope_fixture_diff,
+    "task": "fix null parser payload crash",
+}))
+scope_json = json.loads(scope_res[0].text)
+check("scope_creep_detector flag CI ngoài intent",
+      scope_json.get("status") == "completed"
+      and scope_json.get("verdict") == "attention_required"
+      and any(item.get("path") == ".github/workflows/ci.yml" for item in scope_json.get("likely_creep", [])),
+      str(scope_json))
 
 auto_res = asyncio.run(mcp_server.call_tool("auto_trigger", {
     "changed_files": ["README.md"],
@@ -635,33 +670,43 @@ finally:
         os.environ["CLAUDE_PROJECT_DIR"] = old_project_dir_ops
 patch_empty = asyncio.run(mcp_server.call_tool("patch_safety_check", {"patch": ""}))
 check("patch_safety_check thiếu patch → error", "error" in json.loads(patch_empty[0].text))
-auto_bad_mode = asyncio.run(mcp_server.call_tool("auto_trigger", {"mode": "wild"}))
-check("auto_trigger mode invalid → error", "error" in json.loads(auto_bad_mode[0].text))
-auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {
-    "changed_files": ["README.md"],
-    "stage": " FINAL ",
-    "mode": " SAFE ",
-}))
-check("auto_trigger stage/mode normalize hoa thường", json.loads(auto_upper[0].text).get("status") == "skipped")
-auto_docs_max = asyncio.run(mcp_server.call_tool("auto_trigger", {
-    "changed_files": ["README.md"],
-    "stage": "final",
-    "mode": "max",
-}))
-check("auto_trigger docs-only max skip nếu không phải release",
-      json.loads(auto_docs_max[0].text).get("status") == "skipped")
-auto_env_case = asyncio.run(mcp_server.call_tool("auto_trigger", {
-    "changed_files": ["config/.ENV.EXAMPLE"],
-    "stage": "post_edit",
-    "mode": "safe",
-}))
-auto_env_case_json = json.loads(auto_env_case[0].text)
-check("auto_trigger nhận diện .ENV.EXAMPLE không phân biệt hoa thường",
-      auto_env_case_json.get("status") == "completed" and "env_parity_checker" in auto_env_case_json.get("selected_tools", []),
-      str(auto_env_case_json))
+old_auto_trigger_features = os.environ.get("HARNESS_FEATURES_FILE")
+auto_trigger_features = SMOKE_DIR / "auto-trigger.features.json"
+auto_trigger_features.write_text(json.dumps({
+    "profile": "light",
+    "llm": {"enabled": False, "static": False},
+    "auto_pilot": {"enabled": True, "mode": "safe", "llm": False},
+    "auto_watch": {"enabled": False, "mode": "safe", "llm": False},
+    "static_llm": False,
+}, indent=2), encoding="utf-8")
+os.environ["HARNESS_FEATURES_FILE"] = str(auto_trigger_features)
 old_auto_max_tools = os.environ.get("HARNESS_AUTO_MAX_TOOLS")
-os.environ["HARNESS_AUTO_MAX_TOOLS"] = "3"
 try:
+    auto_bad_mode = asyncio.run(mcp_server.call_tool("auto_trigger", {"mode": "wild"}))
+    check("auto_trigger mode invalid → error", "error" in json.loads(auto_bad_mode[0].text))
+    auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {
+        "changed_files": ["README.md"],
+        "stage": " FINAL ",
+        "mode": " SAFE ",
+    }))
+    check("auto_trigger stage/mode normalize hoa thường", json.loads(auto_upper[0].text).get("status") == "skipped")
+    auto_docs_max = asyncio.run(mcp_server.call_tool("auto_trigger", {
+        "changed_files": ["README.md"],
+        "stage": "final",
+        "mode": "max",
+    }))
+    check("auto_trigger docs-only max skip nếu không phải release",
+          json.loads(auto_docs_max[0].text).get("status") == "skipped")
+    auto_env_case = asyncio.run(mcp_server.call_tool("auto_trigger", {
+        "changed_files": ["config/.ENV.EXAMPLE"],
+        "stage": "post_edit",
+        "mode": "safe",
+    }))
+    auto_env_case_json = json.loads(auto_env_case[0].text)
+    check("auto_trigger nhận diện .ENV.EXAMPLE không phân biệt hoa thường",
+          auto_env_case_json.get("status") == "completed" and "env_parity_checker" in auto_env_case_json.get("selected_tools", []),
+          str(auto_env_case_json))
+    os.environ["HARNESS_AUTO_MAX_TOOLS"] = "3"
     auto_bounded = asyncio.run(mcp_server.call_tool("auto_trigger", {
         "changed_files": [
             ".env.example",
@@ -680,6 +725,10 @@ finally:
         os.environ.pop("HARNESS_AUTO_MAX_TOOLS", None)
     else:
         os.environ["HARNESS_AUTO_MAX_TOOLS"] = old_auto_max_tools
+    if old_auto_trigger_features is None:
+        os.environ.pop("HARNESS_FEATURES_FILE", None)
+    else:
+        os.environ["HARNESS_FEATURES_FILE"] = old_auto_trigger_features
 auto_bounded_json = json.loads(auto_bounded[0].text)
 check("auto_trigger max tự bound check để tránh MCP timeout",
       auto_bounded_json.get("status") == "degraded"
@@ -1876,12 +1925,24 @@ lesson_ws.mkdir(parents=True, exist_ok=True)
 lesson_ws_other = (SMOKE_DIR / "lesson-runtime-other").resolve()
 lesson_ws_other.mkdir(parents=True, exist_ok=True)
 global_lesson_file = lesson_ws / "global-lessons.jsonl"
-old_lesson_env = {k: os.environ.get(k) for k in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA", "HARNESS_GLOBAL_LESSONS_FILE")}
+old_lesson_env = {k: os.environ.get(k) for k in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA", "HARNESS_GLOBAL_LESSONS_FILE", "HARNESS_FEATURES_FILE")}
 try:
     os.environ.pop("WORKSPACE_ROOT", None)
     os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
     os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws)
     os.environ["HARNESS_GLOBAL_LESSONS_FILE"] = str(global_lesson_file)
+    lesson_features_file = lesson_ws / "harness.features.json"
+    lesson_features_file.write_text(json.dumps({
+        "profile": "light",
+        "llm": {"enabled": False, "static": False},
+        "finops": {"enabled": True},
+        "hooks": {"enabled": True},
+        "lessons": {"enabled": True},
+        "auto_pilot": {"enabled": True, "mode": "safe", "llm": False},
+        "auto_watch": {"enabled": False, "mode": "safe", "llm": False},
+        "static_llm": False,
+    }, indent=2), encoding="utf-8")
+    os.environ["HARNESS_FEATURES_FILE"] = str(lesson_features_file)
     from tools.core import (
         append_lesson,
         build_lesson_checkpoint,
@@ -2695,6 +2756,28 @@ check("semantic_search chạy được", "results" in r_search and "warnings" in
 from agents import get_finops_stats
 r_finops = get_finops_stats()
 check("finops_stats chạy được", "total_cost_usd" in r_finops and "model_stats" in r_finops, str(r_finops))
+old_quota_limit = os.environ.get("HARNESS_QUOTA_MONTHLY_TOKENS")
+old_quota_warn = os.environ.get("HARNESS_QUOTA_WARN_PCT")
+try:
+    os.environ["HARNESS_QUOTA_MONTHLY_TOKENS"] = "1"
+    os.environ["HARNESS_QUOTA_WARN_PCT"] = "1"
+    r_quota = st.router_quota_status(router_base_url="http://127.0.0.1:9", timeout=0.05)
+    check("router_quota_status fallback local chạy được",
+          r_quota.get("status") == "ok" and "budget" in r_quota and r_quota.get("warning_level") in {"warn", "critical", "ok"},
+          str(r_quota))
+    r_quota_mcp = asyncio.run(mcp_server.call_tool("router_quota_status", {"router_base_url": "http://127.0.0.1:9", "timeout": 0.05}))
+    check("router_quota_status MCP dispatch chạy được",
+          "budget" in json.loads(r_quota_mcp[0].text),
+          r_quota_mcp[0].text)
+finally:
+    if old_quota_limit is None:
+        os.environ.pop("HARNESS_QUOTA_MONTHLY_TOKENS", None)
+    else:
+        os.environ["HARNESS_QUOTA_MONTHLY_TOKENS"] = old_quota_limit
+    if old_quota_warn is None:
+        os.environ.pop("HARNESS_QUOTA_WARN_PCT", None)
+    else:
+        os.environ["HARNESS_QUOTA_WARN_PCT"] = old_quota_warn
 
 # 29. swarm_debug test
 r_swarm = asyncio.run(st.swarm_debug(error_log="KeyError: 'files'", files=[]))

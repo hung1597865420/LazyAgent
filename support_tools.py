@@ -44,6 +44,15 @@ from tools.goal import (
 from tools.runner import (
     goal_runner
 )
+from tools.office_bridge import (
+    office_bridge,
+)
+from tools.quota import (
+    router_quota_status,
+)
+from tools.scope_guard import (
+    scope_creep_detector,
+)
 from tools.ops import (
     agent_adapters,
     ask_codebase_health,

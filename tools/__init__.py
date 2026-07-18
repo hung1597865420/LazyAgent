@@ -4,7 +4,11 @@ tools package — Re-exporting all tools.
 from .core import lesson_curator, run_in_sandbox
 from .auto import auto_trigger
 from .goal import goal_autopilot, goal_supervisor
+from .integrations import hallmark_bridge, integration_router, speckit_bridge
+from .office_bridge import office_bridge
+from .quota import router_quota_status
 from .runner import goal_runner
+from .scope_guard import scope_creep_detector
 from .ops import (
     agent_adapters,
     ask_codebase_health,
@@ -67,6 +71,12 @@ __all__ = [
     "auto_trigger",
     "goal_autopilot",
     "goal_supervisor",
+    "hallmark_bridge",
+    "integration_router",
+    "speckit_bridge",
+    "office_bridge",
+    "router_quota_status",
+    "scope_creep_detector",
     "goal_runner",
     "agent_adapters",
     "ask_codebase_health",

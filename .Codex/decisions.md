@@ -41,3 +41,15 @@
 ### 2026-07-17 — Structured lesson checkpoints
 **Decision:** Extend lesson JSONL records additively with optional checkpoint fields: `symptom`, `root_cause`, `exact_fix`, `verification`, and `diff_hash`; inject those fields preferentially while keeping old lesson records readable.
 **Alternatives bỏ:** Creating a separate checkpoint store or running an extra LLM extraction pass for every lesson; both add complexity/cost and weaken the existing lesson dedupe path.
+
+### 2026-07-18 — Distilled Hallmark and Spec Kit bridges
+**Decision:** Distill Hallmark and Spec Kit into a static `integration_router`, guarded `hallmark_bridge`/`speckit_bridge` tools, and Auto-Pilot/goal_runner/rules guidance instead of vendoring either repo as core dependencies. Hallmark gates UI/frontend preflight before code; Spec Kit gates new feature/project work with spec -> plan -> tasks -> implement and can call `specify` or scaffold local spec docs when profile/allow_mutation permit.
+**Alternatives bỏ:** Copying upstream skill/template trees into harness; this would drift quickly, expand setup, and risk mutating projects despite runtime profile gates.
+
+### 2026-07-18 — Optional Office and scope guard bridges
+**Decision:** Add `scope_creep_detector` as a local static diff guard and `office_bridge` as an optional OfficeCLI adapter. OfficeCLI is detected but never installed by harness; read/validate/dump actions are allowed, while create/set/batch/watch/resident actions require `allow_mutation=true` and profile above `off`. DesktopCommanderMCP is not embedded because it overlaps with existing shell/file tools and is not a real sandbox boundary.
+**Alternatives bỏ:** Auto-installing OfficeCLI/DesktopCommander for every agent; enabling DesktopCommander by default; spending LLM tokens for scope-creep classification.
+
+### 2026-07-18 — 9Router quota reminder
+**Decision:** Add read-only `router_quota_status` to combine 9Router `/api/usage/stats`, optional `/api/usage/[connectionId]` provider quota probes, and local `.harness_finops.db` budget fallback. It reports `ok/warn/critical/unknown` and remaining tokens/USD when limits are configured, but never blocks requests or changes profile.
+**Alternatives bỏ:** Reintroducing CostGuard as a hard blocker; relying only on 9Router UI screenshots; assuming a single stable provider quota payload shape.
