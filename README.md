@@ -1,4 +1,4 @@
-# Hướng Dẫn Cài Đặt và Khai Thác Kỹ Thuật Trong Agent Harness & Claude Code
+# Hướng Dẫn Cài Đặt và Khai Thác Kỹ Thuật Trong Agent Harness để nằm không
 
 Tài liệu này cung cấp hướng dẫn cài đặt, vận hành và phân tích chuyên sâu các kỹ thuật kỹ nghệ AI (AI Engineering), quản lý bộ nhớ (Memory) và bộ thư viện 13 kỹ năng tùy chỉnh (Custom Skills) đang được áp dụng trong hệ thống **Agent Harness (12-Agent support team)** kết hợp với **Claude Code**.
 
