@@ -91,7 +91,7 @@ Mặc định harness đọc `.env` cạnh `mcp_server.py`; nếu cần env file
 
 ```env
 # Chat Completions / model inference endpoint
-ROUTER_BASE_URL=http://localhost:20128
+ROUTER_BASE_URL=http://localhost:0931289317
 ROUTER_API_KEY=dummy
 
 # 12-agent role mapping. Đổi nếu deployment name trên 9Router khác mặc định.
