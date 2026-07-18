@@ -34,6 +34,8 @@ Agent Harness Full Setup
 Purpose:
   Install dependencies, sync MCP/rules/hooks for Claude + Gemini/Antigravity
   + Codex, install memory/background integration, and write a runtime profile.
+  Also verifies the current MCP-only bridges are present: Hallmark/Spec Kit,
+  OfficeCLI bridge, scope-creep guard, and 9Router quota reminder.
   Default profile is off. Use --profile max to enable every runtime feature
   and start background helpers.
 
@@ -76,6 +78,8 @@ Options:
 Maintenance:
   When adding/removing runtime features, update both harness-toggle.bat and
   this file so full setup stays identical to the supported toggle surface.
+  MCP-only/read-only tools still belong here because setup should fail fast if
+  their files are missing, even when they do not need a profile toggle.
 '@
 }
 
@@ -206,7 +210,16 @@ Write-Host '=== Agent Harness Full Setup ===' -ForegroundColor Green
 Write-Host "Root: $Root"
 Write-Host "Profile to write: $Profile"
 
-foreach ($required in @('mcp_server.py','merge_settings.py','requirements.txt','harness-toggle.bat')) {
+foreach ($required in @(
+    'mcp_server.py',
+    'merge_settings.py',
+    'requirements.txt',
+    'harness-toggle.bat',
+    'tools\integrations.py',
+    'tools\office_bridge.py',
+    'tools\scope_guard.py',
+    'tools\quota.py'
+)) {
     if (-not (Test-Path (Join-Path $Root $required))) {
         throw "Missing required file: $required. Run this bat from the harness repo folder."
     }
@@ -342,4 +355,6 @@ if ($RunSmoke) {
 Write-Host ''
 Write-Host '=== FULL SETUP DONE ===' -ForegroundColor Green
 Write-Host 'Restart Claude/Gemini/Codex/IDE sessions so they reload MCP config and memory rules.'
+Write-Host 'MCP-only tools installed: integration_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector, router_quota_status.'
+Write-Host 'Quota reminder config lives in .env: HARNESS_QUOTA_* and HARNESS_ROUTER_QUOTA_*.'
 Write-Host 'Future maintenance: when a runtime feature changes, update harness-toggle.bat and harness-full-setup.bat together.'
