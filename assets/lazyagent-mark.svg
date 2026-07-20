@@ -1,30 +1,17 @@
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">LazyAgent mark</title>
-  <desc id="desc">A dark corporate sigil for LazyAgent with brass rings, agent rails, and a red command core.</desc>
-  <rect width="512" height="512" rx="88" fill="#0A0A0B"/>
-  <rect x="22" y="22" width="468" height="468" rx="70" stroke="#3A3122" stroke-width="2"/>
-  <path d="M256 58L427.473 157V355L256 454L84.527 355V157L256 58Z" fill="#101015" stroke="#B08D57" stroke-width="10"/>
-  <path d="M256 92L398.029 174V338L256 420L113.971 338V174L256 92Z" stroke="#3D3323" stroke-width="5"/>
-  <circle cx="256" cy="256" r="122" fill="#111116" stroke="#B08D57" stroke-width="8"/>
-  <circle cx="256" cy="256" r="91" stroke="#5B482A" stroke-width="3"/>
-  <path d="M154 256C154 199.667 199.667 154 256 154C312.333 154 358 199.667 358 256C358 312.333 312.333 358 256 358C199.667 358 154 312.333 154 256Z" stroke="#241C18" stroke-width="22"/>
-  <path d="M177 178L335 336" stroke="#7F1D1D" stroke-width="18" stroke-linecap="round"/>
-  <path d="M167 346H203L256 178L309 346H345L277 154H235L167 346Z" fill="#E6D0A2"/>
-  <path d="M215 286H297L285 253H227L215 286Z" fill="#0A0A0B"/>
-  <path d="M243 154H269V346H243V154Z" fill="#0A0A0B"/>
-  <path d="M224 154H246V346H224V154Z" fill="#F3E7C8"/>
-  <path d="M266 154H288V346H266V154Z" fill="#C6A46D"/>
-  <circle cx="256" cy="256" r="28" fill="#7F1D1D" stroke="#E6D0A2" stroke-width="6"/>
-  <circle cx="256" cy="256" r="8" fill="#F7E7BD"/>
-  <g stroke="#B08D57" stroke-width="6" stroke-linecap="round">
-    <path d="M256 109V134"/>
-    <path d="M256 378V403"/>
-    <path d="M109 256H134"/>
-    <path d="M378 256H403"/>
-    <path d="M153 153L171 171"/>
-    <path d="M341 341L359 359"/>
-    <path d="M359 153L341 171"/>
-    <path d="M171 341L153 359"/>
-  </g>
-  <path d="M256 58L427.473 157V355L256 454L84.527 355V157L256 58Z" stroke="#F5D38A" stroke-opacity="0.35" stroke-width="2"/>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="lazyagent-mark-title lazyagent-mark-desc">
+  <title id="lazyagent-mark-title">LazyAgent mark</title>
+  <desc id="lazyagent-mark-desc">A stark fictional-corporate LazyAgent emblem with bracket rails and a red control core.</desc>
+  <rect width="512" height="512" rx="32" fill="#070707"/>
+  <rect x="28" y="28" width="456" height="456" rx="10" stroke="#27231F" stroke-width="4"/>
+  <path d="M256 74L405 158V354L256 438L107 354V158L256 74Z" stroke="#E7E0D2" stroke-width="14" stroke-linejoin="miter"/>
+  <path d="M256 101L374 169V343L256 411L138 343V169L256 101Z" stroke="#211E1B" stroke-width="5" stroke-linejoin="miter"/>
+  <path d="M172 170H236V236H172" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M340 170H276V236H340" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M172 342H236V276H172" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M340 342H276V276H340" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M256 154V358" stroke="#8B1019" stroke-width="22" stroke-linecap="square"/>
+  <rect x="226" y="226" width="60" height="60" fill="#070707" stroke="#E7E0D2" stroke-width="10"/>
+  <rect x="244" y="244" width="24" height="24" fill="#8B1019"/>
+  <path d="M170 132H218" stroke="#E7E0D2" stroke-width="7" stroke-linecap="square"/>
+  <path d="M294 380H342" stroke="#E7E0D2" stroke-width="7" stroke-linecap="square"/>
 </svg>

@@ -1,21 +1,26 @@
-<svg width="980" height="240" viewBox="0 0 980 240" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">LazyAgent logo</title>
-  <desc id="desc">LazyAgent wordmark with a dark brass command sigil.</desc>
-  <rect width="980" height="240" rx="24" fill="#0A0A0B"/>
-  <g transform="translate(42 36) scale(0.328125)">
-    <rect width="512" height="512" rx="88" fill="#0A0A0B"/>
-    <path d="M256 58L427.473 157V355L256 454L84.527 355V157L256 58Z" fill="#101015" stroke="#B08D57" stroke-width="10"/>
-    <circle cx="256" cy="256" r="122" fill="#111116" stroke="#B08D57" stroke-width="8"/>
-    <path d="M177 178L335 336" stroke="#7F1D1D" stroke-width="18" stroke-linecap="round"/>
-    <path d="M167 346H203L256 178L309 346H345L277 154H235L167 346Z" fill="#E6D0A2"/>
-    <path d="M243 154H269V346H243V154Z" fill="#0A0A0B"/>
-    <path d="M224 154H246V346H224V154Z" fill="#F3E7C8"/>
-    <path d="M266 154H288V346H266V154Z" fill="#C6A46D"/>
-    <circle cx="256" cy="256" r="28" fill="#7F1D1D" stroke="#E6D0A2" stroke-width="6"/>
-    <circle cx="256" cy="256" r="8" fill="#F7E7BD"/>
+<svg width="1040" height="260" viewBox="0 0 1040 260" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="lazyagent-logo-title lazyagent-logo-desc">
+  <title id="lazyagent-logo-title">LazyAgent logo</title>
+  <desc id="lazyagent-logo-desc">LazyAgent fictional-corporate wordmark and bracket-rail emblem.</desc>
+  <rect width="1040" height="260" fill="#070707"/>
+  <rect x="26" y="26" width="988" height="208" stroke="#27231F" stroke-width="3"/>
+  <g transform="translate(48 42) scale(0.34375)">
+    <path d="M256 74L405 158V354L256 438L107 354V158L256 74Z" stroke="#E7E0D2" stroke-width="14" stroke-linejoin="miter"/>
+    <path d="M256 101L374 169V343L256 411L138 343V169L256 101Z" stroke="#211E1B" stroke-width="5" stroke-linejoin="miter"/>
+    <path d="M172 170H236V236H172" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M340 170H276V236H340" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M172 342H236V276H172" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M340 342H276V276H340" stroke="#E7E0D2" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M256 154V358" stroke="#8B1019" stroke-width="22" stroke-linecap="square"/>
+    <rect x="226" y="226" width="60" height="60" fill="#070707" stroke="#E7E0D2" stroke-width="10"/>
+    <rect x="244" y="244" width="24" height="24" fill="#8B1019"/>
   </g>
-  <path d="M248 52H904" stroke="#3A3122" stroke-width="2"/>
-  <text x="246" y="127" fill="#F3E7C8" font-family="Georgia, 'Times New Roman', serif" font-size="72" font-weight="700" letter-spacing="1">LazyAgent</text>
-  <text x="251" y="170" fill="#B08D57" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="800" letter-spacing="4">MCP CONTROL PLANE</text>
-  <path d="M248 190H904" stroke="#3A3122" stroke-width="2"/>
+  <path d="M252 56H956" stroke="#27231F" stroke-width="3"/>
+  <text x="252" y="126" fill="#E7E0D2" font-family="Arial Black, Impact, Segoe UI, Arial, sans-serif" font-size="66" font-weight="900" letter-spacing="2">LAZYAGENT</text>
+  <rect x="254" y="146" width="204" height="34" fill="#8B1019"/>
+  <text x="270" y="170" fill="#E7E0D2" font-family="Consolas, 'Courier New', monospace" font-size="19" font-weight="700" letter-spacing="3">MCP CONTROL</text>
+  <text x="484" y="169" fill="#8D867C" font-family="Consolas, 'Courier New', monospace" font-size="18" font-weight="700" letter-spacing="4">AGENT OPERATIONS // DIVISION IT</text>
+  <path d="M252 201H956" stroke="#27231F" stroke-width="3"/>
+  <text x="256" y="224" fill="#706962" font-family="Consolas, 'Courier New', monospace" font-size="15" font-weight="700" letter-spacing="4">RUNTIME PROFILES / LESSON MEMORY / REVIEW GATES</text>
+  <rect x="864" y="77" width="92" height="32" fill="#E7E0D2"/>
+  <text x="880" y="100" fill="#070707" font-family="Consolas, 'Courier New', monospace" font-size="18" font-weight="800">LA-07</text>
 </svg>
