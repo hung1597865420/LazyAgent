@@ -16,7 +16,10 @@ $Argv = @($args | ForEach-Object { [string]$_ })
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path $env:HARNESS_FULL_SETUP_ROOT).Path
 $ToggleBat = Join-Path $Root 'harness-toggle.bat'
-$FeatureFile = Join-Path $Root 'harness.features.json'
+$UserHome = [Environment]::GetFolderPath('UserProfile')
+if (-not $UserHome) { $UserHome = $env:USERPROFILE }
+if (-not $UserHome) { throw 'Cannot resolve user profile directory for global Agent Harness config.' }
+$FeatureFile = Join-Path (Join-Path $UserHome '.agent-harness') 'harness.features.json'
 $Profile = 'off'
 $RunSmoke = $true
 $InstallPlaywright = $true
@@ -33,7 +36,7 @@ Agent Harness Full Setup
 
 Purpose:
   Install dependencies, sync MCP/rules/hooks for Claude + Gemini/Antigravity
-  + Codex, install memory/background integration, and write a runtime profile.
+  + Codex, install memory/background integration, and write a global runtime profile.
   Also verifies the current MCP-only bridges are present: Hallmark/Spec Kit,
   UI/workflow routers, bug repro guard, OfficeCLI bridge, scope-creep guard,
   install manifest, adapter parity, MCP inventory, and context budget/status doctor.
@@ -49,7 +52,7 @@ Usage:
 
 Options:
   --profile <off|max|heavy|review|balanced|standard|light>
-      Runtime profile to write. Default: off.
+      Global runtime profile to write. Default: off.
       Default off still installs configs/hooks/rules, but prevents background
       tools, LLM calls, watcher, lessons, and FinOps writes until user enables
       a higher profile explicitly.
@@ -66,7 +69,7 @@ Options:
       auto-watch disabled, and exits.
   --no-watch
       Do not start watcher now. Auto-watch state still follows the selected
-      profile in harness.features.json.
+      global profile in %USERPROFILE%\.agent-harness\harness.features.json.
   --start-dashboard
       Also start server.py in the background.
   --no-global-wiki
@@ -272,32 +275,13 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 Write-Step '5/9 Write runtime feature profile'
 Invoke-Toggle @('profile', $Profile)
 if ($Profile -eq 'max') {
-    $featureCommands = @(
-        @('set','llm','on'),
-        @('set','finops','on'),
-        @('set','hooks','on'),
-        @('set','lessons','on'),
-        @('set','auto-pilot','on'),
-        @('set','auto-pilot-llm','on'),
-        @('set','auto-watch','on'),
-        @('set','auto-watch-llm','on'),
-        @('set','static-llm','on'),
-        @('set','wiki','on'),
-        @('set','code-index','on'),
-        @('set','dashboard','on'),
-        @('mode','auto-pilot','max'),
-        @('mode','auto-watch','max'),
-        @('timing','2','1')
-    )
-    foreach ($cmd in $featureCommands) {
-        Invoke-Toggle $cmd
-    }
+    Write-Host '[ok] Max profile written atomically by harness-toggle.bat.'
 } elseif ($Profile -eq 'off') {
     Write-Host '[ok] Default-safe install: runtime profile is off, so no background/LLM/token features are enabled.'
 } else {
     Write-Host "[ok] Runtime profile '$Profile' written using harness-toggle.bat defaults."
 }
-Write-Host "[ok] Runtime features written to $FeatureFile"
+Write-Host "[ok] Global runtime features written to $FeatureFile"
 
 Write-Step '6/9 Install repository git pre-commit hook'
 if ($InstallGitHook) {

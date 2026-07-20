@@ -1,5 +1,5 @@
 """
-Repo-local runtime feature flags for Agent Harness.
+Global runtime feature flags for Agent Harness.
 
 This intentionally controls only non-secret runtime/background behaviour. Model
 keys, router credentials, and deployment names still come from env/config.
@@ -14,6 +14,7 @@ from typing import Any
 
 CONTROL_FILE = "harness.features.json"
 HARNESS_ROOT = Path(__file__).resolve().parent
+GLOBAL_CONTROL_DIR = Path.home() / ".agent-harness"
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
@@ -62,12 +63,10 @@ def active_workspace_root(default: str | os.PathLike[str] | None = None) -> Path
 
 def control_file_paths(root: str | os.PathLike[str] | None = None) -> list[Path]:
     explicit = os.getenv("HARNESS_FEATURES_FILE")
-    if explicit:
+    if explicit and _parse_bool(os.getenv("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE")) is True:
         return [Path(explicit).expanduser()]
     paths: list[Path] = []
-    active_root = active_workspace_root(root)
-    paths.append(active_root / CONTROL_FILE)
-    paths.append(HARNESS_ROOT / CONTROL_FILE)
+    paths.append(GLOBAL_CONTROL_DIR / CONTROL_FILE)
 
     seen: set[str] = set()
     unique: list[Path] = []

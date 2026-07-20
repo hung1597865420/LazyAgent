@@ -724,11 +724,15 @@ def _auto_watch_status() -> dict[str, Any]:
 
 
 def _feature_snapshot() -> dict[str, Any]:
-    path = _root() / "harness.features.json"
-    data = _read_json_safe(path)
+    from runtime_flags import control_file_paths, load_feature_flags
+
+    paths = control_file_paths(_root())
+    data = load_feature_flags(_root())
+    active_path = next((path for path in paths if path.exists()), paths[0] if paths else (_root() / "harness.features.json"))
     return {
-        "path": _display_path(str(path)),
-        "exists": path.exists(),
+        "path": _display_path(str(active_path)),
+        "exists": active_path.exists(),
+        "candidate_paths": [_display_path(str(path)) for path in paths],
         "profile": data.get("profile"),
         "llm_enabled": bool((data.get("llm") or {}).get("enabled")) if isinstance(data.get("llm"), dict) else None,
         "auto_watch_enabled": bool((data.get("auto_watch") or {}).get("enabled")) if isinstance(data.get("auto_watch"), dict) else None,

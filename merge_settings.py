@@ -156,9 +156,9 @@ SHARED_AGENT_RULE_SOURCE = (
 COMMON_RUNTIME_PROFILE_POLICY_TEMPLATE = """\
 ## Runtime Profile Policy — profile thắng mọi rule bên dưới
 
-Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM hoặc chạy nền, đọc `harness.features.json` trong workspace hiện tại. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
+Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM hoặc chạy nền, đọc profile global `%USERPROFILE%\\.agent-harness\\harness.features.json` hoặc dùng `{off_status_command}`. `HARNESS_FEATURES_FILE` bị bỏ qua trừ khi `HARNESS_ALLOW_FEATURE_FILE_OVERRIDE=1` để test/debug rõ ràng. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
 
-Ngay đầu mỗi user prompt/session mới, refresh profile bằng cách đọc `harness.features.json` trong workspace hiện tại và coi đó là runtime profile snapshot hiện hành. Với client có hook prompt, snapshot có thể đã được inject sẵn; với Gemini/Antigravity không có hook prompt tương đương trong config hiện tại, tự đọc file này trước khi quyết định gọi tool LLM/chạy nền.
+Ngay đầu mỗi user prompt/session mới, refresh profile bằng profile global và coi đó là runtime profile snapshot hiện hành cho mọi repo. Với client có hook prompt, snapshot có thể đã được inject sẵn; với Gemini/Antigravity không có hook prompt tương đương trong config hiện tại, tự đọc file global hoặc gọi status/json trước khi quyết định gọi tool LLM/chạy nền.
 
 | Profile | Agent được làm | Agent không được làm |
 |---|---|---|
@@ -167,7 +167,7 @@ Ngay đầu mỗi user prompt/session mới, refresh profile bằng cách đọc
 | `standard` | Như `light` + watcher safe được phép chạy static checks. Manual LLM vẫn chỉ khi có lý do rõ. | Watcher/Auto-Pilot không được tự gọi LLM; không dùng `static_llm`; không fan-out max. |
 | `balanced` / `4` | Coding/review chủ động: `auto_trigger safe`, `consult`/`panel_review`/`ask_codebase` được phép khi rule bắt buộc khớp. | Không bật watcher; không static LLM enrichment nền; không gọi max/prod fan-out trừ khi user yêu cầu. |
 | `review` / `5` | Review kỹ hơn: Auto-Pilot LLM + static LLM được phép cho batch review; watcher safe nhưng không watcher LLM. | Watcher không được gọi LLM; không dùng max fan-out mặc định. |
-| `heavy` / `7` | Refactor lớn/debug khó: Auto-Pilot max, static LLM, watcher LLM safe được phép. | Không chạy aggressive release/prod gates liên tục; vẫn phải gom batch, tránh gọi panel lặp. |
+| `heavy` / `7` | Refactor lớn/debug khó: Auto-Pilot max, static LLM; watcher chỉ chạy nếu user bật riêng `auto-watch`. | Không tự bật watcher nền cho mọi repo; không chạy aggressive release/prod gates liên tục; vẫn phải gom batch, tránh gọi panel lặp. |
 | `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
 
 Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
@@ -730,7 +730,7 @@ CODEX_PROFILE_POLICY_SECTION = f"""\
 <!-- agent-harness-runtime-profile-policy -->
 # Agent Harness Runtime Profile Policy
 
-Quy tắc này áp dụng cho Codex và mọi agent đọc `AGENTS.md`. Profile trong `harness.features.json` thắng mọi rule tự động khác.
+Quy tắc này áp dụng cho Codex và mọi agent đọc `AGENTS.md`. Profile global trong `%USERPROFILE%\\.agent-harness\\harness.features.json` thắng mọi rule tự động khác.
 
 {_shared_rule_source_note()}
 

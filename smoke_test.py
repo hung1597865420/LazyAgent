@@ -756,6 +756,7 @@ finally:
 patch_empty = asyncio.run(mcp_server.call_tool("patch_safety_check", {"patch": ""}))
 check("patch_safety_check thiếu patch → error", "error" in json.loads(patch_empty[0].text))
 old_auto_trigger_features = os.environ.get("HARNESS_FEATURES_FILE")
+old_auto_trigger_features_override = os.environ.get("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE")
 auto_trigger_features = SMOKE_DIR / "auto-trigger.features.json"
 auto_trigger_features.write_text(json.dumps({
     "profile": "light",
@@ -765,6 +766,7 @@ auto_trigger_features.write_text(json.dumps({
     "static_llm": False,
 }, indent=2), encoding="utf-8")
 os.environ["HARNESS_FEATURES_FILE"] = str(auto_trigger_features)
+os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = "1"
 old_auto_max_tools = os.environ.get("HARNESS_AUTO_MAX_TOOLS")
 try:
     auto_bad_mode = asyncio.run(mcp_server.call_tool("auto_trigger", {"mode": "wild"}))
@@ -814,6 +816,10 @@ finally:
         os.environ.pop("HARNESS_FEATURES_FILE", None)
     else:
         os.environ["HARNESS_FEATURES_FILE"] = old_auto_trigger_features
+    if old_auto_trigger_features_override is None:
+        os.environ.pop("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE", None)
+    else:
+        os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = old_auto_trigger_features_override
 auto_bounded_json = json.loads(auto_bounded[0].text)
 check("auto_trigger max tự bound check để tránh MCP timeout",
       auto_bounded_json.get("status") == "degraded"
@@ -1122,8 +1128,10 @@ old_auto_llm_for_watch = os.environ.get("HARNESS_AUTO_LLM")
 old_auto_pilot_for_watch = os.environ.get("HARNESS_AUTO_PILOT")
 old_static_llm_for_watch = os.environ.get("HARNESS_STATIC_LLM")
 old_features_file = os.environ.get("HARNESS_FEATURES_FILE")
+old_features_override = os.environ.get("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE")
 features_file = watch_root / "harness.features.json"
 try:
+    os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = "1"
     os.environ["HARNESS_FEATURES_FILE"] = str(watch_root / "missing.features.json")
     os.environ["HARNESS_AUTO_WATCH_INTERVAL"] = "nan"
     os.environ["HARNESS_AUTO_WATCH_DEBOUNCE"] = "-1"
@@ -1205,7 +1213,7 @@ try:
         os.environ["HARNESS_AUTO_WATCH"] = "0"
         os.environ["HARNESS_AUTO_PILOT"] = "1"
         os.environ["HARNESS_STATIC_LLM"] = "0"
-        from runtime_flags import bool_flag, choice_flag
+        from runtime_flags import CONTROL_FILE, bool_flag, choice_flag, control_file_paths
         check("runtime feature file overrides background flags",
               auto_watch._enabled() is True
               and auto_watch._watch_mode() == "max"
@@ -1217,6 +1225,14 @@ try:
               and bool_flag("HARNESS_FINOPS_ENABLED", True, root=watch_root) is False
               and bool_flag("HARNESS_HOOKS_ENABLED", True, root=watch_root) is False
               and bool_flag("HARNESS_LESSONS_ENABLED", True, root=watch_root) is False)
+        os.environ.pop("HARNESS_FEATURES_FILE", None)
+        global_candidates = control_file_paths(root=watch_root)
+        check("runtime feature resolver is global-first",
+              len(global_candidates) == 1
+              and global_candidates[0].name == CONTROL_FILE
+              and global_candidates[0].parent == (Path.home() / ".agent-harness"),
+              [str(p) for p in global_candidates])
+        os.environ["HARNESS_FEATURES_FILE"] = str(features_file)
 
         features_file.write_text("{not json", encoding="utf-8")
         os.environ["HARNESS_AUTO_WATCH"] = "1"
@@ -1228,6 +1244,7 @@ try:
 finally:
     for key, value in (
         ("HARNESS_FEATURES_FILE", old_features_file),
+        ("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE", old_features_override),
         ("HARNESS_AUTO_WATCH", old_watch_enabled),
     ):
         if value is None:
@@ -1285,7 +1302,8 @@ import contextlib
 import io
 h_root = SMOKE_DIR / "hook_profile"
 h_root.mkdir(parents=True, exist_ok=True)
-(h_root / "harness.features.json").write_text(json.dumps({
+hook_features_file = h_root / "harness.features.json"
+hook_features_file.write_text(json.dumps({
     "profile": "off",
     "llm": {"enabled": False, "static": False},
     "hooks": {"enabled": False},
@@ -1297,7 +1315,10 @@ h_root.mkdir(parents=True, exist_ok=True)
 }), encoding="utf-8")
 old_stdin = sys.stdin
 old_features_file = os.environ.pop("HARNESS_FEATURES_FILE", None)
+old_features_override = os.environ.pop("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE", None)
 try:
+    os.environ["HARNESS_FEATURES_FILE"] = str(hook_features_file)
+    os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = "1"
     sys.stdin = io.StringIO(json.dumps({"cwd": str(h_root), "prompt": "hello"}))
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -1309,8 +1330,14 @@ try:
           hook_context)
 finally:
     sys.stdin = old_stdin
-    if old_features_file is not None:
+    if old_features_file is None:
+        os.environ.pop("HARNESS_FEATURES_FILE", None)
+    else:
         os.environ["HARNESS_FEATURES_FILE"] = old_features_file
+    if old_features_override is None:
+        os.environ.pop("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE", None)
+    else:
+        os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = old_features_override
 
 import merge_settings
 managed_sample = "before\n<!-- agent-harness-managed -->\nold\n<!-- /agent-harness-managed -->\nafter"
@@ -2212,7 +2239,7 @@ lesson_ws.mkdir(parents=True, exist_ok=True)
 lesson_ws_other = (SMOKE_DIR / "lesson-runtime-other").resolve()
 lesson_ws_other.mkdir(parents=True, exist_ok=True)
 global_lesson_file = lesson_ws / "global-lessons.jsonl"
-old_lesson_env = {k: os.environ.get(k) for k in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA", "HARNESS_GLOBAL_LESSONS_FILE", "HARNESS_FEATURES_FILE")}
+old_lesson_env = {k: os.environ.get(k) for k in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA", "HARNESS_GLOBAL_LESSONS_FILE", "HARNESS_FEATURES_FILE", "HARNESS_ALLOW_FEATURE_FILE_OVERRIDE")}
 try:
     os.environ.pop("WORKSPACE_ROOT", None)
     os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
@@ -2230,6 +2257,7 @@ try:
         "static_llm": False,
     }, indent=2), encoding="utf-8")
     os.environ["HARNESS_FEATURES_FILE"] = str(lesson_features_file)
+    os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = "1"
     from tools.core import (
         _load_relevant_wiki_context,
         append_lesson,

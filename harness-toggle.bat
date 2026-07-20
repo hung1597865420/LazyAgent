@@ -11,7 +11,11 @@ exit /b %ERRORLEVEL%
 $Argv = @($args | ForEach-Object { [string]$_ })
 
 $Root = (Resolve-Path $env:HARNESS_TOGGLE_ROOT).Path
-$FeatureFile = Join-Path $Root 'harness.features.json'
+$UserHome = [Environment]::GetFolderPath('UserProfile')
+if (-not $UserHome) { $UserHome = $env:USERPROFILE }
+if (-not $UserHome) { throw 'Cannot resolve user profile directory for global Agent Harness config.' }
+$FeatureDir = Join-Path $UserHome '.agent-harness'
+$FeatureFile = Join-Path $FeatureDir 'harness.features.json'
 $ErrorActionPreference = 'Stop'
 $script:InteractiveProfileWrite = $false
 
@@ -27,10 +31,10 @@ function Ensure-Prop($Obj, [string]$Name, $Value) {
 function Require-ProfileWriteConsent([string]$Action) {
     if ($script:InteractiveProfileWrite) { return }
     if ($env:HARNESS_ALLOW_PROFILE_WRITE -match '^(1|true|yes|on)$') { return }
-    throw "Blocked profile write '$Action'. Agents/non-interactive shells cannot change harness.features.json unless HARNESS_ALLOW_PROFILE_WRITE=1 is set. Open harness-toggle.bat with no args for the user menu."
+    throw "Blocked profile write '$Action'. Agents/non-interactive shells cannot change global harness.features.json unless HARNESS_ALLOW_PROFILE_WRITE=1 is set. Open harness-toggle.bat with no args for the user menu."
 }
 
-function Load-Features {
+function Load-Features([bool]$Strict = $false) {
     if (Test-Path $FeatureFile) {
         try {
             $raw = [IO.File]::ReadAllText($FeatureFile)
@@ -39,6 +43,7 @@ function Load-Features {
                 if ($obj) { return $obj }
             }
         } catch {
+            if ($Strict) { throw "Cannot parse $FeatureFile; fix the JSON or delete/repair the file before writing profile changes. $($_.Exception.Message)" }
             Write-Warning "Cannot parse $FeatureFile; rebuilding it."
         }
     }
@@ -94,7 +99,26 @@ function Save-Features($J) {
     $J = Ensure-Defaults $J
     $json = ConvertTo-Json -InputObject $J -Depth 20
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    [IO.File]::WriteAllText($FeatureFile, $json + [Environment]::NewLine, $utf8)
+    New-Item -ItemType Directory -Force $FeatureDir | Out-Null
+    $mutex = New-Object System.Threading.Mutex($false, 'Global\AgentHarnessFeatures')
+    $locked = $false
+    $tmp = Join-Path $FeatureDir ("harness.features.{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
+    $backup = Join-Path $FeatureDir ("harness.features.{0}.bak" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        $locked = $mutex.WaitOne(30000)
+        if (-not $locked) { throw 'Timed out waiting for global feature profile lock.' }
+        [IO.File]::WriteAllText($tmp, $json + [Environment]::NewLine, $utf8)
+        if (Test-Path $FeatureFile) {
+            [IO.File]::Replace($tmp, $FeatureFile, $backup, $true)
+        } else {
+            [IO.File]::Move($tmp, $FeatureFile)
+        }
+    } finally {
+        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+        if ($locked) { $mutex.ReleaseMutex() | Out-Null }
+        $mutex.Dispose()
+    }
 }
 
 function To-Bool([string]$Raw) {
@@ -154,9 +178,23 @@ function Feature-Note([string]$Name) {
     }
 }
 
+function Watch-Procs {
+    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+        Where-Object { $_.CommandLine -like '*auto_watch.py*' -and $_.CommandLine -like ('*' + $Root + '*') }
+}
+
+function Stop-Watch {
+    $items = @(Watch-Procs)
+    foreach ($p in $items) {
+        Stop-Process -Id $p.ProcessId -Force
+        Write-Host "stopped auto_watch pid=$($p.ProcessId)"
+    }
+    if (-not $items) { Write-Host 'no auto_watch process found' }
+}
+
 function Set-Feature([string]$Name, [bool]$Value) {
     Require-ProfileWriteConsent "set $Name"
-    $j = Ensure-Defaults (Load-Features)
+    $j = Ensure-Defaults (Load-Features $true)
     $j.profile = 'custom'
     switch ($Name) {
         'llm' { $j.llm.enabled = $Value }
@@ -181,7 +219,7 @@ function Set-Mode([string]$Name, [string]$Mode) {
     Require-ProfileWriteConsent "mode $Name"
     $mode = $Mode.ToLowerInvariant()
     if ($mode -notin @('safe','max')) { throw "Mode must be safe or max." }
-    $j = Ensure-Defaults (Load-Features)
+    $j = Ensure-Defaults (Load-Features $true)
     $j.profile = 'custom'
     switch ($Name) {
         'auto-pilot' { $j.auto_pilot.mode = $mode }
@@ -196,7 +234,7 @@ function Set-Timing([double]$Interval, [double]$Debounce) {
     Require-ProfileWriteConsent 'timing'
     if ($Interval -lt 0.5 -or $Interval -gt 300) { throw 'Interval must be between 0.5 and 300 seconds.' }
     if ($Debounce -lt 0.5 -or $Debounce -gt 300) { throw 'Debounce must be between 0.5 and 300 seconds.' }
-    $j = Ensure-Defaults (Load-Features)
+    $j = Ensure-Defaults (Load-Features $true)
     $j.profile = 'custom'
     $j.auto_watch.interval = $Interval
     $j.auto_watch.debounce = $Debounce
@@ -325,9 +363,9 @@ function Set-Profile([string]$Name) {
             $j.auto_pilot.enabled = $true
             $j.auto_pilot.mode = 'max'
             $j.auto_pilot.llm = $true
-            $j.auto_watch.enabled = $true
+            $j.auto_watch.enabled = $false
             $j.auto_watch.mode = 'safe'
-            $j.auto_watch.llm = $true
+            $j.auto_watch.llm = $false
             $j.auto_watch.interval = 3
             $j.auto_watch.debounce = 2
             $j.static_llm = $true
@@ -341,6 +379,7 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'lessons' $true
             Set-Manual $j 'llmwiki' $true
             Set-Manual $j 'code_index' $true
+            Stop-Watch
         }
         'max' {
             $j.auto_pilot.enabled = $true
@@ -365,20 +404,6 @@ function Set-Profile([string]$Name) {
     }
     Save-Features $j
     Write-Host "profile = $profile"
-}
-
-function Watch-Procs {
-    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
-        Where-Object { $_.CommandLine -like '*auto_watch.py*' -and $_.CommandLine -like ('*' + $Root + '*') }
-}
-
-function Stop-Watch {
-    $items = @(Watch-Procs)
-    foreach ($p in $items) {
-        Stop-Process -Id $p.ProcessId -Force
-        Write-Host "stopped auto_watch pid=$($p.ProcessId)"
-    }
-    if (-not $items) { Write-Host 'no auto_watch process found' }
 }
 
 function Start-Watch {
@@ -413,7 +438,7 @@ function Install-GitHook {
 
 function Show-Status {
     $j = Ensure-Defaults (Load-Features)
-    Write-Host "Runtime file: $FeatureFile"
+    Write-Host "Global runtime file: $FeatureFile"
     Write-Host "Profile: $($j.profile)"
     Write-Host ''
     Write-Host ("{0,-16} {1,-7} {2}" -f 'feature', 'value', 'note')
@@ -476,7 +501,7 @@ Profiles:
   standard         2/10: watcher safe on; manual LLM allowed, auto LLM enrichment off.
   balanced, 4      4/10: Auto-Pilot may use LLM; watcher off, static LLM off.
   review, 5        5/10: Auto-Pilot LLM + static LLM; watcher safe, watcher LLM off.
-  heavy, 7         7/10: Auto-Pilot max + watcher LLM safe; less aggressive than max.
+  heavy, 7         7/10: Auto-Pilot max + static LLM; watcher off unless enabled separately.
   max              8-9/10: aggressive checks + fast watcher + LLM enrichment.
 
 Commands:
@@ -525,7 +550,7 @@ function Show-Menu {
         Write-Host '1  Profile: off         2  Profile: light      3  Profile: standard    4  Profile: balanced'
         Write-Host '   0/10 hard-off        1/10 daily            2/10 watcher safe       4/10 AP LLM'
         Write-Host '5  Profile: review      7  Profile: heavy      9  Profile: max'
-        Write-Host '   5/10 static+AP LLM   7/10 watcher LLM      8-9/10 heavy/LLM'
+        Write-Host '   5/10 static+AP LLM   7/10 AP max          8-9/10 heavy/LLM'
         Write-Host '20 Toggle Auto-Watch    21 Toggle Auto-Pilot   22 Toggle Lessons      23 Toggle Hooks'
         Write-Host '   daemon file watcher   auto checks           memory capture/inject    client hook bridge'
         Write-Host '24 Toggle FinOps        25 Toggle LLM          26 Toggle Static-LLM    27 Toggle Auto-Pilot-LLM'
