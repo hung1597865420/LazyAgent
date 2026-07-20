@@ -25,6 +25,11 @@ __pycache__/
 *.zip
 *.bak
 
+# Local exports/screenshots. Keep public docs/examples/fixtures trackable by default.
+local_exports/
+local_screenshots/
+CostManagement_*.xlsx
+
 node_modules/
 venv/
 .venv/

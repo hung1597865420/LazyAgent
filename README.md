@@ -13,13 +13,13 @@ Mục tiêu: giữ agent chính tập trung vào implementation, còn harness lo
 - Public-safe defaults: no real credentials in repo, `.env` ignored, full setup defaults to profile `off`.
 - Test coverage: `smoke_test.py` validates MCP registry, runtime profiles, routers, memory hardening, setup merge, Auto-Watch behavior and core tools.
 - Community docs: `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `CHANGELOG.md`.
-- License: not specified yet. Add a `LICENSE` file before positioning this as an open-source project.
+- License: MIT.
 
 ## Publishing Checklist
 
 - GitHub About description: `Agent Harness is an MCP-based automation and review layer for Claude Code, Codex, Gemini/Antigravity, and other coding agents.`
 - Suggested topics: `mcp`, `ai-agents`, `coding-agents`, `claude-code`, `codex`, `gemini`, `llm`, `developer-tools`, `automation`, `code-review`.
-- Add a license before calling the project open source. MIT is common for tools, Apache-2.0 adds explicit patent language, and no license means all rights reserved by default.
+- License is MIT; keep the `LICENSE` file in sync if ownership changes.
 - Create releases from `CHANGELOG.md` only after smoke tests pass and the staged diff is secret-clean.
 
 ## Security & Privacy

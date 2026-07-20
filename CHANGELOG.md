@@ -4,6 +4,10 @@ All notable project changes should be recorded here before public releases.
 
 ## Unreleased
 
+- Nothing yet.
+
+## 0.1.0 - 2026-07-20
+
 - Reworked runtime profile policy for Claude, Codex, Gemini/Antigravity and
   other agents from a shared rule source.
 - Added public-safe setup defaults with profile `off`.
@@ -14,6 +18,7 @@ All notable project changes should be recorded here before public releases.
   deprecated compatibility shim.
 - Added public documentation: security policy, contributing guide, code of
   conduct, and changelog.
+- Added MIT license and GitHub release metadata for public launch.
 
 ## Release Process
 
