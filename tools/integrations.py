@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,10 @@ HALLMARK_TASK_WORDS = {
     "accessibility", "a11y", "visual", "style", "theme", "portfolio",
 }
 HALLMARK_EXPLICIT_WORDS = {"hallmark", "audit", "redesign", "study"}
+UI_BASELINE_WORDS = {"ui", "layout", "spacing", "typography", "polish", "cleanup", "dashboard", "component", "button", "card"}
+UI_A11Y_WORDS = {"a11y", "accessibility", "aria", "keyboard", "focus", "dialog", "form", "wcag", "screen reader"}
+UI_MOTION_WORDS = {"motion", "animation", "transition", "jank", "scroll", "gsap", "framer", "motion/react", "slow animation"}
+UI_METADATA_WORDS = {"metadata", "seo", "title", "description", "canonical", "open graph", "og:", "twitter card", "robots", "json-ld", "favicon"}
 
 SPECKIT_TASK_WORDS = {
     "feature", "project", "new app", "new module", "implement", "build", "spec", "specification",
@@ -136,6 +141,86 @@ def _frontend_signal(task: str, files: list[str]) -> bool:
     return bool(any(_ext(f) in UI_EXTS for f in files) or _has_any(task, HALLMARK_TASK_WORDS | HALLMARK_EXPLICIT_WORDS))
 
 
+def _ui_skill_route(task: str, files: list[str]) -> dict[str, Any]:
+    text = "\n".join([task or "", "\n".join(files)])
+    selected: list[dict[str, Any]] = []
+
+    def add(slug: str, reason: str, checks: list[str]) -> None:
+        if any(item["slug"] == slug for item in selected):
+            return
+        selected.append({"slug": slug, "reason": reason, "checks": checks})
+
+    ui_files = [f for f in files if _ext(f) in UI_EXTS]
+    html_like = any(_ext(f) in {".html", ".jsx", ".tsx", ".vue", ".svelte", ".astro"} for f in files)
+    css_like = any(_ext(f) in {".css", ".scss", ".sass", ".less"} for f in files)
+    route_like = any(_basename(f) in {"layout.tsx", "page.tsx", "head.tsx", "metadata.ts", "index.html"} for f in files)
+
+    if ui_files or _has_any(text, UI_BASELINE_WORDS):
+        add("baseline-ui", "General UI surface or component work.", [
+            "Fix spacing, hierarchy, typography, empty/loading/error states.",
+            "Prefer existing primitives and tokens before inventing new styles.",
+            "Keep icon-only buttons accessible and stable in size.",
+        ])
+    if html_like or _has_any(text, UI_A11Y_WORDS):
+        add("fixing-accessibility", "Interactive HTML/component surface detected.", [
+            "Accessible names for every control; icon-only buttons need aria-label.",
+            "Keyboard access, visible focus, dialog focus trap/restore.",
+            "Form errors link via aria-describedby and set aria-invalid.",
+        ])
+    if css_like or _has_any(text, UI_MOTION_WORDS):
+        add("fixing-motion-performance", "CSS/motion/performance signal detected.", [
+            "Animate transform/opacity by default; avoid layout props.",
+            "Do not drive animation from scroll events or continuous layout reads.",
+            "Avoid large blur/backdrop-filter and persistent will-change.",
+        ])
+    if route_like or _has_any(text, UI_METADATA_WORDS):
+        add("fixing-metadata", "Page route or SEO/social metadata signal detected.", [
+            "Keep title, description, canonical, og:url consistent.",
+            "Use absolute social image URLs and stable dimensions.",
+            "Avoid duplicate metadata systems and noindex only when intentional.",
+        ])
+    if _has_any(text, {"redesign", "visual", "brand", "landing", "homepage", "screenshot", "review ui"}):
+        add("improve-ui", "Broad UI review/redesign signal detected.", [
+            "Prove each finding with contract, runtime path, and one deterministic correction.",
+            "Stop at the top three supported findings.",
+            "Use Hallmark preflight before edits and visual_reviewer after implementation when URL exists.",
+        ])
+
+    selected = selected[:3]
+    return {
+        "triggered": bool(selected),
+        "selected": selected,
+        "max_selected": 3,
+        "topics": [
+            "accessibility", "motion", "systems", "visual", "interaction",
+            "performance", "craft", "taste", "typography", "color", "3d",
+        ],
+        "post_code_tools": ["a11y_auditor", "visual_reviewer"],
+    }
+
+
+def ui_skill_router(
+    *,
+    task: str | None = None,
+    changed_files: list[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Ibelick-inspired compact UI skill router; static and non-mutating."""
+    workspace = _root(root)
+    files = _norm_files(changed_files)
+    profile, _rank, llm_enabled = _profile(workspace)
+    route = _ui_skill_route(task or "", files)
+    return {
+        "status": "completed",
+        "profile": profile,
+        "llm_enabled": llm_enabled,
+        "task": task or "",
+        "files": files,
+        "ui_route": route,
+        "guidance": "Load at most three small UI checklists; prefer specific checks over broad visual review.",
+    }
+
+
 def _feature_signal(task: str, files: list[str]) -> bool:
     if _has_any(task, SMALL_CHANGE_WORDS):
         return False
@@ -190,7 +275,16 @@ def _write_text_if_changed(path: Path, text: str) -> str:
         pass
     if old == text:
         return "unchanged"
-    path.write_text(text, encoding="utf-8", newline="\n")
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
     return "created" if not old else "updated"
 
 
@@ -454,6 +548,7 @@ def integration_router(
     profile, rank, llm_enabled = _profile(workspace)
     frontend = _frontend_signal(text, files)
     feature = _feature_signal(text, files)
+    ui_route = _ui_skill_route(text, files)
     speckit = _speckit_project_state(workspace)
     hallmark_installed = _skill_exists(workspace, "hallmark")
     blocked = rank <= 0 or not llm_enabled
@@ -502,6 +597,18 @@ def integration_router(
                     "Harness remains responsible for profile gating, checks, lessons, FinOps, and final review.",
                 ],
             },
+            "ui_skills": {
+                "status": "route_to_static_checks" if ui_route["triggered"] else "not_triggered",
+                "triggered": ui_route["triggered"],
+                "selected": ui_route["selected"],
+                "max_selected": ui_route["max_selected"],
+                "caller": "active coding agent before UI edits; auto_trigger for post-code a11y/static checks",
+                "distilled_rules": [
+                    "Select at most three UI skills for a task.",
+                    "Prefer baseline/accessibility/motion/metadata checks before broad visual review.",
+                    "Post-code audits do not replace preflight design routing.",
+                ],
+            },
         },
     }
 
@@ -519,6 +626,16 @@ def agent_guidance_for_task(task: str | None, changed_files: list[str] | None = 
             "- Choose component scope vs page scope; component work must include all 8 interaction states.\n"
             "- Avoid invented metrics, fake chrome, generic hero rhythm, and unverified mobile layouts.\n"
             "- If the Hallmark skill is installed, use it; otherwise apply these distilled gates directly."
+        )
+    ui_skills = route["routes"].get("ui_skills", {})
+    if ui_skills.get("triggered"):
+        selected = ", ".join(item.get("slug", "") for item in ui_skills.get("selected", []) if item.get("slug"))
+        blocks.append(
+            "UI Skills-distilled routing:\n"
+            f"- Use at most these compact UI checklists for this task: {selected or 'baseline-ui'}.\n"
+            "- Baseline covers spacing/hierarchy/typography; accessibility covers names/keyboard/focus/forms.\n"
+            "- Motion covers transform/opacity, no layout thrash, no scroll-event animation; metadata covers title/canonical/OG/robots.\n"
+            "- Run a11y_auditor after UI code and visual_reviewer if a real URL is available."
         )
     speckit = route["routes"]["speckit"]
     if speckit["triggered"]:

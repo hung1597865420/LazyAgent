@@ -47,21 +47,33 @@ from tools.runner import (
 from tools.office_bridge import (
     office_bridge,
 )
-from tools.quota import (
-    router_quota_status,
-)
 from tools.scope_guard import (
     scope_creep_detector,
 )
+from tools.workflow import (
+    bug_repro_guard,
+    workflow_router,
+)
+from tools.integrations import (
+    hallmark_bridge,
+    integration_router,
+    speckit_bridge,
+    ui_skill_router,
+)
 from tools.ops import (
+    adapter_parity_doctor,
     agent_adapters,
     ask_codebase_health,
     benchmark_runner,
     context_auditor,
+    context_budget,
     goal_runner_control,
     harness_doctor,
+    install_manifest,
+    mcp_inventory,
     patch_safety_check,
     policy_profile,
+    router_quota_status,
     run_ledger,
 )
 from tools.prod import (

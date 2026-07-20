@@ -35,7 +35,8 @@ Purpose:
   Install dependencies, sync MCP/rules/hooks for Claude + Gemini/Antigravity
   + Codex, install memory/background integration, and write a runtime profile.
   Also verifies the current MCP-only bridges are present: Hallmark/Spec Kit,
-  OfficeCLI bridge, scope-creep guard, and 9Router quota reminder.
+  UI/workflow routers, bug repro guard, OfficeCLI bridge, scope-creep guard,
+  install manifest, adapter parity, MCP inventory, and context budget/status doctor.
   Default profile is off. Use --profile max to enable every runtime feature
   and start background helpers.
 
@@ -214,11 +215,12 @@ foreach ($required in @(
     'mcp_server.py',
     'merge_settings.py',
     'requirements.txt',
+    'harness.install.json',
     'harness-toggle.bat',
+    'tools\ops.py',
     'tools\integrations.py',
     'tools\office_bridge.py',
-    'tools\scope_guard.py',
-    'tools\quota.py'
+    'tools\scope_guard.py'
 )) {
     if (-not (Test-Path (Join-Path $Root $required))) {
         throw "Missing required file: $required. Run this bat from the harness repo folder."
@@ -355,6 +357,5 @@ if ($RunSmoke) {
 Write-Host ''
 Write-Host '=== FULL SETUP DONE ===' -ForegroundColor Green
 Write-Host 'Restart Claude/Gemini/Codex/IDE sessions so they reload MCP config and memory rules.'
-Write-Host 'MCP-only tools installed: integration_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector, router_quota_status.'
-Write-Host 'Quota reminder config lives in .env: HARNESS_QUOTA_* and HARNESS_ROUTER_QUOTA_*.'
+Write-Host 'MCP-only tools installed: install_manifest, adapter_parity_doctor, mcp_inventory, context_budget, integration_router, workflow_router, bug_repro_guard, ui_skill_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector.'
 Write-Host 'Future maintenance: when a runtime feature changes, update harness-toggle.bat and harness-full-setup.bat together.'

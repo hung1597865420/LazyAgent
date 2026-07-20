@@ -21,7 +21,7 @@ if not dotenv_disabled:
 
 @dataclass
 class ModelConfig:
-    # Non-code/light roles use Gemini 3.5 Low; code/review roles use Gemini 3.5 High + Sonnet 4.6.
+    # Economy defaults: keep 5.6 out of primary paths; reserve it for explicit fallback.
     manager:     str
     synthesizer: str
 
@@ -45,29 +45,30 @@ def get_model_config() -> ModelConfig:
     def model_env(key: str, default: str) -> str:
         return (os.getenv(key, default) or "").strip() or default
 
-    gemini_low = "ag/gemini-3.5-flash-extra-low"
-    gemini_high = "ag/gemini-3-flash-agent"
-    sonnet = "ag/claude-sonnet-4-6"
+    codex_light = "cx/gpt-5.4-mini"
+    codex_code = "cx/gpt-5.5"
+    codex_alt = "cx/gpt-5.5-review"
+    codex_review = "cx/gpt-5.5-review"
 
     return ModelConfig(
-        manager     = model_env("MODEL_MANAGER",     gemini_high),
-        synthesizer = model_env("MODEL_SYNTHESIZER", gemini_high),
-        analyzer    = model_env("MODEL_ANALYZER",    sonnet),
-        code_a      = model_env("MODEL_CODE_A",      gemini_high),
-        code_b      = model_env("MODEL_CODE_B",      sonnet),
-        reviewer    = model_env("MODEL_REVIEWER",    gemini_high),
-        tester      = model_env("MODEL_TESTER",      gemini_high),
-        security    = model_env("MODEL_SECURITY",    sonnet),
-        integrity   = model_env("MODEL_INTEGRITY",   sonnet),
-        scanner     = model_env("MODEL_SCANNER",     gemini_high),
-        debugger    = model_env("MODEL_DEBUGGER",    gemini_high),
-        worker      = model_env("MODEL_WORKER",      gemini_low),
+        manager     = model_env("MODEL_MANAGER",     codex_light),
+        synthesizer = model_env("MODEL_SYNTHESIZER", codex_light),
+        analyzer    = model_env("MODEL_ANALYZER",    codex_review),
+        code_a      = model_env("MODEL_CODE_A",      codex_code),
+        code_b      = model_env("MODEL_CODE_B",      codex_alt),
+        reviewer    = model_env("MODEL_REVIEWER",    codex_review),
+        tester      = model_env("MODEL_TESTER",      codex_code),
+        security    = model_env("MODEL_SECURITY",    codex_review),
+        integrity   = model_env("MODEL_INTEGRITY",   codex_review),
+        scanner     = model_env("MODEL_SCANNER",     codex_light),
+        debugger    = model_env("MODEL_DEBUGGER",    codex_code),
+        worker      = model_env("MODEL_WORKER",      codex_light),
     )
 
 
 # ── Spare deployments — fallback khi rate-limit dai dẳng ─────────────────────
-DEFAULT_SPARE_MODELS = "ag/gemini-3-flash-agent,ag/gemini-3.5-flash-extra-low,ag/claude-sonnet-4-6"
-DEFAULT_EXTRA_DEPLOYMENTS = "ag/gemini-3-flash-agent,ag/gemini-3.5-flash-extra-low,ag/claude-sonnet-4-6"
+DEFAULT_SPARE_MODELS = "cx/gpt-5.4-mini,cx/gpt-5.5,cx/gpt-5.5-review,cx/gpt-5.6-sol,cx/gpt-5.6-sol-review"
+DEFAULT_EXTRA_DEPLOYMENTS = "cx/gpt-5.6-sol,cx/gpt-5.6-sol-review,cx/gpt-5.6-terra,cx/gpt-5.6-terra-review,cx/gpt-5.6-luna,cx/gpt-5.6-luna-review,cx/gpt-5.5,cx/gpt-5.5-review,cx/gpt-5.4,cx/gpt-5.4-review,cx/gpt-5.4-mini"
 
 
 def _csv_values(raw: str) -> list[str]:
@@ -106,6 +107,42 @@ def get_spare_models() -> list[str]:
     if fallback:
         return fallback
     return [get_model_config().worker]
+
+
+def configured_model_aliases(models: ModelConfig | None = None) -> dict[str, str]:
+    models = models or get_model_config()
+    return dict(models.__dict__)
+
+
+def validate_model_aliases(available_model_ids: list[str] | set[str] | tuple[str, ...]) -> dict:
+    """Validate configured aliases against a provider model list without calling the provider."""
+    available = {str(item).strip().lower() for item in available_model_ids if str(item).strip()}
+    configured = configured_model_aliases()
+    missing = {
+        role: model
+        for role, model in configured.items()
+        if str(model).strip().lower() not in available
+    }
+    spares = get_spare_models()
+    missing_spares = [
+        model for model in spares
+        if str(model).strip().lower() not in available
+    ]
+    ok = not missing
+    return {
+        "ok": ok,
+        "configured": configured,
+        "available_count": len(available),
+        "missing": missing,
+        "spares": spares,
+        "missing_spares": missing_spares,
+        "message": (
+            "All configured MODEL_* aliases are available."
+            if ok else
+            "Configured MODEL_* aliases are missing from this router. Update .env MODEL_* / SPARE_MODELS / "
+            "HARNESS_KNOWN_DEPLOYMENTS to match `get_llm_client().models.list()`."
+        ),
+    }
 
 # ── Workspace root — support tools đọc file theo path tương đối từ đây ───────
 # Ưu tiên: WORKSPACE_ROOT (.env) → CLAUDE_PROJECT_DIR (Claude Code tự set cho
@@ -181,11 +218,16 @@ def get_llm_client() -> OpenAI:
     base_url = endpoint.split("/chat/completions")[0].rstrip("/")
     if not base_url.endswith("/v1"):
         base_url += "/v1"
+    user_agent = os.getenv("ROUTER_USER_AGENT", "python-httpx/0.28.1").strip() or "python-httpx/0.28.1"
     return OpenAI(
         base_url=base_url,
         api_key=api_key,
         timeout=REQUEST_TIMEOUT,
         max_retries=0,
+        default_headers={
+            "User-Agent": user_agent,
+            "Accept": "application/json",
+        },
     )
 
 

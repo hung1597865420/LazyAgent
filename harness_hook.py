@@ -73,6 +73,49 @@ def _feature_enabled(name: str, default: bool, root: Path) -> bool:
         return default
 
 
+def _runtime_profile_context(root: Path) -> str:
+    try:
+        from runtime_flags import load_feature_flags
+
+        flags = load_feature_flags(root)
+    except Exception:
+        flags = {}
+    profile = str(flags.get("profile") or os.getenv("HARNESS_PROFILE") or "standard").strip() or "standard"
+    llm = flags.get("llm") if isinstance(flags.get("llm"), dict) else {}
+    auto_pilot = flags.get("auto_pilot") if isinstance(flags.get("auto_pilot"), dict) else {}
+    auto_watch = flags.get("auto_watch") if isinstance(flags.get("auto_watch"), dict) else {}
+    hooks = flags.get("hooks") if isinstance(flags.get("hooks"), dict) else {}
+    lessons = flags.get("lessons") if isinstance(flags.get("lessons"), dict) else {}
+    finops = flags.get("finops") if isinstance(flags.get("finops"), dict) else {}
+
+    def b(obj: dict, key: str, default: bool = False) -> bool:
+        value = obj.get(key, default)
+        return bool(value)
+
+    static_llm = bool(flags.get("static_llm", False))
+    return (
+        "Agent Harness runtime profile snapshot for this prompt:\n"
+        f"- profile: {profile}\n"
+        f"- llm.enabled: {b(llm, 'enabled', True)}; llm.static: {b(llm, 'static', static_llm)}; static_llm: {static_llm}\n"
+        f"- auto_pilot.enabled: {b(auto_pilot, 'enabled', False)}; mode: {auto_pilot.get('mode', 'safe')}; llm: {b(auto_pilot, 'llm', False)}\n"
+        f"- auto_watch.enabled: {b(auto_watch, 'enabled', False)}; mode: {auto_watch.get('mode', 'safe')}; llm: {b(auto_watch, 'llm', False)}\n"
+        f"- hooks.enabled: {b(hooks, 'enabled', True)}; lessons.enabled: {b(lessons, 'enabled', True)}; finops.enabled: {b(finops, 'enabled', True)}\n"
+        "Profile in harness.features.json wins over automatic rules. Do not change profile unless the current user prompt explicitly asks."
+    )
+
+
+def _emit_additional_context(parts: list[str]) -> None:
+    body = "\n\n".join(p.strip() for p in parts if p and p.strip())
+    if not body:
+        return
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": body,
+        }
+    }, ensure_ascii=True))
+
+
 def _record_project_seen(root: Path) -> None:
     _activate_workspace(root)
     try:
@@ -91,25 +134,19 @@ def _record_project_seen(root: Path) -> None:
         pass
 
 
-def _inject_prior_lessons(root: Path, prompt: str) -> None:
+def _prior_lessons_context(root: Path, prompt: str) -> str:
     if not prompt:
-        return
+        return ""
     _activate_workspace(root)
     try:
         from tools.core import load_relevant_lessons_context
 
         ctx = load_relevant_lessons_context(prompt, limit=5)
     except Exception:
-        return
+        return ""
     if not ctx:
-        return
-    msg = "Harness prior lessons auto-injected before this prompt:\n" + ctx[:6000]
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": msg,
-        }
-    }, ensure_ascii=False))
+        return ""
+    return "Harness prior lessons auto-injected before this prompt:\n" + ctx[:6000]
 
 
 def _record_edit(payload: dict, root: Path, tool: str) -> None:
@@ -135,13 +172,19 @@ def _record_edit(payload: dict, root: Path, tool: str) -> None:
 def main() -> int:
     payload = _payload()
     root = _project_dir(payload)
-    if not _feature_enabled("HARNESS_HOOKS_ENABLED", True, root):
-        return 0
     prompt = _prompt_text(payload)
     if prompt:
+        parts = [_runtime_profile_context(root)]
+        if not _feature_enabled("HARNESS_HOOKS_ENABLED", True, root):
+            _emit_additional_context(parts)
+            return 0
         if _feature_enabled("HARNESS_LESSONS_ENABLED", True, root):
             _record_project_seen(root)
-            _inject_prior_lessons(root, prompt)
+            parts.append(_prior_lessons_context(root, prompt))
+        _emit_additional_context(parts)
+        return 0
+
+    if not _feature_enabled("HARNESS_HOOKS_ENABLED", True, root):
         return 0
 
     tool = _tool_name(payload)

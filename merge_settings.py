@@ -4,10 +4,13 @@ Idempotent: chạy lại bao nhiêu lần cũng không tạo trùng lặp.
 """
 import json
 import os
+import shlex
+import subprocess
 import sys
 import tempfile
 import time
-from contextlib import redirect_stdout
+import uuid
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 
 CLAUDE_MARKER = "<!-- agent-harness-managed -->"
@@ -15,7 +18,7 @@ GEMINI_MARKER = "<!-- agent-harness -->"
 CODEX_PROFILE_MARKER = "<!-- agent-harness-runtime-profile-policy -->"
 HOOK_ID = "agent-harness-panel-reminder"
 LESSON_HOOK_ID = "agent-harness-lesson-recorder"
-RULES_VERSION = "2026-07-18-integration-bridges-r1"
+RULES_VERSION = "2026-07-20-ecc-ops-r1"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -27,9 +30,67 @@ def _harness_server() -> str:
     return str(_harness_root() / "mcp_server.py")
 
 
+def _shell_join(argv: list[str]) -> str:
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
+def _toml_basic_string(value: str) -> str:
+    out = ['"']
+    escapes = {
+        "\\": "\\\\",
+        "\"": "\\\"",
+        "\b": "\\b",
+        "\t": "\\t",
+        "\n": "\\n",
+        "\f": "\\f",
+        "\r": "\\r",
+    }
+    for ch in value:
+        if ch in escapes:
+            out.append(escapes[ch])
+        elif ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_path)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _fsync_dir(path: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
 
 
 def _home_dir(home: Path | None = None) -> Path:
@@ -54,22 +115,54 @@ def needs_update(claude_dir: Path | None = None, home: Path | None = None) -> bo
 
 def mark_rules_merged(claude_dir: Path | None = None, home: Path | None = None) -> None:
     path = _rules_stamp_path(claude_dir, home)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(RULES_VERSION + "\n", encoding="utf-8")
+    _atomic_write_text(path, RULES_VERSION + "\n")
 
-CLAUDE_MD_SECTION = """\
-<!-- agent-harness-managed -->
-# Agent Harness — quy trình khi làm coding task
 
-Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+def _read_json_object(path: Path, label: str, *, missing_ok: bool = True) -> tuple[dict, int]:
+    if not path.exists():
+        if missing_ok:
+            return {}, 0
+        print(f"[error] Khong tim thay {label}: {path}.")
+        return {}, 1
+    try:
+        raw_bytes = path.read_bytes()
+        if raw_bytes[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            raw = raw_bytes.decode("utf-16")
+        elif raw_bytes[:3] == b"\xef\xbb\xbf":
+            raw = raw_bytes.decode("utf-8-sig")
+        else:
+            raw = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        print(f"[error] {label} khong doc duoc UTF-8 ({e}). Giu nguyen file, khong ghi de.")
+        return {}, 1
+    except OSError as e:
+        print(f"[error] Khong doc duoc {label} ({e}). Giu nguyen file, khong ghi de.")
+        return {}, 1
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"[error] {label} khong phai JSON hop le ({e}). Giu nguyen file, khong ghi de.")
+        return {}, 1
+    if not isinstance(data, dict):
+        print(f"[error] {label} root phai la object JSON, hien la {type(data).__name__}. Giu nguyen file.")
+        return {}, 1
+    return data, 0
 
+SHARED_AGENT_RULE_SOURCE = (
+    "Agent rule source of truth: update the COMMON_* fragments in merge_settings.py once; "
+    "the generator renders Claude, Codex, and Gemini/Antigravity from the same shared policy."
+)
+
+COMMON_RUNTIME_PROFILE_POLICY_TEMPLATE = """\
 ## Runtime Profile Policy — profile thắng mọi rule bên dưới
 
 Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM hoặc chạy nền, đọc `harness.features.json` trong workspace hiện tại. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
 
+Ngay đầu mỗi user prompt/session mới, refresh profile bằng cách đọc `harness.features.json` trong workspace hiện tại và coi đó là runtime profile snapshot hiện hành. Với client có hook prompt, snapshot có thể đã được inject sẵn; với Gemini/Antigravity không có hook prompt tương đương trong config hiện tại, tự đọc file này trước khi quyết định gọi tool LLM/chạy nền.
+
 | Profile | Agent được làm | Agent không được làm |
 |---|---|---|
-| `off` | Chỉ read-only/static local: đọc file, `status/list/json`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
+| `off` | Chỉ read-only/static local: đọc file, `{off_status_command}`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
 | `light` | Static-first checks, hooks/lessons/finops nếu đang enabled, `auto_trigger mode=safe` không LLM, secret/env/config/devops/static analyzers. Manual LLM chỉ khi user yêu cầu rõ hoặc task thật sự cần theo rule bắt buộc. | Không tự gọi auto LLM enrichment; không bật watcher; không tự đổi profile. |
 | `standard` | Như `light` + watcher safe được phép chạy static checks. Manual LLM vẫn chỉ khi có lý do rõ. | Watcher/Auto-Pilot không được tự gọi LLM; không dùng `static_llm`; không fan-out max. |
 | `balanced` / `4` | Coding/review chủ động: `auto_trigger safe`, `consult`/`panel_review`/`ask_codebase` được phép khi rule bắt buộc khớp. | Không bật watcher; không static LLM enrichment nền; không gọi max/prod fan-out trừ khi user yêu cầu. |
@@ -78,12 +171,49 @@ Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM h
 | `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
 
 Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
+"""
+
+COMMON_DISTILLED_INTEGRATIONS = """\
+## Distilled Integrations — Hallmark + Spec Kit + UI Skills + Workflow
+
+- Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
+- `ibelick/ui-skills` đã được chưng cất thành `ui_skill_router`: trước UI work rõ ràng, chọn tối đa 3 checklist nhỏ (`baseline-ui`, `fixing-accessibility`, `fixing-motion-performance`, `fixing-metadata`, `improve-ui`) thay vì nạp cả đống review. Baseline/a11y/motion/metadata là pre/post static guidance; `a11y_auditor` và `visual_reviewer` vẫn là post-code audits.
+- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
+- `mattpocock/skills` đã được chưng cất thành `workflow_router` + `bug_repro_guard`: debug/bug phải có red-capable repro command/output trước khi fix; feature lớn đi spec/tickets; task mơ hồ lớn đi wayfinder; domain/ADR dùng CONTEXT.md; review tách Standards vs Spec; refactor lớn dùng module/interface/seam/adapter/depth vocabulary và deletion test; tests đi qua public seam.
+- `kangarooking/cangjie-skill` đã được chưng cất vào lesson global promotion: procedure lesson phải qua quality gate có title/summary, actionable steps, trigger, boundary, test_prompts should-trigger/should-not-trigger/edge-case, và bị chặn nếu generic/common-sense/secret/local/debug-only.
+- `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes` và `workflow_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
+- `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
+- Profile vẫn thắng: `off` chỉ được gọi bridge read-only (`status`, `preflight`, `audit_plan`, `snapshot`); không tự init/scaffold/write preflight, không gọi Hallmark/Spec Kit LLM workflow, không gọi `goal_runner`; dùng static/local fallback và báo `profile off đang chặn LLM`.
+"""
+
+
+def _runtime_profile_policy(off_status_command: str) -> str:
+    return COMMON_RUNTIME_PROFILE_POLICY_TEMPLATE.format(off_status_command=off_status_command)
+
+
+def _shared_rule_source_note() -> str:
+    return f"> {SHARED_AGENT_RULE_SOURCE}"
+
+
+def _norm_command(command: object) -> str:
+    return " ".join(str(command or "").split())
+
+
+CLAUDE_MD_SECTION = f"""\
+<!-- agent-harness-managed -->
+# Agent Harness — quy trình khi làm coding task
+
+Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
+
+{_shared_rule_source_note()}
+
+{_runtime_profile_policy("status/list/json")}
 
 ## Auto-Pilot — mặc định bật
 
 - Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `mcp__agent-harness__goal_autopilot(mode="init", goal="<nguyên prompt user>")` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `mcp__agent-harness__goal_runner(prompt="<nguyên prompt>", mode="max")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate`.
-- Khi user hỏi "đã nạp chưa", "harness ổn chưa", context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
+- Khi user hỏi "đã nạp chưa", "harness ổn chưa", cài qua agent nào, MCP config có drift không, context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
 - Sau mọi batch Edit/Write đáng kể, gọi `mcp__agent-harness__auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
 - Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `mcp__agent-harness__prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
@@ -93,13 +223,7 @@ Nếu profile không cho phép tool LLM, thay bằng static/local tương đươ
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` sẽ tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
 
-## Distilled Integrations — Hallmark + Spec Kit
-
-- Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
-- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
-- `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
-- `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
-- Profile vẫn thắng: `off` chỉ được gọi bridge read-only (`status`, `preflight`, `audit_plan`, `snapshot`); không tự init/scaffold/write preflight, không gọi Hallmark/Spec Kit LLM workflow, không gọi `goal_runner`; dùng static/local fallback và báo `profile off đang chặn LLM`.
+{COMMON_DISTILLED_INTEGRATIONS}
 
 ## Bắt buộc
 
@@ -172,7 +296,7 @@ HOOK_REMINDER_CMD = (
     'toan bo files da sua; neu supervisor tra run_final thi goi goal_autopilot mode=complete, neu tra complete moi bao xong. Khong gui .env that vao panel_review."}}\''
 )
 
-LESSON_HOOK_CMD = 'python "{}"'.format(str(_harness_root() / "harness_hook.py").replace("\\", "/"))
+LESSON_HOOK_CMD = _shell_join([sys.executable, str(_harness_root() / "harness_hook.py")])
 
 
 def _read_md(md_path: Path) -> tuple[str, str] | None:
@@ -204,12 +328,21 @@ def _end_marker_for(marker: str) -> str:
 
 def _find_marker_line(content: str, marker: str, start_at: int = 0) -> int:
     offset = 0
-    in_fence = False
+    fence_char: str | None = None
+    fence_len = 0
     for line in content.splitlines(keepends=True):
         stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
-        if offset >= start_at and not in_fence and stripped == marker:
+        if stripped.startswith(("```", "~~~")):
+            current_char = stripped[0]
+            current_len = len(stripped) - len(stripped.lstrip(current_char))
+            remainder = stripped[current_len:]
+            if fence_char is None:
+                fence_char = current_char
+                fence_len = current_len
+            elif current_char == fence_char and current_len >= fence_len and remainder.strip() == "":
+                fence_char = None
+                fence_len = 0
+        if offset >= start_at and fence_char is None and stripped == marker:
             return offset
         offset += len(line)
     return -1
@@ -226,45 +359,50 @@ def _replace_managed_section(content: str, marker: str, section: str) -> tuple[s
     if end != -1:
         tail_start = end + len(end_marker)
         return content[:start].rstrip() + "\n\n" + section + "\n\n" + content[tail_start:].lstrip(), True
-    # Managed block is corrupt/incomplete; replace from marker to EOF to avoid
-    # leaving conflicting duplicated rules in the same memory file.
-    return content[:start].rstrip() + "\n\n" + section, True
+    # Managed block is corrupt/incomplete. Preserve user content and force a
+    # manual repair instead of guessing that the block extends to EOF.
+    return content, False
 
 
 def _strip_managed_section(content: str, marker: str) -> tuple[str, bool]:
     end_marker = _end_marker_for(marker)
-    start = _find_marker_line(content, marker)
-    if start == -1:
-        return content, False
-    end = _find_marker_line(content, end_marker, start + len(marker))
-    if end != -1:
+    current = content
+    removed = False
+    while True:
+        start = _find_marker_line(current, marker)
+        if start == -1:
+            return ((current.strip() + "\n") if removed else current), removed
+        end = _find_marker_line(current, end_marker, start + len(marker))
+        if end == -1:
+            raise ValueError(f"Managed section {marker} is missing end marker {end_marker}; keeping file unchanged")
         tail_start = end + len(end_marker)
-        return (content[:start].rstrip() + "\n\n" + content[tail_start:].lstrip()).strip() + "\n", True
-    return content[:start].rstrip() + "\n", True
+        current = (current[:start].rstrip() + "\n\n" + current[tail_start:].lstrip()).strip() + "\n"
+        removed = True
 
 
-def merge_claude_md(claude_dir: Path) -> None:
+def merge_claude_md(claude_dir: Path) -> int:
     md_path = claude_dir / "CLAUDE.md"
     if md_path.exists():
         result = _read_md(md_path)
         if result is None:
-            return
+            return 1
         content, enc = result
         stripped, replaced = _strip_managed_section(content, CLAUDE_MARKER)
         new_content = CLAUDE_MD_SECTION.rstrip() + "\n\n" + stripped.lstrip()
         try:
-            md_path.write_text(new_content, encoding=enc)
+            _atomic_write_text(md_path, new_content, encoding=enc)
         except OSError as e:
             print(f"[error] Khong ghi duoc CLAUDE.md ({e}). Kiem tra quyen ghi hoac dung luong dia.")
-            return
+            return 1
         print("[ok]   Da cap nhat section agent-harness trong CLAUDE.md" if replaced else "[ok]   Da append section agent-harness vao CLAUDE.md")
     else:
         try:
-            md_path.write_text(CLAUDE_MD_SECTION, encoding="utf-8")
+            _atomic_write_text(md_path, CLAUDE_MD_SECTION, encoding="utf-8")
         except OSError as e:
             print(f"[error] Khong tao duoc ~/.claude/CLAUDE.md ({e}).")
-            return
+            return 1
         print("[ok]   Da tao ~/.claude/CLAUDE.md")
+    return 0
 
 
 def _read_settings(st_path: Path) -> tuple[dict, int]:
@@ -329,15 +467,18 @@ def merge_settings_json(claude_dir: Path) -> int:
     _cmd_norm = " ".join(HOOK_REMINDER_CMD.split())  # normalize whitespace cho compare
 
     def _is_existing_hook(e: dict) -> bool:
-        if e.get("id") == HOOK_ID:
-            return True
-        # fallback: cùng matcher + command (so sánh sau normalize whitespace) → hook cũ chưa có id
         sub = e.get("hooks", [])
+        has_command = (
+            isinstance(sub, list)
+            and any(isinstance(h, dict)
+                    and " ".join((h.get("command") or "").split()) == _cmd_norm
+                    for h in sub)
+        )
+        if e.get("id") == HOOK_ID:
+            return has_command
+        # fallback: cùng matcher + command (so sánh sau normalize whitespace) → hook cũ chưa có id
         return (e.get("matcher") == "Edit|Write|NotebookEdit"
-                and isinstance(sub, list)
-                and any(isinstance(h, dict)
-                        and " ".join((h.get("command") or "").split()) == _cmd_norm
-                        for h in sub))
+                and has_command)
 
     changed = False
     if any(isinstance(e, dict) and _is_existing_hook(e) for e in post):
@@ -356,13 +497,32 @@ def merge_settings_json(claude_dir: Path) -> int:
         changed = True
 
     def _is_existing_lesson_hook(e: dict) -> bool:
-        if e.get("id") == LESSON_HOOK_ID:
-            return True
         sub = e.get("hooks", [])
-        return isinstance(sub, list) and any(
-            isinstance(h, dict) and "harness_hook.py" in str(h.get("command") or "")
+        if not isinstance(sub, list):
+            return False
+        has_command = any(
+            isinstance(h, dict)
+            and h.get("type") == "command"
+            and _norm_command(h.get("command")) == _norm_command(LESSON_HOOK_CMD)
             for h in sub
         )
+        return has_command if e.get("id") == LESSON_HOOK_ID else has_command
+
+    post_before_filter = len(post)
+    prompt_before_filter = len(prompt_hooks)
+    post[:] = [
+        e for e in post
+        if not (isinstance(e, dict)
+                and e.get("id") in {HOOK_ID, LESSON_HOOK_ID}
+                and not (_is_existing_hook(e) if e.get("id") == HOOK_ID else _is_existing_lesson_hook(e)))
+    ]
+    prompt_hooks[:] = [
+        e for e in prompt_hooks
+        if not (isinstance(e, dict)
+                and e.get("id") == LESSON_HOOK_ID
+                and not _is_existing_lesson_hook(e))
+    ]
+    removed_malformed_managed = len(post) != post_before_filter or len(prompt_hooks) != prompt_before_filter
 
     if any(isinstance(e, dict) and _is_existing_lesson_hook(e) for e in post):
         print("[skip] Hook ghi lesson da ton tai trong settings.json")
@@ -393,135 +553,146 @@ def merge_settings_json(claude_dir: Path) -> int:
         })
         changed = True
 
+    if removed_malformed_managed:
+        changed = True
+
     if not changed:
         return 0
 
-    # Atomic write với fallback: mkstemp trong cùng dir → os.replace
-    # Fallback nếu mkstemp bị policy chặn: ghi thẳng với backup .bak
-    content = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
     try:
-        fd, tmp_path = tempfile.mkstemp(dir=st_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, st_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        # Fallback: backup rồi ghi trực tiếp
-        bak_path = st_path.with_suffix(".json.bak")
-        try:
-            if st_path.exists():
-                import shutil
-                shutil.copy2(st_path, bak_path)
-            st_path.write_text(content, encoding="utf-8")
-        except OSError as e2:
-            print(f"[error] Khong ghi duoc settings.json ({e2}). Kiem tra quyen ghi hoac dung luong dia.")
-            return 1
+        _write_json(st_path, settings)
+    except OSError as e:
+        print(f"[error] Khong ghi duoc settings.json ({e}). Kiem tra quyen ghi hoac dung luong dia.")
+        return 1
 
     print("[ok]   Da cap nhat hooks agent-harness trong settings.json")
     return 0
 
 
-def configure_claude_mcp(claude_dir: Path) -> None:
+def configure_claude_mcp(claude_dir: Path) -> int:
     path = claude_dir / "claude_mcp_config.json"
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-    else:
-        data = {}
+    data, err = _read_json_object(path, "Claude MCP config")
+    if err:
+        return err
     servers = data.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        print(f"[error] {path}: 'mcpServers' phai la object, hien la {type(servers).__name__}. Giu nguyen file.")
+        return 1
     servers["agent-harness"] = {
-        "command": "python",
+        "command": sys.executable,
         "args": [_harness_server()],
         "env": {"PYTHONPATH": str(_harness_root())},
     }
-    _write_json(path, data)
+    try:
+        _write_json(path, data)
+    except OSError as e:
+        print(f"[error] Khong ghi duoc Claude MCP config ({e}).")
+        return 1
     print("[ok]   Da cau hinh Claude MCP agent-harness dung path hien tai")
+    return 0
 
 
-def configure_gemini_mcp(gemini_dir: Path) -> None:
+def configure_gemini_mcp(gemini_dir: Path) -> int:
     for rel in ("config/mcp_config.json", "antigravity-ide/mcp_config.json"):
         path = gemini_dir / rel
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = {}
-        else:
-            data = {}
+        data, err = _read_json_object(path, f"Gemini MCP config {rel}")
+        if err:
+            return err
         servers = data.setdefault("mcpServers", {})
+        if not isinstance(servers, dict):
+            print(f"[error] {path}: 'mcpServers' phai la object, hien la {type(servers).__name__}. Giu nguyen file.")
+            return 1
         servers["agent-harness"] = {
-            "command": "python",
+            "command": sys.executable,
             "args": [_harness_server()],
             "env": {"PYTHONPATH": str(_harness_root())},
         }
-        _write_json(path, data)
+        try:
+            _write_json(path, data)
+        except OSError as e:
+            print(f"[error] Khong ghi duoc Gemini MCP config {path} ({e}).")
+            return 1
     print("[ok]   Da cau hinh Gemini/Antigravity MCP agent-harness dung path hien tai")
+    return 0
 
 
-def configure_codex_mcp(home: Path | None = None) -> None:
+def configure_codex_mcp(home: Path | None = None) -> int:
     path = _home_dir(home) / ".codex" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     server_path = _harness_server().replace("\\", "/")
     block = (
         '[mcp_servers.agent-harness]\n'
-        'command = "python"\n'
-        f'args = [ "{server_path}" ]\n'
+        f'command = {_toml_basic_string(sys.executable)}\n'
+        f'args = [ {_toml_basic_string(server_path)} ]\n'
     )
     if path.exists():
-        content = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[error] Khong doc duoc Codex MCP config {path} ({e}). Giu nguyen file.")
+            return 1
     else:
         content = ""
     import re
-    pattern = r'(?ms)^\s*\[mcp_servers\.agent-harness\]\n.*?(?=^\s*\[|\Z)'
+    pattern = r'(?ms)^\s*\[mcp_servers\.(?:"agent-harness"|agent-harness)\]\s*(?:#.*)?\n.*?(?=^\s*\[|\Z)'
     if re.search(pattern, content):
-        content = re.sub(pattern, block + "\n", content)
+        content = re.sub(pattern, lambda _m: block + "\n", content)
     else:
         content = content.rstrip() + "\n\n" + block
-    path.write_text(content, encoding="utf-8")
+    try:
+        _atomic_write_text(path, content)
+    except OSError as e:
+        print(f"[error] Khong ghi duoc Codex MCP config {path} ({e}).")
+        return 1
     print("[ok]   Da cau hinh Codex MCP agent-harness dung path hien tai")
+    return 0
 
 
-def configure_codex_hooks(home: Path | None = None) -> None:
+def configure_codex_hooks(home: Path | None = None) -> int:
     path = _home_dir(home) / ".codex" / "hooks.json"
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-    else:
-        data = {}
+    data, err = _read_json_object(path, "Codex hooks config")
+    if err:
+        return err
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
-        hooks = data["hooks"] = {}
+        print(f"[error] {path}: 'hooks' phai la object, hien la {type(hooks).__name__}. Giu nguyen file.")
+        return 1
     post = hooks.setdefault("PostToolUse", [])
     if not isinstance(post, list):
-        post = hooks["PostToolUse"] = []
+        print(f"[error] {path}: 'hooks.PostToolUse' phai la array, hien la {type(post).__name__}. Giu nguyen file.")
+        return 1
     prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
     if not isinstance(prompt_hooks, list):
-        prompt_hooks = hooks["UserPromptSubmit"] = []
+        print(f"[error] {path}: 'hooks.UserPromptSubmit' phai la array, hien la {type(prompt_hooks).__name__}. Giu nguyen file.")
+        return 1
 
     def _lesson_hook_exists(entries: list) -> bool:
         return any(
             isinstance(e, dict)
             and (
-                e.get("id") == LESSON_HOOK_ID
-                or any(
-                    isinstance(h, dict) and "harness_hook.py" in str(h.get("command") or "")
-                    for h in e.get("hooks", [])
+                any(
+                    isinstance(h, dict)
+                    and h.get("type") == "command"
+                    and _norm_command(h.get("command")) == _norm_command(LESSON_HOOK_CMD)
+                    for h in (e.get("hooks") if isinstance(e.get("hooks"), list) else [])
                 )
             )
             for e in entries
         )
 
-    changed = False
+    post_before_filter = len(post)
+    prompt_before_filter = len(prompt_hooks)
+    post[:] = [
+        e for e in post
+        if not (isinstance(e, dict) and e.get("id") == LESSON_HOOK_ID and not _lesson_hook_exists([e]))
+    ]
+    prompt_hooks[:] = [
+        e for e in prompt_hooks
+        if not (isinstance(e, dict) and e.get("id") == LESSON_HOOK_ID and not _lesson_hook_exists([e]))
+    ]
+    removed_malformed_managed = len(post) != post_before_filter or len(prompt_hooks) != prompt_before_filter
+
+    changed = removed_malformed_managed
     if not _lesson_hook_exists(post):
         post.append({
             "id": LESSON_HOOK_ID,
@@ -544,96 +715,78 @@ def configure_codex_hooks(home: Path | None = None) -> None:
         })
         changed = True
     if changed:
-        _write_json(path, data)
+        try:
+            _write_json(path, data)
+        except OSError as e:
+            print(f"[error] Khong ghi duoc Codex hooks config {path} ({e}).")
+            return 1
         print("[ok]   Da cau hinh Codex hooks ghi/inject lesson")
     else:
         print("[skip] Codex hooks ghi/inject lesson da ton tai")
+    return 0
 
 
-CODEX_PROFILE_POLICY_SECTION = """\
+CODEX_PROFILE_POLICY_SECTION = f"""\
 <!-- agent-harness-runtime-profile-policy -->
 # Agent Harness Runtime Profile Policy
 
 Quy tắc này áp dụng cho Codex và mọi agent đọc `AGENTS.md`. Profile trong `harness.features.json` thắng mọi rule tự động khác.
 
-Trước khi tự gọi bất kỳ Agent Harness tool nào có thể dùng LLM hoặc chạy nền, đọc `harness.features.json` trong workspace hiện tại. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
+{_shared_rule_source_note()}
 
-| Profile | Agent được làm | Agent không được làm |
-|---|---|---|
-| `off` | Chỉ read-only/static local: đọc file, `harness-toggle.bat status/list/json`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
-| `light` | Static-first checks, hooks/lessons/finops nếu đang enabled, `auto_trigger mode=safe` không LLM, secret/env/config/devops/static analyzers. Manual LLM chỉ khi user yêu cầu rõ hoặc task thật sự cần theo rule bắt buộc. | Không tự gọi auto LLM enrichment; không bật watcher; không tự đổi profile. |
-| `standard` | Như `light` + watcher safe được phép chạy static checks. Manual LLM vẫn chỉ khi có lý do rõ. | Watcher/Auto-Pilot không được tự gọi LLM; không dùng `static_llm`; không fan-out max. |
-| `balanced` / `4` | Coding/review chủ động: `auto_trigger safe`, `consult`/`panel_review`/`ask_codebase` được phép khi rule bắt buộc khớp. | Không bật watcher; không static LLM enrichment nền; không gọi max/prod fan-out trừ khi user yêu cầu. |
-| `review` / `5` | Review kỹ hơn: Auto-Pilot LLM + static LLM được phép cho batch review; watcher safe nhưng không watcher LLM. | Watcher không được gọi LLM; không dùng max fan-out mặc định. |
-| `heavy` / `7` | Refactor lớn/debug khó: Auto-Pilot max, static LLM, watcher LLM safe được phép. | Không chạy aggressive release/prod gates liên tục; vẫn phải gom batch, tránh gọi panel lặp. |
-| `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
+{_runtime_profile_policy("harness-toggle.bat status/list/json")}
 
-Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
-
-## Distilled Integrations — Hallmark + Spec Kit
-
-- Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
-- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
-- `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
-- `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
-- Profile vẫn thắng: `off` chỉ được gọi bridge read-only (`status`, `preflight`, `audit_plan`, `snapshot`); không tự init/scaffold/write preflight, không gọi Hallmark/Spec Kit LLM workflow, không gọi `goal_runner`; dùng static/local fallback và báo `profile off đang chặn LLM`.
+{COMMON_DISTILLED_INTEGRATIONS}
 <!-- /agent-harness-runtime-profile-policy -->
 """
 
 
-def merge_codex_agents(home: Path | None = None) -> None:
+def merge_codex_agents(home: Path | None = None) -> int:
     root_home = _home_dir(home)
+    had_error = False
     for path in (root_home / ".codex" / "AGENTS.md", root_home / "AGENTS.md"):
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             result = _read_md(path)
             if result is None:
+                had_error = True
                 continue
             content, enc = result
             stripped, replaced = _strip_managed_section(content, CODEX_PROFILE_MARKER)
             new_content = CODEX_PROFILE_POLICY_SECTION.rstrip() + "\n\n" + stripped.lstrip()
             try:
-                path.write_text(new_content, encoding=enc)
+                _atomic_write_text(path, new_content, encoding=enc)
             except OSError as e:
                 print(f"[error] Khong ghi duoc {path} ({e}).")
+                had_error = True
                 continue
             print(f"[ok]   {'Da cap nhat' if replaced else 'Da append'} runtime profile policy trong {path}")
         else:
             try:
-                path.write_text(CODEX_PROFILE_POLICY_SECTION, encoding="utf-8")
+                _atomic_write_text(path, CODEX_PROFILE_POLICY_SECTION, encoding="utf-8")
             except OSError as e:
                 print(f"[error] Khong tao duoc {path} ({e}).")
+                had_error = True
                 continue
             print(f"[ok]   Da tao {path} voi runtime profile policy")
+    return 1 if had_error else 0
 
 
-GEMINI_MD_SECTION = """\
+GEMINI_MD_SECTION = f"""\
 <!-- agent-harness -->
 # Agent Harness — quy trình khi làm coding task
 
 Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding. Khi nhận task viết/sửa code, áp dụng quy tắc sau:
 
-## Runtime Profile Policy — profile thắng mọi rule bên dưới
+{_shared_rule_source_note()}
 
-Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM hoặc chạy nền, đọc `harness.features.json` trong workspace hiện tại. Không tự đổi profile. Không chạy `harness-toggle.bat <profile>`, `set`, `toggle`, `mode`, hoặc `timing` trừ khi user vừa yêu cầu rõ trong prompt hiện tại; CLI write còn phải có `HARNESS_ALLOW_PROFILE_WRITE=1`.
-
-| Profile | Agent được làm | Agent không được làm |
-|---|---|---|
-| `off` | Chỉ read-only/static local: đọc file, `status/list/json`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
-| `light` | Static-first checks, hooks/lessons/finops nếu đang enabled, `auto_trigger mode=safe` không LLM, secret/env/config/devops/static analyzers. Manual LLM chỉ khi user yêu cầu rõ hoặc task thật sự cần theo rule bắt buộc. | Không tự gọi auto LLM enrichment; không bật watcher; không tự đổi profile. |
-| `standard` | Như `light` + watcher safe được phép chạy static checks. Manual LLM vẫn chỉ khi có lý do rõ. | Watcher/Auto-Pilot không được tự gọi LLM; không dùng `static_llm`; không fan-out max. |
-| `balanced` / `4` | Coding/review chủ động: `auto_trigger safe`, `consult`/`panel_review`/`ask_codebase` được phép khi rule bắt buộc khớp. | Không bật watcher; không static LLM enrichment nền; không gọi max/prod fan-out trừ khi user yêu cầu. |
-| `review` / `5` | Review kỹ hơn: Auto-Pilot LLM + static LLM được phép cho batch review; watcher safe nhưng không watcher LLM. | Watcher không được gọi LLM; không dùng max fan-out mặc định. |
-| `heavy` / `7` | Refactor lớn/debug khó: Auto-Pilot max, static LLM, watcher LLM safe được phép. | Không chạy aggressive release/prod gates liên tục; vẫn phải gom batch, tránh gọi panel lặp. |
-| `max` | Full audit/release khi user chọn rõ: aggressive checks, watcher fast, LLM enrichment, prod/release gates. | Không để mặc định cả ngày; không tự chuyển từ profile thấp lên `max`. |
-
-Nếu profile không cho phép tool LLM, thay bằng static/local tương đương và báo ngắn: `profile <name> đang chặn LLM`. Runtime hard-kill `llm.enabled=false` là tuyệt đối, không retry và không tìm cách bypass.
+{_runtime_profile_policy("status/list/json")}
 
 ## Auto-Pilot — mặc định bật
 
 - Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `goal_autopilot` với `mode="init"` và `goal="<nguyên prompt user>"` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `goal_runner(prompt="<nguyên prompt>", mode="max")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate`.
-- Khi user hỏi "đã nạp chưa", "harness ổn chưa", context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
+- Khi user hỏi "đã nạp chưa", "harness ổn chưa", cài qua agent nào, MCP config có drift không, context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
 - Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
 - Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
@@ -643,13 +796,7 @@ Nếu profile không cho phép tool LLM, thay bằng static/local tương đươ
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
 - Chỉ bỏ qua Auto-Pilot khi user nói rõ "khỏi review", "nhanh thôi", hoặc task chỉ sửa docs/comment/format dưới ~10 dòng.
 
-## Distilled Integrations — Hallmark + Spec Kit
-
-- Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
-- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
-- `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
-- `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
-- Profile vẫn thắng: `off` chỉ được gọi bridge read-only (`status`, `preflight`, `audit_plan`, `snapshot`); không tự init/scaffold/write preflight, không gọi Hallmark/Spec Kit LLM workflow, không gọi `goal_runner`; dùng static/local fallback và báo `profile off đang chặn LLM`.
+{COMMON_DISTILLED_INTEGRATIONS}
 
 ## Bắt buộc
 
@@ -738,48 +885,107 @@ Nếu tool agent-harness lỗi: tiếp tục task bình thường, báo ngắn g
 """
 
 
-def merge_gemini_md(gemini_dir: Path) -> None:
+def merge_gemini_md(gemini_dir: Path) -> int:
     gemini_dir.mkdir(parents=True, exist_ok=True)
     md_path = gemini_dir / "GEMINI.md"
     if md_path.exists():
         result = _read_md(md_path)
         if result is None:
-            return
+            return 1
         content, enc = result
         stripped, replaced = _strip_managed_section(content, GEMINI_MARKER)
         new_content = GEMINI_MD_SECTION.rstrip() + "\n\n" + stripped.lstrip()
         try:
-            md_path.write_text(new_content, encoding=enc)
+            _atomic_write_text(md_path, new_content, encoding=enc)
         except OSError as e:
             print(f"[error] Khong ghi duoc GEMINI.md ({e}). Kiem tra quyen ghi hoac dung luong dia.")
-            return
+            return 1
         print("[ok]   Da cap nhat section agent-harness trong GEMINI.md" if replaced else "[ok]   Da append section agent-harness vao GEMINI.md")
     else:
         try:
-            md_path.write_text(GEMINI_MD_SECTION, encoding="utf-8")
+            _atomic_write_text(md_path, GEMINI_MD_SECTION, encoding="utf-8")
         except OSError as e:
             print(f"[error] Khong tao duoc ~/.gemini/GEMINI.md ({e}).")
-            return
+            return 1
         print("[ok]   Da tao ~/.gemini/GEMINI.md")
+    return 0
 
 
 def _merge_all(home: Path | None = None) -> int:
     root_home = _home_dir(home)
     claude_dir = root_home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
-    merge_claude_md(claude_dir)
-    err = merge_settings_json(claude_dir)
-    if err:
-        return err
-    configure_claude_mcp(claude_dir)
-    configure_codex_mcp(root_home)
-    configure_codex_hooks(root_home)
-    merge_codex_agents(root_home)
+    steps = [
+        lambda: merge_claude_md(claude_dir),
+        lambda: merge_settings_json(claude_dir),
+        lambda: configure_claude_mcp(claude_dir),
+        lambda: configure_codex_mcp(root_home),
+        lambda: configure_codex_hooks(root_home),
+        lambda: merge_codex_agents(root_home),
+    ]
     gemini_dir = root_home / ".gemini"
-    merge_gemini_md(gemini_dir)
-    configure_gemini_mcp(gemini_dir)
+    steps.extend([
+        lambda: merge_gemini_md(gemini_dir),
+        lambda: configure_gemini_mcp(gemini_dir),
+    ])
+    had_error = False
+    for step in steps:
+        try:
+            if step():
+                had_error = True
+        except Exception as e:
+            print(f"[error] Merge step failed: {e}")
+            had_error = True
+    if had_error:
+        print("[error] Khong ghi rules stamp vi co buoc merge/config loi. Lan lazy merge sau se retry.")
+        return 1
     mark_rules_merged(claude_dir)
     return 0
+
+
+@contextmanager
+def _merge_file_lock(lock_path: Path, *, timeout: float = 10.0):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    lock_file = open(lock_path, "a+b")
+    locked = False
+    try:
+        while True:
+            try:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    yield None
+                    return
+                time.sleep(0.1)
+        meta = {"pid": os.getpid(), "token": uuid.uuid4().hex, "ts": time.time(), "version": RULES_VERSION}
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+        lock_file.flush()
+        os.fsync(lock_file.fileno())
+        yield lock_file
+    finally:
+        if locked:
+            try:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        lock_file.close()
 
 
 def lazy_merge_if_needed(home: Path | None = None) -> bool:
@@ -787,51 +993,29 @@ def lazy_merge_if_needed(home: Path | None = None) -> bool:
     if not needs_update(home=home):
         return False
     lock_path = _home_dir(home) / ".claude" / ".harness_rules_merge.lock"
-    lock_fd: int | None = None
     try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + 10.0
-        while True:
-            try:
-                lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                meta = {"pid": os.getpid(), "ts": time.time(), "version": RULES_VERSION}
-                os.write(lock_fd, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
-                break
-            except FileExistsError:
-                if not needs_update(home=home):
-                    return False
-                try:
-                    age = time.time() - lock_path.stat().st_mtime
-                    if age > 60:
-                        lock_path.unlink()
-                        continue
-                except OSError:
-                    pass
-                if time.monotonic() >= deadline:
-                    return False
-                time.sleep(0.1)
-        if not needs_update(home=home):
-            return False
-        # MCP uses stdout for protocol frames; keep setup chatter off stdout.
-        with redirect_stdout(sys.stderr):
-            return _merge_all(home) == 0
+        with _merge_file_lock(lock_path, timeout=10.0) as lock_file:
+            if lock_file is None or not needs_update(home=home):
+                return False
+            # MCP uses stdout for protocol frames; keep setup chatter off stdout.
+            with redirect_stdout(sys.stderr):
+                return _merge_all(home) == 0
     except Exception as e:
         print(f"[warn] Lazy harness rules merge skipped: {e}", file=sys.stderr)
         return False
-    finally:
-        if lock_fd is not None:
-            try:
-                os.close(lock_fd)
-            except OSError:
-                pass
-            try:
-                lock_path.unlink()
-            except OSError:
-                pass
+
+
+def merge_all_locked(home: Path | None = None, *, timeout: float = 10.0) -> int:
+    lock_path = _home_dir(home) / ".claude" / ".harness_rules_merge.lock"
+    with _merge_file_lock(lock_path, timeout=timeout) as lock_file:
+        if lock_file is None:
+            print("[error] Khong lay duoc rules merge lock; thu lai sau.")
+            return 1
+        return _merge_all(home)
 
 
 def main() -> int:
-    return _merge_all()
+    return merge_all_locked()
 
 
 if __name__ == "__main__":

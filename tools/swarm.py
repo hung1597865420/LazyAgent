@@ -99,7 +99,7 @@ def _ask_codebase_model_chain() -> list[str]:
     raw = (
         os.getenv("HARNESS_ASK_CODEBASE_MODEL_CHAIN")
         or os.getenv("HARNESS_ASK_CODEBASE_MODEL")
-        or "ag/gemini-3-flash-agent,ag/claude-sonnet-4-6"
+        or "cx/gpt-5.4-mini,cx/gpt-5.5,cx/gpt-5.5-review"
     )
     models: list[str] = []
     seen: set[str] = set()
@@ -109,7 +109,7 @@ def _ask_codebase_model_chain() -> list[str]:
         if model and key not in seen:
             seen.add(key)
             models.append(model)
-    return models or ["ag/gemini-3-flash-agent"]
+    return models or ["cx/gpt-5.4-mini"]
 
 
 _ASK_CODEBASE_MAX_FILES = 15

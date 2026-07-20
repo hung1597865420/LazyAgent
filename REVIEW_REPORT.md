@@ -1,17 +1,14 @@
-# Agent Harness - Báo cáo Review Code tự động
+# Agent Harness Review Summary
 
-## Kết luận: **🟢 APPROVE**
+Latest verification for the public-ready harness update:
 
-### Tóm tắt:
-Panel không tìm thấy issue nào.
+- `python -m py_compile` passed for the touched Python modules and all `tools/*.py` files using a PowerShell-expanded file list.
+- `python smoke_test.py` passed with the MCP registry at 90 tools.
+- `router_quota_status` remains only as a deprecated compatibility shim; the quota/costguard implementation was intentionally removed.
+- `tools.quota.router_quota_status` is preserved as a legacy import shim for older callers.
+- No real credentials were found in the staged diff during the final public-readiness pass.
 
-## Chi tiết các Findings
+Notes:
 
-✅ Không tìm thấy lỗi nào!
-
-## Chi tiết cuộc họp Panel
-| Agent Role | Model sử dụng | Trạng thái | Thời gian phản hồi |
-| :--- | :--- | :--- | :--- |
-| REVIEWER | ag/gemini-3-flash-agent | ✅ | 0.01s |
-| SECURITY | ag/claude-sonnet-4-6 | ✅ | 0.01s |
-| TESTER | ag/gemini-3-flash-agent | ✅ | 0.01s |
+- `harness.features.json` should remain default-safe (`off`) in public commits. Local users can opt in with `harness-toggle.bat`.
+- Auto-generated runtime DBs, logs, lessons, local exports, and cost reports should not be treated as release artifacts.

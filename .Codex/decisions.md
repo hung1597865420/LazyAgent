@@ -18,6 +18,10 @@
 **Decision:** MCP server calls `merge_settings.lazy_merge_if_needed()` on `list_tools` and first tool call, guarded by `RULES_VERSION` stamp at `~/.claude/.harness_rules_version`, so Claude/Gemini/Codex rules update automatically after harness upgrades.
 **Alternatives bỏ:** Requiring users to run `python merge_settings.py` manually after every tool/rule change; unconditional startup writes that slow or dirty every MCP launch.
 
+### 2026-07-20 — Shared multi-agent rule fragments
+**Decision:** Keep shared Claude/Codex/Gemini policy text in `merge_settings.py` `COMMON_*` fragments, then render client-specific wrappers from those fragments. Smoke tests assert the shared source-of-truth sentence appears in all generated agent files.
+**Alternatives bỏ:** Maintaining separate copied policy blocks per agent, which made profile/tool updates easy to miss for Gemini, Codex, or Claude.
+
 ### 2026-07-13 — Autonomous gap tools with 9Router enrichment
 **Decision:** Add `release_orchestrator`, `provenance_checker`, `auth_matrix_auditor`, `harness_trace_viewer`, and `incremental_refactor_guard` as static-first MCP tools that call 9Router enrichment in `mode=max` or when `HARNESS_STATIC_LLM=1`.
 **Alternatives bỏ:** Pure-offline gap tools; user explicitly wants harness to exploit 9Router as much as possible while keeping smoke/fallback deterministic.
@@ -50,6 +54,10 @@
 **Decision:** Add `scope_creep_detector` as a local static diff guard and `office_bridge` as an optional OfficeCLI adapter. OfficeCLI is detected but never installed by harness; read/validate/dump actions are allowed, while create/set/batch/watch/resident actions require `allow_mutation=true` and profile above `off`. DesktopCommanderMCP is not embedded because it overlaps with existing shell/file tools and is not a real sandbox boundary.
 **Alternatives bỏ:** Auto-installing OfficeCLI/DesktopCommander for every agent; enabling DesktopCommander by default; spending LLM tokens for scope-creep classification.
 
-### 2026-07-18 — 9Router quota reminder
-**Decision:** Add read-only `router_quota_status` to combine 9Router `/api/usage/stats`, optional `/api/usage/[connectionId]` provider quota probes, and local `.harness_finops.db` budget fallback. It reports `ok/warn/critical/unknown` and remaining tokens/USD when limits are configured, but never blocks requests or changes profile.
-**Alternatives bỏ:** Reintroducing CostGuard as a hard blocker; relying only on 9Router UI screenshots; assuming a single stable provider quota payload shape.
+### 2026-07-20 — Remove harness quota reminder
+**Decision:** Remove `router_quota_status` and related `HARNESS_QUOTA_*` config. Harness keeps local `finops_stats` logging only; real remaining quota should be checked in the active 9Router dashboard/API pool.
+**Alternatives bỏ:** Maintaining a second quota reader in harness; it duplicated 9Router UI behavior and required unstable dashboard auth/session handling.
+
+### 2026-07-20 — Switch harness model defaults to Codex provider
+**Decision:** Change default 9Router model mapping from `ag/...` Gemini/Claude routes to `cx/...` OpenAI Codex routes: `cx/gpt-5.4-mini` for non-code/docs, `cx/gpt-5.6-sol` for primary code work, `cx/gpt-5.6-terra` for alternative implementation, and `cx/gpt-5.6-sol-review` for review/security/integrity/architecture roles.
+**Alternatives bỏ:** Keeping Antigravity/Gemini/Claude-backed routes as fallback; user wants to avoid the Google/Antigravity account-ban risk path and use the Codex provider instead.

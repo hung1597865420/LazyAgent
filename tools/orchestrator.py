@@ -151,7 +151,7 @@ def _rollback(stage: str, files: list[str], diff_hash: str) -> dict[str, Any]:
 
 def _model_governance() -> dict[str, Any]:
     return {
-        "ask_codebase": ["ag/gemini-3-flash-agent", "ag/claude-sonnet-4-6"],
+        "ask_codebase": ["cx/gpt-5.4-mini", "cx/gpt-5.5", "cx/gpt-5.5-review"],
         "timeouts": "bounded; fallback/degraded must be explicit",
         "anti_pattern": "do not report green when 9Router times out",
     }

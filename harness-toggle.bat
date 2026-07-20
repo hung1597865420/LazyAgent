@@ -76,7 +76,7 @@ function Ensure-Defaults($J) {
         Ensure-Prop $item 'note' '' | Out-Null
     }
     $manual.hooks.status = 'soft-toggle'
-    $manual.hooks.note = 'Global hook config remains installed; harness_hook.py exits immediately when hooks.enabled=false.'
+    $manual.hooks.note = 'Global hook config remains installed; hooks.enabled=false still allows read-only profile snapshot injection, but disables lesson/edit hook work.'
     $manual.lessons.status = 'soft-toggle'
     $manual.lessons.note = 'Disables lesson write/inject paths without deleting existing lesson DB files.'
     $manual.llmwiki.status = 'on_demand'
@@ -136,7 +136,7 @@ function Feature-Note([string]$Name) {
     switch ($Name) {
         'llm' { return 'Hard kill-switch: off = no 9Router/model calls at all.' }
         'finops' { return 'Token/cost SQLite logging. Off reduces DB writes; does not affect model calls.' }
-        'hooks' { return 'Client hook bridge. Off = installed hooks exit immediately.' }
+        'hooks' { return 'Client hook bridge. Off = only read-only profile snapshot injection remains; lesson/edit hook work stops.' }
         'lessons' { return 'Lesson memory write/inject/background learning. Off keeps old data but stops new capture.' }
         'auto-pilot' { return 'Contextual auto_trigger checks after edits/final gates.' }
         'auto-pilot-llm' { return 'Allows Auto-Pilot selected checks to call LLM review tools.' }
@@ -146,8 +146,7 @@ function Feature-Note([string]$Name) {
         'wiki' { return 'On-demand llmwiki preference marker; no daemon by itself.' }
         'code-index' { return 'On-demand semantic/code index preference marker; builds when requested.' }
         'dashboard' { return 'Manual web dashboard marker; action dashboard start launches server.py.' }
-        'mcp-bridges' { return 'Read-only/static MCP tools: Hallmark/Spec Kit bridges, OfficeCLI bridge, scope guard, quota reminder. No profile toggle needed.' }
-        'quota' { return 'router_quota_status reads 9Router usage + local FinOps. Configure HARNESS_QUOTA_* / HARNESS_ROUTER_QUOTA_* in .env.' }
+        'mcp-bridges' { return 'Read-only/static MCP tools: install manifest, adapter parity, MCP inventory, context budget, workflow/UI routers, bug repro guard, Hallmark/Spec Kit, Office bridge, scope guard. No profile toggle needed.' }
         'auto-pilot-mode' { return 'safe = conservative checks, max = aggressive fan-out.' }
         'auto-watch-mode' { return 'safe/max mode used by watcher-triggered Auto-Pilot.' }
         'auto-watch-time' { return 'Polling interval and debounce seconds for watcher.' }
@@ -426,7 +425,6 @@ function Show-Status {
     Write-Host ("{0,-16} {1,-7} {2}" -f 'auto-watch-mode', $j.auto_watch.mode, (Feature-Note 'auto-watch-mode'))
     Write-Host ("{0,-16} {1,-7} {2}" -f 'auto-watch-time', "i=$($j.auto_watch.interval)", "debounce=$($j.auto_watch.debounce). $(Feature-Note 'auto-watch-time')")
     Write-Host ("{0,-16} {1,-7} {2}" -f 'mcp-bridges', 'read', (Feature-Note 'mcp-bridges'))
-    Write-Host ("{0,-16} {1,-7} {2}" -f 'quota', 'read', (Feature-Note 'quota'))
     Write-Host ''
     $items = @(Watch-Procs)
     if ($items) {
@@ -447,7 +445,7 @@ function Show-List {
 Features you can toggle:
   llm              Hard kill-switch: off = no 9Router/model calls at all.
   finops           Token/cost SQLite logging. Off reduces DB writes.
-  hooks            Client hook bridge. Off = installed hooks exit immediately.
+  hooks            Client hook bridge. Off = only profile snapshot injection remains.
   lessons          Lesson memory write/inject/background learning.
   auto-pilot       Contextual auto_trigger checks after edits/final gates.
   auto-pilot-llm   Allows Auto-Pilot selected checks to call LLM review tools.
@@ -459,18 +457,18 @@ Features you can toggle:
   dashboard        Manual web dashboard marker + dashboard start action.
 
 MCP-only/read-only tools, installed by full setup and not toggled here:
-  integration_router   Static router for Hallmark UI + Spec Kit spec flows.
+  install_manifest     Dry-run setup manifest profiles/targets/check plan.
+  adapter_parity_doctor Check Claude/Codex/Gemini/Antigravity rule + MCP drift.
+  mcp_inventory        Inventory MCP configs and duplicated/drifted servers.
+  context_budget       Estimate rules/skills/MCP token overhead + status.
+  integration_router   Static router for Hallmark UI + UI Skills + Spec Kit spec flows.
+  workflow_router      Static router for debug/spec/tickets/domain/review/TDD/architecture.
+  bug_repro_guard      Static guard requiring red-capable repro before debug fixing.
+  ui_skill_router      Static UI router; selects max 3 baseline/a11y/motion/metadata checks.
   hallmark_bridge      UI preflight/audit plan; write action still profile-gated.
   speckit_bridge       Spec status/snapshot; init/scaffold still profile-gated.
   office_bridge        Optional OfficeCLI adapter; mutations require allow_mutation.
   scope_creep_detector Static diff guard for unrelated dependency/config/API drift.
-  router_quota_status  9Router quota reminder + local FinOps fallback.
-
-Quota reminder env:
-  HARNESS_QUOTA_MONTHLY_TOKENS, HARNESS_QUOTA_MONTHLY_USD
-  HARNESS_QUOTA_WARN_PCT, HARNESS_QUOTA_CRITICAL_PCT
-  HARNESS_ROUTER_QUOTA_ENDPOINT, HARNESS_ROUTER_QUOTA_CONNECTION_IDS
-  HARNESS_ROUTER_QUOTA_BEARER, HARNESS_ROUTER_QUOTA_COOKIE, HARNESS_ROUTER_QUOTA_HEADERS_JSON
 
 Profiles:
   off              0/10: hard-off; Auto-Pilot/hooks/lessons/FinOps/LLM off, watcher killed.

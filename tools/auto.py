@@ -17,6 +17,7 @@ from typing import Any
 from runtime_flags import bool_flag, choice_flag
 from .core import _get_active_workspace, append_lesson, load_relevant_lessons_context
 from .integrations import integration_router
+from .workflow import workflow_router
 
 
 DOC_EXTS = {".md", ".txt", ".rst", ".adoc"}
@@ -568,6 +569,7 @@ async def auto_trigger(
     prior_lessons = load_relevant_lessons_context(text)
     task_context = "\n\n".join(x for x in [task_with_goal or "", f"Prior lessons:\n{prior_lessons}" if prior_lessons else ""] if x).strip()
     integration_routes = integration_router(task=task_with_goal or task, changed_files=files, diff=diff)
+    workflow_routes = workflow_router(task=task_with_goal or task, changed_files=files, diff=diff)
 
     if _docs_only(files) and mode != "max" and not active_goal:
         from .orchestrator import orchestrate
@@ -578,6 +580,7 @@ async def auto_trigger(
             "files": files,
             "prior_lessons": prior_lessons,
             "integration_routes": integration_routes,
+            "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
         }
 
@@ -611,6 +614,7 @@ async def auto_trigger(
             "files": files,
             "prior_lessons": prior_lessons,
             "integration_routes": integration_routes,
+            "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
         }
     has_ui = bool(ui_files) or _has_any(text, {"a11y", "accessibility", "i18n", "translation", "wcag"})
@@ -636,6 +640,8 @@ async def auto_trigger(
 
     if active_goal:
         add("goal_alignment", "tools.goal", "check_goal", changed_files=files, diff=diff, task=task_context or task_with_goal)
+    if has_trace or _has_any(text, {"bug", "debug", "diagnose", "traceback", "exception", "crash", "regression"}):
+        add("bug_repro_guard", "tools.workflow", "bug_repro_guard", task=task_context or task_with_goal, error_log=text[:4000], changed_files=files, diff=diff)
     if (mode == "max" or has_config or has_security) and scan_files:
         add("secret_scanner", "tools.analysis", "secret_scanner", paths=scan_files)
     if mode == "max" or has_env:
@@ -726,6 +732,7 @@ async def auto_trigger(
             "files": files,
             "prior_lessons": prior_lessons,
             "integration_routes": integration_routes,
+            "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
         }
 
@@ -746,6 +753,7 @@ async def auto_trigger(
             "ignored_runtime_files": ignored_runtime_files,
             "prior_lessons": prior_lessons,
             "integration_routes": integration_routes,
+            "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
             "warnings": warnings,
         }
@@ -845,6 +853,7 @@ async def auto_trigger(
             "blockers_count": len(blockers),
             "prior_lessons": prior_lessons,
             "integration_routes": integration_routes,
+            "workflow_routes": workflow_routes,
             "lessons_recorded": lessons_recorded,
             "causality_recorded": causality_recorded,
             "orchestrator": orchestrator,
@@ -873,6 +882,7 @@ async def auto_trigger(
         "failed_tools": failed_tools,
         "prior_lessons": prior_lessons,
         "integration_routes": integration_routes,
+        "workflow_routes": workflow_routes,
         "lessons_recorded": lessons_recorded,
         "causality_recorded": causality_recorded,
         "orchestrator": orchestrator,

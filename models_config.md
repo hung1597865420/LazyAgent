@@ -1,15 +1,18 @@
 ROUTER_BASE_URL   = http://localhost:20128
 ROUTER_API_KEY    = dummy
 
-MODEL_MANAGER           = ag/gemini-3-flash-agent     # manager/default codebase Q&A
-MODEL_INTEGRITY         = ag/claude-sonnet-4-6        # data integrity + synthesis guard
-MODEL_SCANNER           = ag/gemini-3-flash-agent     # code high/static assist
-MODEL_ANALYZER          = ag/claude-sonnet-4-6        # phân tích requirements
-MODEL_CODE_A            = ag/gemini-3-flash-agent     # code high
-MODEL_CODE_B            = ag/claude-sonnet-4-6        # code deep
-MODEL_REVIEWER          = ag/gemini-3-flash-agent     # review bugs
-MODEL_TESTER            = ag/gemini-3-flash-agent     # viết tests
-MODEL_SECURITY          = ag/claude-sonnet-4-6        # security audit
-MODEL_DEBUGGER          = ag/gemini-3-flash-agent     # apply fixes
-MODEL_WORKER            = ag/gemini-3.5-flash-extra-low # non-code/light tasks
-MODEL_SYNTHESIZER       = ag/gemini-3-flash-agent     # merge output cuối
+MODEL_MANAGER           = cx/gpt-5.4-mini       # manager/default codebase Q&A tiết kiệm
+MODEL_INTEGRITY         = cx/gpt-5.5-review     # data integrity + synthesis guard
+MODEL_SCANNER           = cx/gpt-5.4-mini       # static assist/light scan
+MODEL_ANALYZER          = cx/gpt-5.5-review     # phân tích requirements
+MODEL_CODE_A            = cx/gpt-5.5            # code default
+MODEL_CODE_B            = cx/gpt-5.5-review     # code alternative/review-leaning
+MODEL_REVIEWER          = cx/gpt-5.5-review     # review bugs
+MODEL_TESTER            = cx/gpt-5.5            # viết tests/adversarial
+MODEL_SECURITY          = cx/gpt-5.5-review     # security audit
+MODEL_DEBUGGER          = cx/gpt-5.5            # apply fixes
+MODEL_WORKER            = cx/gpt-5.4-mini       # non-code/light tasks
+MODEL_SYNTHESIZER       = cx/gpt-5.4-mini       # merge output cuối tiết kiệm
+
+# 5.6 models are expensive; keep them as explicit/late fallback only:
+# SPARE_MODELS=cx/gpt-5.4-mini,cx/gpt-5.5,cx/gpt-5.5-review,cx/gpt-5.6-sol,cx/gpt-5.6-sol-review

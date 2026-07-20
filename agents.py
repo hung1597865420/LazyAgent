@@ -169,7 +169,16 @@ def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
     m = model.lower()
     input_rate = 2.0
     output_rate = 6.0
-    if "sonnet" in m:
+    if m.startswith("cx/") and "review" in m:
+        input_rate = 3.0
+        output_rate = 15.0
+    elif m.startswith("cx/") and "mini" in m:
+        input_rate = 0.15
+        output_rate = 0.60
+    elif m.startswith("cx/"):
+        input_rate = 1.0
+        output_rate = 4.0
+    elif "sonnet" in m:
         input_rate = 3.0
         output_rate = 15.0
     elif "gemini" in m and ("extra-low" in m or "-low" in m):
@@ -505,6 +514,29 @@ class _ResponsesTimeoutError(Exception):
     """Raised khi _responses_call vượt Python-level timeout. Map sang spare-model fallback trong chat_completion."""
 
 
+class ModelConfigurationError(RuntimeError):
+    """Raised when configured model aliases are unavailable on the active router."""
+
+
+def _model_unavailable_message(model: str, attempted: list[str], original_error: BaseException) -> str:
+    chain = ", ".join(dict.fromkeys(str(item) for item in attempted if item)) or str(model)
+    return (
+        f"Configured model alias is not available on the active 9Router/OpenAI-compatible endpoint: {model!r}. "
+        f"Attempted model chain: {chain}. "
+        "Update MODEL_* / SPARE_MODELS / HARNESS_KNOWN_DEPLOYMENTS in .env to match the model IDs shown by "
+        "`python -c \"from config import get_llm_client; print([m.id for m in get_llm_client().models.list().data])\"`. "
+        f"Provider error: {original_error}"
+    )
+
+
+def _looks_like_model_unavailable(error: BaseException) -> bool:
+    msg = str(error).lower()
+    return (
+        "model" in msg
+        and any(part in msg for part in ("not found", "does not exist", "not available", "unknown", "invalid"))
+    )
+
+
 def _responses_queue_timeout(timeout: float) -> float:
     try:
         value = float(timeout)
@@ -637,10 +669,13 @@ def chat_completion(
     spares         = iter(get_spare_models())
     attempt        = 0
     timeout_attempt = 0  # retry tối đa 1 lần trước khi chuyển spare
+    attempted_models: list[str] = []
 
     while True:
         quirks = _quirks_for(current_model)
         try:
+            if not attempted_models or attempted_models[-1] != current_model:
+                attempted_models.append(current_model)
             enforce_llm_budget(current_model, messages, max_output_tokens)
             if quirks["api"] == "responses":
                 text, p_tok, c_tok = _responses_call(current_model, messages, max_output_tokens, timeout)
@@ -673,9 +708,18 @@ def chat_completion(
                         _retry = True
             if _retry:
                 continue
+            if _looks_like_model_unavailable(e):
+                spare = _next_distinct_spare(spares, current_model) if use_spares else None
+                if spare is not None:
+                    _log.warning("Model %s unavailable on router — trying spare %s", current_model, spare)
+                    current_model = spare
+                    attempt = 0
+                    timeout_attempt = 0
+                    continue
+                raise ModelConfigurationError(_model_unavailable_message(current_model, attempted_models, e)) from e
             raise
 
-        except NotFoundError:
+        except NotFoundError as e:
             _retry = False
             with _model_quirks_lock:
                 if quirks["api"] == "responses" and not quirks["api_locked"]:
@@ -683,7 +727,14 @@ def chat_completion(
                     _retry = True
             if _retry:
                 continue
-            raise
+            spare = _next_distinct_spare(spares, current_model) if use_spares else None
+            if spare is not None:
+                _log.warning("Model %s not found on router — trying spare %s", current_model, spare)
+                current_model = spare
+                attempt = 0
+                timeout_attempt = 0
+                continue
+            raise ModelConfigurationError(_model_unavailable_message(current_model, attempted_models, e)) from e
 
         except RateLimitError:
             timeout_attempt = 0  # reset streak vì đây là lỗi khác loại

@@ -4,9 +4,9 @@ tools package — Re-exporting all tools.
 from .core import lesson_curator, run_in_sandbox
 from .auto import auto_trigger
 from .goal import goal_autopilot, goal_supervisor
-from .integrations import hallmark_bridge, integration_router, speckit_bridge
+from .integrations import hallmark_bridge, integration_router, speckit_bridge, ui_skill_router
+from .workflow import bug_repro_guard, workflow_router
 from .office_bridge import office_bridge
-from .quota import router_quota_status
 from .runner import goal_runner
 from .scope_guard import scope_creep_detector
 from .ops import (
@@ -18,6 +18,7 @@ from .ops import (
     harness_doctor,
     patch_safety_check,
     policy_profile,
+    router_quota_status,
     run_ledger,
 )
 from .prod import prod_readiness_gate
@@ -73,9 +74,11 @@ __all__ = [
     "goal_supervisor",
     "hallmark_bridge",
     "integration_router",
+    "ui_skill_router",
     "speckit_bridge",
+    "workflow_router",
+    "bug_repro_guard",
     "office_bridge",
-    "router_quota_status",
     "scope_creep_detector",
     "goal_runner",
     "agent_adapters",
@@ -86,6 +89,7 @@ __all__ = [
     "harness_doctor",
     "patch_safety_check",
     "policy_profile",
+    "router_quota_status",
     "run_ledger",
     "prod_readiness_gate",
     "release_orchestrator",

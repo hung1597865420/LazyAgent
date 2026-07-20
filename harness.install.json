@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "description": "Static install manifest for Agent Harness setup planning. Profiles here are dry-run install surfaces, not runtime profiles.",
+  "targets": {
+    "claude": {
+      "description": "Claude Code user-level rules, hooks, and MCP config.",
+      "required_files": [
+        "~/.claude/CLAUDE.md",
+        "~/.claude/settings.json",
+        "~/.claude/claude_mcp_config.json"
+      ],
+      "modules": [
+        "runtime-rules",
+        "mcp-config",
+        "hooks",
+        "lessons",
+        "llmwiki"
+      ]
+    },
+    "codex": {
+      "description": "Codex user-level AGENTS policy, hooks, and MCP config.",
+      "required_files": [
+        "~/.codex/AGENTS.md",
+        "~/AGENTS.md",
+        "~/.codex/config.toml",
+        "~/.codex/hooks.json"
+      ],
+      "modules": [
+        "runtime-rules",
+        "mcp-config",
+        "hooks",
+        "lessons"
+      ]
+    },
+    "gemini": {
+      "description": "Gemini CLI shared rules and MCP config.",
+      "required_files": [
+        "~/.gemini/GEMINI.md",
+        "~/.gemini/config/mcp_config.json"
+      ],
+      "modules": [
+        "runtime-rules",
+        "mcp-config",
+        "lessons"
+      ]
+    },
+    "antigravity": {
+      "description": "Antigravity IDE MCP config; rules are shared through ~/.gemini/GEMINI.md.",
+      "required_files": [
+        "~/.gemini/GEMINI.md",
+        "~/.gemini/antigravity-ide/mcp_config.json"
+      ],
+      "modules": [
+        "runtime-rules",
+        "mcp-config",
+        "lessons"
+      ]
+    }
+  },
+  "modules": {
+    "runtime-rules": {
+      "description": "Shared profile policy, tool routing rules, and distilled integrations rendered by merge_settings.py.",
+      "cost": "static"
+    },
+    "mcp-config": {
+      "description": "MCP server entry pointing each client at this repo's mcp_server.py.",
+      "cost": "static"
+    },
+    "hooks": {
+      "description": "Client hook bridge for profile injection, edit events, and lesson capture where the client supports hooks.",
+      "cost": "background-safe"
+    },
+    "lessons": {
+      "description": "Local/global lesson memory files and curator wiring.",
+      "cost": "static-plus-db"
+    },
+    "llmwiki": {
+      "description": "Optional local/global wiki seed used for retrieval-oriented memory.",
+      "cost": "on-demand"
+    },
+    "auto-watch": {
+      "description": "Windows startup task and background file watcher. Runtime profile still decides whether it exits immediately.",
+      "cost": "background"
+    },
+    "dashboard": {
+      "description": "Optional local web dashboard; manual start only.",
+      "cost": "manual"
+    }
+  },
+  "profiles": {
+    "minimal": {
+      "description": "Rules and MCP config only.",
+      "modules": [
+        "runtime-rules",
+        "mcp-config"
+      ]
+    },
+    "standard": {
+      "description": "Rules, MCP, hooks, lessons, and llmwiki seed.",
+      "modules": [
+        "runtime-rules",
+        "mcp-config",
+        "hooks",
+        "lessons",
+        "llmwiki"
+      ]
+    },
+    "full": {
+      "description": "Standard setup plus Auto-Watch startup task and optional dashboard marker.",
+      "modules": [
+        "runtime-rules",
+        "mcp-config",
+        "hooks",
+        "lessons",
+        "llmwiki",
+        "auto-watch",
+        "dashboard"
+      ]
+    }
+  }
+}

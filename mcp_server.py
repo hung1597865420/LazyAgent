@@ -108,9 +108,19 @@ def _cleanup_orphaned_worktrees() -> None:
             if not line.startswith("worktree "):
                 continue
             wt_path = Path(line[len("worktree "):].strip())
-            if (wt_path.name.startswith(".harness_worktree_")
+            try:
+                wt_resolved = wt_path.resolve()
+                repo_resolved = repo.resolve()
+                under_repo = os.path.commonpath([str(wt_resolved), str(repo_resolved)]) == str(repo_resolved)
+            except (OSError, ValueError):
+                under_repo = False
+            git_meta = wt_path / ".git"
+            if (under_repo
+                    and wt_path.name.startswith(".harness_worktree_")
                     and wt_path.is_dir()
-                    and not wt_path.is_symlink()):
+                    and not wt_path.is_symlink()
+                    and git_meta.exists()
+                    and not git_meta.is_dir()):
                 try:
                     subprocess.run(
                         ["git", "worktree", "remove", "--force", str(wt_path)],
@@ -194,7 +204,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="integration_router",
             description=(
-                "Static router for distilled Hallmark UI flow and Spec Kit spec-first flow. "
+                "Static router for distilled Hallmark UI flow, UI Skills routing, and Spec Kit spec-first flow. "
                 "Does not call LLM or mutate files; reports who should call each flow under the current profile."
             ),
             inputSchema={
@@ -203,6 +213,52 @@ async def list_tools() -> list[types.Tool]:
                     "changed_files": _FILES_SCHEMA,
                     "diff": {"type": "string", "description": "Unified diff hoặc summary diff nếu có"},
                     "task": {"type": "string", "description": "Task/user request hiện tại"},
+                },
+            },
+        ),
+        types.Tool(
+            name="workflow_router",
+            description=(
+                "Static Matt-skills-inspired router for debug/spec/tickets/wayfinder/domain/review/TDD/architecture flows. "
+                "No LLM, no mutation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "diff": {"type": "string", "description": "Unified diff hoặc summary diff nếu có"},
+                    "task": {"type": "string", "description": "Task/user request hiện tại"},
+                },
+            },
+        ),
+        types.Tool(
+            name="bug_repro_guard",
+            description=(
+                "Static debug guard: verifies a bug task has a red-capable repro command/output before hypothesis-first fixing."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string"},
+                    "error_log": {"type": "string"},
+                    "changed_files": _FILES_SCHEMA,
+                    "commands": {"type": "array", "items": {"type": "string"}},
+                    "test_output": {"type": "string"},
+                    "diff": {"type": "string"},
+                },
+            },
+        ),
+        types.Tool(
+            name="ui_skill_router",
+            description=(
+                "Static ibelick UI Skills router: selects at most 3 compact UI checklists "
+                "(baseline/a11y/motion/metadata/improve-ui) before heavy review."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "task": {"type": "string"},
                 },
             },
         ),
@@ -279,22 +335,6 @@ async def list_tools() -> list[types.Tool]:
                     "output": {"type": "string", "description": "Workspace-relative output path for view/dump where supported."},
                     "allow_mutation": {"type": "boolean"},
                     "timeout": {"type": "integer", "description": "Command timeout seconds. Default 120."},
-                },
-            },
-        ),
-        types.Tool(
-            name="router_quota_status",
-            description=(
-                "Read-only token/quota reminder for 9Router + local FinOps. "
-                "Reads /api/usage/stats and optional /api/usage/[connectionId]; never calls LLM, never blocks requests."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "period": {"type": "string", "enum": ["today", "24h", "7d", "30d", "60d", "all"], "description": "9Router usage period. Default 30d."},
-                    "router_base_url": {"type": "string", "description": "9Router base URL, default ROUTER_BASE_URL or http://localhost:20128."},
-                    "connection_ids": {"type": "array", "items": {"type": "string"}, "description": "Optional 9Router connection IDs to probe provider quota."},
-                    "timeout": {"type": "number", "description": "HTTP timeout seconds. Default 2.5."},
                 },
             },
         ),
@@ -459,6 +499,43 @@ async def list_tools() -> list[types.Tool]:
                 "files": _FILES_SCHEMA,
                 "context": {"type": "string"},
             }},
+        ),
+        types.Tool(
+            name="install_manifest",
+            description="Static ECC-inspired setup manifest: list profiles/targets or render a dry-run install/check plan without mutating files.",
+            inputSchema={"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["summary", "list", "plan", "check"]},
+                "profile": {"type": "string", "enum": ["minimal", "standard", "full"]},
+                "target": {"type": "string", "enum": ["claude", "codex", "gemini", "antigravity"]},
+            }},
+        ),
+        types.Tool(
+            name="adapter_parity_doctor",
+            description="Static cross-agent parity check for Claude, Codex, Gemini, and Antigravity rules/MCP config drift.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="mcp_inventory",
+            description="Inventory MCP configs across Claude/Codex/Gemini/Antigravity/workspace; redacts secret values and flags duplicated or drifted servers.",
+            inputSchema={"type": "object", "properties": {
+                "fragmented_only": {"type": "boolean"},
+            }},
+        ),
+        types.Tool(
+            name="context_budget",
+            description="Estimate loaded rules/skills/MCP tool schema token overhead and include lightweight runtime status without calling 9Router.",
+            inputSchema={"type": "object", "properties": {
+                "include_home": {"type": "boolean"},
+                "verbose": {"type": "boolean"},
+            }},
+        ),
+        types.Tool(
+            name="router_quota_status",
+            description=(
+                "Deprecated compatibility shim. The router quota/costguard feature was removed; "
+                "this returns a migration message and never queries 9Router quota endpoints."
+            ),
+            inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
             name="ask_codebase_health",
@@ -1484,6 +1561,13 @@ def _release_startup_lock(root: str, fd: int) -> None:
         pass
 
 
+def _close_startup_lock(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def _rotate_bootstrap_log(log_path: Path) -> None:
     try:
         if log_path.exists() and log_path.stat().st_size > 1_000_000:
@@ -1529,7 +1613,7 @@ def _kick_project_auto_watch() -> None:
                 if os.name == "nt":
                     popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 subprocess.Popen([_watcher_python(), str(script)], **popen_kwargs)
-            deadline = time.time() + 5.0
+            deadline = time.time() + 10.0
             while time.time() < deadline:
                 if _project_watcher_alive(root):
                     break
@@ -1543,7 +1627,13 @@ def _kick_project_auto_watch() -> None:
         except Exception as e:
             _log.debug("Auto-Watch start skipped for %s: %s", root, e)
         finally:
-            _release_startup_lock(root, startup_fd)
+            if _project_watcher_alive(root):
+                _release_startup_lock(root, startup_fd)
+            else:
+                # Keep the startup lock file briefly as an in-flight marker. Slow
+                # Windows machines can take more than the heartbeat window to
+                # launch pythonw; the stale-lock cleanup above allows retry later.
+                _close_startup_lock(startup_fd)
 
 
 def _kick_auto_wiki_ingest() -> None:
@@ -1699,6 +1789,29 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 diff=args.get("diff"),
             ))
 
+        if name == "workflow_router":
+            return _json_response(st.workflow_router(
+                task=args.get("task"),
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+            ))
+
+        if name == "bug_repro_guard":
+            return _json_response(st.bug_repro_guard(
+                task=args.get("task"),
+                error_log=args.get("error_log"),
+                changed_files=args.get("changed_files"),
+                commands=args.get("commands"),
+                test_output=args.get("test_output"),
+                diff=args.get("diff"),
+            ))
+
+        if name == "ui_skill_router":
+            return _json_response(st.ui_skill_router(
+                task=args.get("task"),
+                changed_files=args.get("changed_files"),
+            ))
+
         if name == "hallmark_bridge":
             allow_mutation, mutation_error = _parse_bool_arg(args, "allow_mutation")
             if mutation_error:
@@ -1757,14 +1870,6 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 output=args.get("output"),
                 allow_mutation=allow_mutation,
                 timeout=timeout,
-            ))
-
-        if name == "router_quota_status":
-            return _json_response(st.router_quota_status(
-                period=args.get("period", "30d"),
-                router_base_url=args.get("router_base_url"),
-                connection_ids=args.get("connection_ids"),
-                timeout=args.get("timeout", 2.5),
             ))
 
         if name == "prod_readiness_gate":
@@ -1919,6 +2024,34 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 files=args.get("files"),
                 context=args.get("context"),
             ))
+
+        if name == "install_manifest":
+            return _json_response(await st.install_manifest(
+                action=args.get("action", "summary"),
+                profile=args.get("profile", "standard"),
+                target=args.get("target"),
+            ))
+
+        if name == "adapter_parity_doctor":
+            return _json_response(await st.adapter_parity_doctor())
+
+        if name == "mcp_inventory":
+            fragmented_only, fragmented_error = _parse_bool_arg(args, "fragmented_only", False)
+            if fragmented_error:
+                return _json_response({"error": "invalid_argument", "detail": fragmented_error})
+            return _json_response(await st.mcp_inventory(fragmented_only=fragmented_only))
+
+        if name == "context_budget":
+            include_home, include_home_error = _parse_bool_arg(args, "include_home", True)
+            if include_home_error:
+                return _json_response({"error": "invalid_argument", "detail": include_home_error})
+            verbose, verbose_error = _parse_bool_arg(args, "verbose", False)
+            if verbose_error:
+                return _json_response({"error": "invalid_argument", "detail": verbose_error})
+            return _json_response(await st.context_budget(include_home=include_home, verbose=verbose))
+
+        if name == "router_quota_status":
+            return _json_response(await st.router_quota_status())
 
         if name == "ask_codebase_health":
             return _json_response(await st.ask_codebase_health(
