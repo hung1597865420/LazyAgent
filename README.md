@@ -1,6 +1,6 @@
-# LazyAgent
-
-![LazyAgent social preview](assets/lazyagent-social-preview.svg)
+<p align="center">
+  <img src="assets/lazyagent-logo.svg" alt="LazyAgent" width="620">
+</p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/hung1597865420/LazyAgent?display_name=tag)](https://github.com/hung1597865420/LazyAgent/releases)

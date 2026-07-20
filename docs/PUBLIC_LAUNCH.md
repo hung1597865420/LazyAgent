@@ -36,6 +36,7 @@ Longer pitch:
 ## Assets
 
 - Logo mark: `assets/lazyagent-mark.svg`
+- Logo lockup: `assets/lazyagent-logo.svg`
 - Social preview: `assets/lazyagent-social-preview.svg`
 - Demo script: `docs/DEMO_SCRIPT.md`
 

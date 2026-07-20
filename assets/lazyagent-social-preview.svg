@@ -1,34 +1,27 @@
 <svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">LazyAgent social preview</title>
   <desc id="desc">LazyAgent is an MCP control plane for coding agents.</desc>
-  <rect width="1280" height="640" fill="#0D1117"/>
-  <rect x="64" y="64" width="1152" height="512" rx="40" fill="#111827" stroke="#263244" stroke-width="2"/>
-  <circle cx="184" cy="190" r="72" fill="#8B5CF6"/>
-  <circle cx="184" cy="190" r="72" fill="url(#paint0_radial)"/>
-  <path d="M142 130C142 124.477 146.477 120 152 120H162C167.523 120 172 124.477 172 130V250C172 255.523 167.523 260 162 260H152C146.477 260 142 255.523 142 250V130Z" fill="#F8FAFC"/>
-  <path d="M182 130C182 124.477 186.477 120 192 120H202C207.523 120 212 124.477 212 130V250C212 255.523 207.523 260 202 260H192C186.477 260 182 255.523 182 250V130Z" fill="#F8FAFC" fill-opacity="0.94"/>
-  <path d="M222 130C222 124.477 226.477 120 232 120H242C247.523 120 252 124.477 252 130V250C252 255.523 247.523 260 242 260H232C226.477 260 222 255.523 222 250V130Z" fill="#F8FAFC" fill-opacity="0.78"/>
-  <path d="M119 190C119 154.101 148.101 125 184 125C219.899 125 249 154.101 249 190C249 225.899 219.899 255 184 255C148.101 255 119 225.899 119 190Z" stroke="#C4B5FD" stroke-width="8" stroke-opacity="0.72"/>
-  <text x="300" y="184" fill="#F8FAFC" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="76" font-weight="800">LazyAgent</text>
-  <text x="304" y="238" fill="#A78BFA" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">MCP CONTROL PLANE FOR CODING AGENTS</text>
-  <text x="96" y="348" fill="#CBD5E1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="34" font-weight="500">Runtime profiles, lesson memory, review gates, static/security checks,</text>
-  <text x="96" y="394" fill="#CBD5E1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="34" font-weight="500">and setup automation for Claude Code, Codex, Gemini/Antigravity, and more.</text>
-  <g transform="translate(96 468)">
-    <rect width="156" height="48" rx="24" fill="#1F2937" stroke="#374151"/>
-    <text x="26" y="31" fill="#E5E7EB" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">profiles</text>
-    <rect x="176" width="154" height="48" rx="24" fill="#1F2937" stroke="#374151"/>
-    <text x="203" y="31" fill="#E5E7EB" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">memory</text>
-    <rect x="350" width="190" height="48" rx="24" fill="#1F2937" stroke="#374151"/>
-    <text x="377" y="31" fill="#E5E7EB" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">review gates</text>
-    <rect x="560" width="122" height="48" rx="24" fill="#1F2937" stroke="#374151"/>
-    <text x="590" y="31" fill="#E5E7EB" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">MCP</text>
+  <rect width="1280" height="640" fill="#080809"/>
+  <rect x="54" y="54" width="1172" height="532" rx="30" fill="#0D0D10" stroke="#3A3122" stroke-width="2"/>
+  <path d="M96 100H1184" stroke="#B08D57" stroke-opacity="0.42" stroke-width="2"/>
+  <path d="M96 540H1184" stroke="#B08D57" stroke-opacity="0.42" stroke-width="2"/>
+  <g transform="translate(116 138) scale(0.62)">
+    <path d="M256 58L427.473 157V355L256 454L84.527 355V157L256 58Z" fill="#101015" stroke="#B08D57" stroke-width="10"/>
+    <path d="M256 92L398.029 174V338L256 420L113.971 338V174L256 92Z" stroke="#3D3323" stroke-width="5"/>
+    <circle cx="256" cy="256" r="122" fill="#111116" stroke="#B08D57" stroke-width="8"/>
+    <circle cx="256" cy="256" r="91" stroke="#5B482A" stroke-width="3"/>
+    <path d="M177 178L335 336" stroke="#7F1D1D" stroke-width="18" stroke-linecap="round"/>
+    <path d="M167 346H203L256 178L309 346H345L277 154H235L167 346Z" fill="#E6D0A2"/>
+    <path d="M243 154H269V346H243V154Z" fill="#0A0A0B"/>
+    <path d="M224 154H246V346H224V154Z" fill="#F3E7C8"/>
+    <path d="M266 154H288V346H266V154Z" fill="#C6A46D"/>
+    <circle cx="256" cy="256" r="28" fill="#7F1D1D" stroke="#E6D0A2" stroke-width="6"/>
+    <circle cx="256" cy="256" r="8" fill="#F7E7BD"/>
   </g>
-  <text x="916" y="510" fill="#94A3B8" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" font-weight="600">github.com/hung1597865420/LazyAgent</text>
-  <defs>
-    <radialGradient id="paint0_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(160 154) rotate(49.8991) scale(116.904)">
-      <stop stop-color="#C4B5FD"/>
-      <stop offset="0.48" stop-color="#8B5CF6"/>
-      <stop offset="1" stop-color="#4C1D95"/>
-    </radialGradient>
-  </defs>
+  <text x="486" y="232" fill="#F3E7C8" font-family="Georgia, 'Times New Roman', serif" font-size="94" font-weight="700" letter-spacing="1">LazyAgent</text>
+  <text x="492" y="292" fill="#B08D57" font-family="Segoe UI, Arial, sans-serif" font-size="25" font-weight="800" letter-spacing="5">MCP CONTROL PLANE FOR CODING AGENTS</text>
+  <text x="492" y="382" fill="#E6D0A2" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="650">Runtime profiles. Lesson memory. Review gates.</text>
+  <text x="492" y="432" fill="#B7B0A2" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="500">Setup automation for Claude Code, Codex, Gemini/Antigravity, and compatible MCP clients.</text>
+  <rect x="492" y="482" width="426" height="48" rx="8" fill="#151116" stroke="#3A3122"/>
+  <text x="516" y="514" fill="#D9C293" font-family="Consolas, 'Courier New', monospace" font-size="21" font-weight="700">github.com/hung1597865420/LazyAgent</text>
 </svg>
