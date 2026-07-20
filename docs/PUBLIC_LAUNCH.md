@@ -33,6 +33,12 @@ Longer pitch:
 - Post a short launch note to GitHub Discussions, Reddit, X/LinkedIn, and Hacker News.
 - Keep the first public issue queue tidy: setup bugs, model/provider config, and docs gaps should get fast responses.
 
+## Assets
+
+- Logo mark: `assets/lazyagent-mark.svg`
+- Social preview: `assets/lazyagent-social-preview.svg`
+- Demo script: `docs/DEMO_SCRIPT.md`
+
 ## Suggested Posts
 
 GitHub/Reddit short post:

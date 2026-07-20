@@ -1,0 +1,19 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">LazyAgent mark</title>
+  <desc id="desc">A purple circular control-plane mark with vertical agent rails.</desc>
+  <rect width="512" height="512" rx="112" fill="#0D1117"/>
+  <circle cx="256" cy="256" r="154" fill="#8B5CF6"/>
+  <circle cx="256" cy="256" r="154" fill="url(#paint0_radial)"/>
+  <path d="M170 162C170 149.85 179.85 140 192 140H202C214.15 140 224 149.85 224 162V350C224 362.15 214.15 372 202 372H192C179.85 372 170 362.15 170 350V162Z" fill="#F8FAFC"/>
+  <path d="M244 162C244 149.85 253.85 140 266 140H276C288.15 140 298 149.85 298 162V350C298 362.15 288.15 372 276 372H266C253.85 372 244 362.15 244 350V162Z" fill="#F8FAFC" fill-opacity="0.94"/>
+  <path d="M318 162C318 149.85 327.85 140 340 140H350C362.15 140 372 149.85 372 162V350C372 362.15 362.15 372 350 372H340C327.85 372 318 362.15 318 350V162Z" fill="#F8FAFC" fill-opacity="0.78"/>
+  <path d="M123 256C123 182.546 182.546 123 256 123C329.454 123 389 182.546 389 256C389 329.454 329.454 389 256 389C182.546 389 123 329.454 123 256Z" stroke="#C4B5FD" stroke-width="16" stroke-opacity="0.72"/>
+  <path d="M147 404L404 147" stroke="#111827" stroke-width="18" stroke-linecap="round" stroke-opacity="0.38"/>
+  <defs>
+    <radialGradient id="paint0_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(206 180) rotate(49.8991) scale(248.074)">
+      <stop stop-color="#C4B5FD"/>
+      <stop offset="0.48" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#4C1D95"/>
+    </radialGradient>
+  </defs>
+</svg>

@@ -1,5 +1,7 @@
 # LazyAgent
 
+![LazyAgent social preview](assets/lazyagent-social-preview.svg)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/hung1597865420/LazyAgent?display_name=tag)](https://github.com/hung1597865420/LazyAgent/releases)
 [![MCP](https://img.shields.io/badge/MCP-agent--tools-blue)](https://modelcontextprotocol.io/)
@@ -17,6 +19,12 @@ Use it when you want coding agents to behave less like isolated chat sessions an
 - **Review and safety gates:** multi-agent panel review, security/static scans, production readiness checks, and secret/config guards.
 - **Memory that survives sessions:** local/global lessons, workflow notes, model/tool performance memory, and prompt-injection sanitization.
 - **Windows setup included:** batch installers, toggle scripts, Auto-Watch integration, and user-level MCP/rules merge.
+
+## Demo
+
+- 60-second demo script: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)
+- Launch playbook and post copy: [docs/PUBLIC_LAUNCH.md](docs/PUBLIC_LAUNCH.md)
+- GitHub release: [v0.1.0](https://github.com/hung1597865420/LazyAgent/releases/tag/v0.1.0)
 
 ## Quick Start
 
