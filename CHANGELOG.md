@@ -4,7 +4,7 @@ All notable project changes should be recorded here before public releases.
 
 ## Unreleased
 
-- Nothing yet.
+- Added LazyAgent public branding, launch playbook, issue templates, and pull request template.
 
 ## 0.1.0 - 2026-07-20
 

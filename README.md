@@ -1,10 +1,37 @@
-# Agent Harness
+# LazyAgent
 
-Agent Harness là MCP-based support layer cho Claude Code, Codex, Gemini/Antigravity và các coding agents khác. Repo này gom 12-agent LLM review, static analyzers, runtime profiles, lesson memory, Auto-Pilot checks, UI/spec workflow routers và setup automation cho Windows vào một harness có thể bật/tắt rõ ràng.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/hung1597865420/LazyAgent?display_name=tag)](https://github.com/hung1597865420/LazyAgent/releases)
+[![MCP](https://img.shields.io/badge/MCP-agent--tools-blue)](https://modelcontextprotocol.io/)
 
-Mục tiêu: giữ agent chính tập trung vào implementation, còn harness lo phần kiểm tra phụ trợ như context routing, security/static scans, review panel, production readiness gate, run ledger, lesson memory và profile-based cost control.
+LazyAgent is a Windows-first MCP control plane for coding agents. It gives Claude Code, Codex, Gemini/Antigravity, and other agent clients a shared layer for runtime profiles, review gates, lesson memory, static/security checks, workflow routing, and setup automation.
+
+Use it when you want coding agents to behave less like isolated chat sessions and more like a governed engineering system: clear profiles, explicit model use, reusable memory, safety checks, and one command to enable or disable background automation.
 
 > **Important:** chọn runtime profile trước khi chạy (`harness-toggle.bat` hoặc `harness-full-setup.bat --profile ...`). Repo mặc định nên để `off`; chỉ bật `heavy`/`max` khi thật sự muốn chạy automation tốn token/quota.
+
+## Why LazyAgent
+
+- **One control plane for many agents:** shared MCP tools and runtime policy for Claude, Codex, Gemini/Antigravity, and compatible clients.
+- **Profiles before token burn:** `off`, `light`, `standard`, `balanced`, `review`, `heavy`, and `max` define what agents may do.
+- **Review and safety gates:** multi-agent panel review, security/static scans, production readiness checks, and secret/config guards.
+- **Memory that survives sessions:** local/global lessons, workflow notes, model/tool performance memory, and prompt-injection sanitization.
+- **Windows setup included:** batch installers, toggle scripts, Auto-Watch integration, and user-level MCP/rules merge.
+
+## Quick Start
+
+```powershell
+git clone https://github.com/hung1597865420/LazyAgent.git
+cd LazyAgent
+python -m pip install -r requirements.txt
+if (!(Test-Path .env.example)) { throw ".env.example is missing. Run this from the LazyAgent repo root or pull the latest commit." }
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
+harness-full-setup.bat
+harness-toggle.bat status
+```
+
+Fill `.env` with your OpenAI-compatible 9Router endpoint/key before using LLM-backed tools. If `.env` already existed, compare it with `.env.example` so new required variables are not missing.
 
 ## Project Status
 
@@ -17,8 +44,8 @@ Mục tiêu: giữ agent chính tập trung vào implementation, còn harness lo
 
 ## Publishing Checklist
 
-- GitHub About description: `Agent Harness is an MCP-based automation and review layer for Claude Code, Codex, Gemini/Antigravity, and other coding agents.`
-- Suggested topics: `mcp`, `ai-agents`, `coding-agents`, `claude-code`, `codex`, `gemini`, `llm`, `developer-tools`, `automation`, `code-review`.
+- GitHub About description: `LazyAgent is an MCP control plane for coding agents: runtime profiles, memory, review gates, and automation for Claude Code, Codex, Gemini/Antigravity, and more.`
+- Suggested topics: `mcp`, `ai-agents`, `coding-agents`, `claude-code`, `codex`, `gemini`, `llm`, `developer-tools`, `automation`, `code-review`, `windows`.
 - License is MIT; keep the `LICENSE` file in sync if ownership changes.
 - Create releases from `CHANGELOG.md` only after smoke tests pass and the staged diff is secret-clean.
 
@@ -33,7 +60,7 @@ Mục tiêu: giữ agent chính tập trung vào implementation, còn harness lo
 
 ## 1. Tổng Quan Kiến Trúc & Phân Vai Agent
 
-Hệ thống Agent Harness được xây dựng để làm "hội đồng cố vấn" hỗ trợ cho AI coder chính (**Claude Code**, **Gemini** trên Antigravity IDE). Runtime hiện đăng ký **90 MCP tools**: core LLM tools, goal autopilot, lesson memory, ECC-inspired ops doctors, Hallmark/Spec Kit/UI/workflow bridges, OfficeCLI bridge, scope-creep guard, một compatibility shim cho quota cũ, và static/static-first analyzers; Auto-Pilot có thể tự gọi scanner/reviewer phù hợp sau edit.
+LazyAgent/Agent Harness được xây dựng để làm "hội đồng cố vấn" hỗ trợ cho AI coder chính (**Claude Code**, **Gemini** trên Antigravity IDE). Runtime hiện đăng ký **90 MCP tools**: core LLM tools, goal autopilot, lesson memory, ECC-inspired ops doctors, Hallmark/Spec Kit/UI/workflow bridges, OfficeCLI bridge, scope-creep guard, một compatibility shim cho quota cũ, và static/static-first analyzers; Auto-Pilot có thể tự gọi scanner/reviewer phù hợp sau edit.
 
 ```
         Claude Code / Gemini (AI coder chính)
