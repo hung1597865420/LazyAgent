@@ -487,9 +487,9 @@ MCP-only/read-only tools, installed by full setup and not toggled here:
   mcp_inventory        Inventory MCP configs and duplicated/drifted servers.
   context_budget       Estimate rules/skills/MCP token overhead + status.
   integration_router   Static router for Hallmark UI + UI Skills + Spec Kit spec flows.
-  workflow_router      Static router for debug/spec/tickets/domain/review/TDD/architecture.
+  workflow_router      Static router for BA, market research, UI/UX advisor, debug/spec/domain/review/TDD/architecture.
   bug_repro_guard      Static guard requiring red-capable repro before debug fixing.
-  ui_skill_router      Static UI router; selects max 3 baseline/a11y/motion/metadata checks.
+  ui_skill_router      Static UI router; selects max 3 advisor/baseline/a11y/motion/metadata checks.
   hallmark_bridge      UI preflight/audit plan; write action still profile-gated.
   speckit_bridge       Spec status/snapshot; init/scaffold still profile-gated.
   office_bridge        Optional OfficeCLI adapter; mutations require allow_mutation.

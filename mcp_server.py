@@ -14,6 +14,7 @@ import logging
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -48,6 +49,134 @@ _TOOL_INFLIGHT_COND = asyncio.Condition()
 _TOOL_INFLIGHT = 0
 _TOOL_CALL_DEPTH = contextvars.ContextVar("harness_tool_call_depth", default=0)
 _HOT_RELOAD_SIGNATURES: dict[str, tuple[float, int, str]] = {}
+_TOOL_SINGLE_FLIGHT_LOCK = asyncio.Lock()
+_TOOL_SINGLE_FLIGHTS: dict[str, asyncio.Task] = {}
+_NO_BACKGROUND_ON_CANCEL_TOOLS = {
+    "auto_tester",
+    "benchmark_runner",
+    "changelog_generator",
+    "dependency_upgrader",
+    "doc_sync",
+    "goal_autopilot",
+    "goal_runner",
+    "lesson_curator",
+    "release_orchestrator",
+    "security_autofix",
+    "wiki_ingest",
+    "wiki_lint",
+}
+_MUTATING_TOOL_ACTIONS = {
+    "hallmark_bridge": {"write_preflight"},
+    "speckit_bridge": {"init", "scaffold"},
+    "office_bridge": {"create", "set", "add", "remove", "batch", "raw_set", "open", "save", "close", "watch", "unwatch", "goto"},
+    "goal_runner_control": {"resume", "cancel_stale"},
+}
+_READ_ONLY_TOOL_ACTIONS = {
+    "hallmark_bridge": {"preflight", "audit_plan", "status"},
+    "speckit_bridge": {"status", "snapshot", "audit_plan"},
+    "office_bridge": {"status", "read", "dump", "validate"},
+    "goal_runner_control": {"status"},
+}
+_TRUE_VALUES = {True, 1, "1", "true", "yes", "y", "on"}
+_NON_IDENTITY_MUTATION_ARGS = {
+    "allow_mutation",
+    "timeout",
+    "timeout_s",
+    "timeout_ms",
+    "max_output_tokens",
+}
+
+
+def _normalize_tool_name(name: str) -> str:
+    text = str(name or "").strip()
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text
+
+
+def _canonicalize_for_single_flight(value):
+    if isinstance(value, dict):
+        return {str(k): _canonicalize_for_single_flight(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))}
+    if isinstance(value, list):
+        return [_canonicalize_for_single_flight(item) for item in value]
+    if isinstance(value, str):
+        text = value.strip()
+        lower = text.lower()
+        if lower in {"true", "false"}:
+            return lower == "true"
+        if re.fullmatch(r"-?\d+", text):
+            try:
+                return int(text)
+            except ValueError:
+                return text
+        if re.fullmatch(r"-?\d+\.\d+", text):
+            try:
+                return float(text)
+            except ValueError:
+                return text
+        return text
+    return value
+
+
+def _boolish_true(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_VALUES
+    return value in _TRUE_VALUES
+
+
+def _mutation_identity_args(name: str, arguments: dict) -> dict:
+    canonical = _canonicalize_for_single_flight(dict(arguments or {}))
+    if "action" in canonical:
+        canonical["action"] = str(canonical.get("action") or "").strip().lower()
+    if _tool_call_is_mutating(name, canonical):
+        for key in _NON_IDENTITY_MUTATION_ARGS:
+            canonical.pop(key, None)
+    return canonical
+
+
+def _single_flight_key(name: str, arguments: dict) -> str:
+    name = _normalize_tool_name(name)
+    canonical_args = _mutation_identity_args(name, arguments or {})
+    payload = json.dumps(
+        {
+            "workspace": str(Path(_active_workspace()).resolve(strict=False)),
+            "arguments": canonical_args,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{name}:{digest}"
+
+
+def _tool_call_is_mutating(name: str, arguments: dict) -> bool:
+    name = _normalize_tool_name(name)
+    if name in _NO_BACKGROUND_ON_CANCEL_TOOLS:
+        return True
+    action = str((arguments or {}).get("action") or "").strip().lower()
+    if action:
+        if action in _MUTATING_TOOL_ACTIONS.get(name, set()):
+            return True
+        if action in _READ_ONLY_TOOL_ACTIONS.get(name, set()):
+            return False
+        if name in _MUTATING_TOOL_ACTIONS or name in _READ_ONLY_TOOL_ACTIONS:
+            return True
+    if isinstance(arguments, dict) and _boolish_true(arguments.get("allow_mutation")):
+        return True
+    return False
+
+
+def _allow_background_after_cancel(name: str, arguments: dict) -> bool:
+    return not _tool_call_is_mutating(name, arguments)
+
+
+async def _forget_single_flight(key: str, task: asyncio.Task) -> None:
+    async with _TOOL_SINGLE_FLIGHT_LOCK:
+        if _TOOL_SINGLE_FLIGHTS.get(key) is task:
+            _TOOL_SINGLE_FLIGHTS.pop(key, None)
 
 
 def _module_signature(path: str) -> tuple[float, int, str]:
@@ -219,7 +348,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="workflow_router",
             description=(
-                "Static Matt-skills-inspired router for debug/spec/tickets/wayfinder/domain/review/TDD/architecture flows. "
+                "Static Matt-skills-inspired router for BA discovery/market research advisor/UI-UX advisor/spec/tickets/debug/wayfinder/domain/review/TDD/architecture flows. "
                 "No LLM, no mutation."
             ),
             inputSchema={
@@ -252,7 +381,7 @@ async def list_tools() -> list[types.Tool]:
             name="ui_skill_router",
             description=(
                 "Static ibelick UI Skills router: selects at most 3 compact UI checklists "
-                "(baseline/a11y/motion/metadata/improve-ui) before heavy review."
+                "(ui-ux-advisor/baseline/a11y/motion/metadata/improve-ui) before heavy review."
             ),
             inputSchema={
                 "type": "object",
@@ -483,8 +612,8 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="policy_profile",
-            description="Return harness policy profiles: fast, balanced, prod, paranoid.",
-            inputSchema={"type": "object", "properties": {"profile": {"type": "string", "enum": ["fast", "balanced", "prod", "paranoid"]}}},
+            description="Return runtime profile rules and allowed auto_trigger mode. balanced/review use safe; only heavy/max/prod/paranoid use max.",
+            inputSchema={"type": "object", "properties": {"profile": {"type": "string", "enum": ["off", "light", "standard", "balanced", "4", "review", "5", "heavy", "7", "max", "fast", "prod", "paranoid"]}}},
         ),
         types.Tool(
             name="agent_adapters",
@@ -1681,6 +1810,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     _kick_auto_wiki_ingest()
     task: asyncio.Task | None = None
     tool_context = contextvars.copy_context()
+    tool_name = _normalize_tool_name(name)
+    args_for_guard = arguments if isinstance(arguments, dict) else {}
+    allow_background_after_cancel = _allow_background_after_cancel(tool_name, args_for_guard)
+    single_flight_key = None if allow_background_after_cancel else _single_flight_key(tool_name, args_for_guard)
+    duplicate_inflight_res: list[types.TextContent] | None = None
 
     async def _run():
         global _TOOL_INFLIGHT
@@ -1695,7 +1829,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                         async with _TOOL_INFLIGHT_COND:
                             _TOOL_INFLIGHT += 1
                 try:
-                    return await _execute_tool(name, arguments)
+                    return await _execute_tool(tool_name, arguments)
                 finally:
                     if top_level:
                         async with _TOOL_INFLIGHT_COND:
@@ -1704,53 +1838,91 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         finally:
             _TOOL_CALL_DEPTH.reset(depth_token)
 
-    task = asyncio.create_task(_run(), name=f"tool-{run_id}", context=tool_context)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard, context=tool_context)
+    if single_flight_key:
+        async with _TOOL_SINGLE_FLIGHT_LOCK:
+            task = _TOOL_SINGLE_FLIGHTS.get(single_flight_key)
+            if task is None or task.done():
+                task = asyncio.create_task(_run(), name=f"tool-{run_id}", context=tool_context)
+                _TOOL_SINGLE_FLIGHTS[single_flight_key] = task
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard, context=tool_context)
+                task.add_done_callback(
+                    lambda done_task, key=single_flight_key: asyncio.create_task(_forget_single_flight(key, done_task)),
+                    context=tool_context,
+                )
+            else:
+                _log.info("rejecting duplicate in-flight mutating tool %s", tool_name)
+                task = None
+                duplicate_inflight_res = _json_response({
+                    "error": "in_flight_duplicate",
+                    "detail": "An identical mutating tool call is already running; retry after it finishes.",
+                    "tool": tool_name,
+                })
+    else:
+        task = asyncio.create_task(_run(), name=f"tool-{run_id}", context=tool_context)
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard, context=tool_context)
 
     try:
+        if duplicate_inflight_res is not None:
+            return duplicate_inflight_res
+        if task is None:
+            return _json_response({"error": "internal_error", "detail": f"{tool_name} did not create a task."})
         res = await asyncio.shield(task)
-        res = res or _json_response({"error": "empty_tool_result", "detail": f"{name} returned no content."})
-        _schedule_mcp_tool_lesson(name, arguments if isinstance(arguments, dict) else {}, res)
-        _schedule_mcp_memory_events(name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        res = res or _json_response({"error": "empty_tool_result", "detail": f"{tool_name} returned no content."})
+        _schedule_mcp_tool_lesson(tool_name, arguments if isinstance(arguments, dict) else {}, res)
+        _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
     except asyncio.CancelledError:
+        if task is None:
+            raise
         # Yield once then check — catches tasks that finished microseconds before cancel
         await asyncio.sleep(0)
         if task.done() and not task.cancelled():
             exc = task.exception()
             if exc is None:
                 return task.result()
-        # Try brief harvest window for near-complete tasks
-        try:
-            return await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
-        _log.info("tool %s cancelled by client, running in background", name)
-        res = _json_response({"error": "cancelled", "detail": "Cancelled by client; tool running in background"})
-        _schedule_mcp_memory_events(name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        if allow_background_after_cancel:
+            # Try brief harvest window for near-complete tasks
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            _log.info("tool %s cancelled by client, running in background", tool_name)
+            res = _json_response({"error": "cancelled", "detail": "Cancelled by client; tool running in background"})
+        else:
+            task.cancel()
+            with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=0.5)
+            stopped = task.done()
+            if stopped:
+                _log.info("tool %s cancelled by client; background execution disabled", tool_name)
+                res = _json_response({"error": "cancelled", "detail": "Cancelled by client; background execution disabled for mutating tools"})
+            else:
+                _log.info("tool %s cancellation pending; duplicate retries remain blocked", tool_name)
+                res = _json_response({"error": "cancel_pending", "detail": "Cancellation is pending for a mutating tool; duplicate retries are blocked until the original task exits."})
+        _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
     except Exception as exc:
-        _log.exception("tool %s failed before MCP response", name)
-        res = _json_response({"error": f"{type(exc).__name__}: {exc}", "tool": name})
-        _schedule_mcp_memory_events(name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        _log.exception("tool %s failed before MCP response", tool_name)
+        res = _json_response({"error": f"{type(exc).__name__}: {exc}", "tool": tool_name})
+        _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
     finally:
         current_run_id.reset(run_token)
-        if name not in ("list_agents", "finops_stats", "router_quota_status"):
-            def _log_task(t: asyncio.Task, _rid=run_id, _n=name, _s=start_time) -> None:
+        if tool_name not in ("list_agents", "finops_stats", "router_quota_status"):
+            def _log_task(t: asyncio.Task, _rid=run_id, _n=tool_name, _s=start_time) -> None:
                 try:
                     suffix = "_cancelled" if t.cancelled() else ("_error" if t.exception() else "")
                     log_run_to_db(_rid, f"mcp_{_n}{suffix}", int((time.perf_counter() - _s) * 1000))
                 except Exception as exc:
                     _log.debug("run ledger logging failed for %s: %s", _n, exc)
 
-            if task is None:
-                return
-            if task.done():
-                _log_task(task)
-            else:
-                task.add_done_callback(_log_task, context=tool_context)
+            if task is not None:
+                if task.done():
+                    _log_task(task)
+                else:
+                    task.add_done_callback(_log_task, context=tool_context)
 
 
 async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:

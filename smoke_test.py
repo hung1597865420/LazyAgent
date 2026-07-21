@@ -11,6 +11,7 @@ import types
 import uuid
 from pathlib import Path
 import atexit
+import contextlib
 
 # Ngăn chặn đệ quy vô hạn khi các công cụ gọi lại smoke_test.py
 if os.environ.get("SMOKE_TEST_SUBRUN") == "1":
@@ -298,6 +299,351 @@ check("workflow_router route debug/architecture",
       and any(r.get("name") == "bug_repro_guard" for r in workflow_route_json.get("routes", []))
       and any(r.get("name") == "architecture_deepening" for r in workflow_route_json.get("routes", [])),
       str(workflow_route_json))
+ba_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "build new employee onboarding workflow with approvals and dashboard",
+    "changed_files": ["packages/api/src/routes/onboarding.ts", "packages/web/src/app/onboarding/page.tsx"],
+}))
+ba_route_json = json.loads(ba_route_smoke[0].text)
+ba_route_names = [r.get("name") for r in ba_route_json.get("routes", [])]
+check("workflow_router routes BA discovery before spec_first",
+      ba_route_json.get("status") == "completed"
+      and "ba_discovery" in ba_route_names
+      and "market_research_advisor" in ba_route_names
+      and "spec_first" in ba_route_names
+      and ba_route_names.index("ba_discovery") < ba_route_names.index("spec_first")
+      and ba_route_names.index("market_research_advisor") < ba_route_names.index("spec_first")
+      and "ui_ux_advisor" in ba_route_names
+      and ba_route_json.get("recommended") == "ba_discovery",
+      str(ba_route_json))
+ux_research_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "redesign dashboard UX and layout",
+    "changed_files": ["packages/web/src/app/dashboard/page.tsx", "packages/web/src/app/dashboard/styles.css"],
+}))
+ux_research_route_json = json.loads(ux_research_route_smoke[0].text)
+ux_research_route_names = [r.get("name") for r in ux_research_route_json.get("routes", [])]
+check("workflow_router routes UI/UX through market research advisor",
+      ux_research_route_json.get("recommended") == "market_research_advisor"
+      and "market_research_advisor" in ux_research_route_names
+      and "ui_ux_advisor" in ux_research_route_names
+      and "ui_skill_router" in ux_research_route_names
+      and ux_research_route_names.index("market_research_advisor") < ux_research_route_names.index("ui_ux_advisor"),
+      str(ux_research_route_json))
+ba_done_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "BA discovery is complete. Now design the pricing page UX and implement the new signup CTA.",
+    "changed_files": ["packages/web/src/app/pricing/page.tsx"],
+}))
+ba_done_route_json = json.loads(ba_done_route_smoke[0].text)
+ba_done_route_names = [r.get("name") for r in ba_done_route_json.get("routes", [])]
+check("workflow_router BA-complete handoff does not loop back to BA",
+      "ba_discovery" not in ba_done_route_names
+      and "market_research_advisor" in ba_done_route_names
+      and "ui_ux_advisor" in ba_done_route_names,
+      str(ba_done_route_json))
+existing_research_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Update the dashboard UI to match the competitor benchmark section from the already-approved market research doc.",
+    "changed_files": ["packages/web/src/app/dashboard/page.tsx"],
+}))
+existing_research_route_json = json.loads(existing_research_route_smoke[0].text)
+existing_research_route_names = [r.get("name") for r in existing_research_route_json.get("routes", [])]
+check("workflow_router existing research context skips new market research",
+      "market_research_advisor" not in existing_research_route_names
+      and "ui_ux_advisor" in existing_research_route_names,
+      str(existing_research_route_json))
+review_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Review the workflow_router BA discovery routing change for false positives",
+    "changed_files": ["tools/workflow.py"],
+}))
+review_route_json = json.loads(review_route_smoke[0].text)
+review_route_names = [r.get("name") for r in review_route_json.get("routes", [])]
+check("workflow_router review intent suppresses BA discovery",
+      review_route_json.get("recommended") == "code_review_axes"
+      and "ba_discovery" not in review_route_names,
+      str(review_route_json))
+doc_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Update documentation for the new workflow_router behavior in AGENTS.md and README.md",
+    "changed_files": ["AGENTS.md", "README.md"],
+}))
+doc_route_json = json.loads(doc_route_smoke[0].text)
+doc_route_names = [r.get("name") for r in doc_route_json.get("routes", [])]
+check("workflow_router docs-only maintenance suppresses BA discovery",
+      "ba_discovery" not in doc_route_names
+      and "spec_first" not in doc_route_names,
+      str(doc_route_json))
+debug_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Fix failing workflow test for new feature flag; repro: pytest smoke_test.py -k workflow_router",
+    "changed_files": ["smoke_test.py"],
+}))
+debug_route_json = json.loads(debug_route_smoke[0].text)
+debug_route_names = [r.get("name") for r in debug_route_json.get("routes", [])]
+check("workflow_router debug repro suppresses BA discovery",
+      debug_route_json.get("recommended") == "bug_repro_guard"
+      and "ba_discovery" not in debug_route_names,
+      str(debug_route_json))
+test_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Add a feature flag cleanup test",
+    "changed_files": ["tests/test_flags.py"],
+}))
+test_route_json = json.loads(test_route_smoke[0].text)
+test_route_names = [r.get("name") for r in test_route_json.get("routes", [])]
+check("workflow_router test-only maintenance suppresses BA discovery",
+      "ba_discovery" not in test_route_names
+      and "spec_first" not in test_route_names,
+      str(test_route_json))
+test_text_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Add tests for the new billing workflow feature",
+    "changed_files": [],
+}))
+test_text_route_json = json.loads(test_text_route_smoke[0].text)
+test_text_route_names = [r.get("name") for r in test_text_route_json.get("routes", [])]
+check("workflow_router tests-for phrasing suppresses BA discovery",
+      "ba_discovery" not in test_text_route_names
+      and "spec_first" not in test_text_route_names
+      and "domain_context_guard" not in test_text_route_names,
+      str(test_text_route_json))
+review_domain_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Review the auth schema changes for the checkout workflow",
+    "changed_files": ["tools/workflow.py"],
+}))
+review_domain_route_json = json.loads(review_domain_route_smoke[0].text)
+review_domain_route_names = [r.get("name") for r in review_domain_route_json.get("routes", [])]
+check("workflow_router review intent precedes domain routing",
+      review_domain_route_json.get("recommended") == "code_review_axes"
+      and "domain_context_guard" not in review_domain_route_names,
+      str(review_domain_route_json))
+async def _single_flight_smoke():
+    original_execute_tool = mcp_server._execute_tool
+    calls = 0
+
+    async def fake_execute_tool(name, args):
+        nonlocal calls
+        await asyncio.sleep(0.05)
+        calls += 1
+        return mcp_server._json_response({"calls": calls})
+
+    mcp_server._execute_tool = fake_execute_tool
+    try:
+        first = asyncio.create_task(mcp_server.call_tool("wiki_ingest", {}))
+        second = asyncio.create_task(mcp_server.call_tool("wiki_ingest", {}))
+        first_result, second_result = await asyncio.gather(first, second)
+        concurrent_calls = calls
+
+        calls = 0
+        canonical_first = asyncio.create_task(mcp_server.call_tool("speckit_bridge", {"action": "init", "allow_mutation": True}))
+        canonical_second = asyncio.create_task(mcp_server.call_tool("speckit_bridge", {"action": " init ", "allow_mutation": True}))
+        canonical_first_result, canonical_second_result = await asyncio.gather(canonical_first, canonical_second)
+        canonical_calls = calls
+
+        calls = 0
+        namespaced_first = asyncio.create_task(mcp_server.call_tool("agent-harness/speckit_bridge", {"action": "scaffold", "allow_mutation": True}))
+        namespaced_second = asyncio.create_task(mcp_server.call_tool("speckit_bridge", {"action": " scaffold ", "allow_mutation": "true"}))
+        namespaced_first_result, namespaced_second_result = await asyncio.gather(namespaced_first, namespaced_second)
+        namespaced_calls = calls
+
+        calls = 0
+        default_first = asyncio.create_task(mcp_server.call_tool("agent-harness/office_bridge", {"action": "save", "file": "x.docx", "allow_mutation": True}))
+        default_second = asyncio.create_task(mcp_server.call_tool("office_bridge", {"action": " save ", "file": "x.docx", "allow_mutation": "true", "timeout": "120"}))
+        default_first_result, default_second_result = await asyncio.gather(default_first, default_second)
+        default_calls = calls
+
+        calls = 0
+        dot_first = asyncio.create_task(mcp_server.call_tool("mcp.office_bridge", {"action": "SAVE", "file": "x.docx", "allow_mutation": "on"}))
+        dot_second = asyncio.create_task(mcp_server.call_tool("office_bridge", {"action": "save", "file": "x.docx", "allow_mutation": "1", "timeout": 120}))
+        dot_first_result, dot_second_result = await asyncio.gather(dot_first, dot_second)
+        dot_calls = calls
+
+        calls = 0
+        bool_first = asyncio.create_task(mcp_server.call_tool("office_bridge", {"action": "save", "file": "x.docx", "allow_mutation": " TRUE "}))
+        bool_second = asyncio.create_task(mcp_server.call_tool("office_bridge", {"action": "save", "file": "x.docx", "allow_mutation": " true "}))
+        bool_first_result, bool_second_result = await asyncio.gather(bool_first, bool_second)
+        bool_calls = calls
+
+        calls = 0
+        dry_run_first = asyncio.create_task(mcp_server.call_tool("office_bridge", {"action": "save", "file": "x.docx", "allow_mutation": True, "dry_run": True}))
+        dry_run_second = asyncio.create_task(mcp_server.call_tool("office_bridge", {"action": "save", "file": "x.docx", "allow_mutation": True, "dry_run": False}))
+        dry_run_first_result, dry_run_second_result = await asyncio.gather(dry_run_first, dry_run_second)
+        dry_run_calls = calls
+
+        calls = 0
+        readonly_first = asyncio.create_task(mcp_server.call_tool("hallmark_bridge", {"action": "preflight", "task": "ui"}))
+        readonly_second = asyncio.create_task(mcp_server.call_tool("hallmark_bridge", {"action": "preflight", "task": "ui"}))
+        readonly_first_result, readonly_second_result = await asyncio.gather(readonly_first, readonly_second)
+        readonly_calls = calls
+
+        calls = 0
+        unknown_action_first = asyncio.create_task(mcp_server.call_tool("hallmark_bridge", {"action": "new_write_action", "task": "ui"}))
+        unknown_action_second = asyncio.create_task(mcp_server.call_tool("hallmark_bridge", {"action": "new_write_action", "task": "ui"}))
+        unknown_action_first_result, unknown_action_second_result = await asyncio.gather(unknown_action_first, unknown_action_second)
+        unknown_action_calls = calls
+
+        calls = 0
+        cancelling = asyncio.create_task(mcp_server.call_tool("wiki_ingest", {}))
+        await asyncio.sleep(0.01)
+        cancelling.cancel()
+        cancel_result = await cancelling
+        retry_result = await mcp_server.call_tool("wiki_ingest", {})
+
+        calls = 0
+        original_after_duplicate_cancel = asyncio.create_task(mcp_server.call_tool("wiki_ingest", {"source": "duplicate-cancel"}))
+        await asyncio.sleep(0.01)
+        duplicate_to_cancel = asyncio.create_task(mcp_server.call_tool("wiki_ingest", {"source": "duplicate-cancel"}))
+        await asyncio.sleep(0)
+        duplicate_to_cancel.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await duplicate_to_cancel
+        original_after_duplicate_cancel_result = await original_after_duplicate_cancel
+        duplicate_cancel_calls = calls
+        return (
+            concurrent_calls,
+            canonical_calls,
+            namespaced_calls,
+            default_calls,
+            dot_calls,
+            bool_calls,
+            dry_run_calls,
+            readonly_calls,
+            unknown_action_calls,
+            calls,
+            duplicate_cancel_calls,
+            first_result[0].text,
+            second_result[0].text,
+            canonical_first_result[0].text,
+            canonical_second_result[0].text,
+            namespaced_first_result[0].text,
+            namespaced_second_result[0].text,
+            default_first_result[0].text,
+            default_second_result[0].text,
+            dot_first_result[0].text,
+            dot_second_result[0].text,
+            bool_first_result[0].text,
+            bool_second_result[0].text,
+            dry_run_first_result[0].text,
+            dry_run_second_result[0].text,
+            readonly_first_result[0].text,
+            readonly_second_result[0].text,
+            unknown_action_first_result[0].text,
+            unknown_action_second_result[0].text,
+            cancel_result[0].text,
+            retry_result[0].text,
+            original_after_duplicate_cancel_result[0].text,
+        )
+    finally:
+        mcp_server._execute_tool = original_execute_tool
+
+
+(
+    single_flight_calls,
+    canonical_single_flight_calls,
+    namespaced_single_flight_calls,
+    default_single_flight_calls,
+    dot_single_flight_calls,
+    bool_single_flight_calls,
+    dry_run_distinct_calls,
+    readonly_bridge_calls,
+    unknown_bridge_action_calls,
+    cancel_retry_calls,
+    duplicate_cancel_calls,
+    first_text,
+    second_text,
+    canonical_first_text,
+    canonical_second_text,
+    namespaced_first_text,
+    namespaced_second_text,
+    default_first_text,
+    default_second_text,
+    dot_first_text,
+    dot_second_text,
+    bool_first_text,
+    bool_second_text,
+    dry_run_first_text,
+    dry_run_second_text,
+    readonly_first_text,
+    readonly_second_text,
+    unknown_action_first_text,
+    unknown_action_second_text,
+    cancel_text,
+    retry_text,
+    original_after_duplicate_cancel_text,
+) = asyncio.run(_single_flight_smoke())
+check("call_tool rejects duplicate in-flight mutating calls",
+      single_flight_calls == 1
+      and '"calls": 1' in first_text
+      and "in_flight_duplicate" in second_text,
+      f"calls={single_flight_calls} first={first_text} second={second_text}")
+check("call_tool canonicalizes mutating action for duplicate rejection",
+      canonical_single_flight_calls == 1
+      and '"calls": 1' in canonical_first_text
+      and "in_flight_duplicate" in canonical_second_text,
+      f"calls={canonical_single_flight_calls} first={canonical_first_text} second={canonical_second_text}")
+check("call_tool normalizes namespaced mutating duplicates",
+      namespaced_single_flight_calls == 1
+      and '"calls": 1' in namespaced_first_text
+      and "in_flight_duplicate" in namespaced_second_text,
+      f"calls={namespaced_single_flight_calls} first={namespaced_first_text} second={namespaced_second_text}")
+check("call_tool ignores non-identity defaults in mutating duplicate key",
+      default_single_flight_calls == 1
+      and '"calls": 1' in default_first_text
+      and "in_flight_duplicate" in default_second_text,
+      f"calls={default_single_flight_calls} first={default_first_text} second={default_second_text}")
+check("call_tool normalizes dot namespace and truthy mutation flags",
+      dot_single_flight_calls == 1
+      and '"calls": 1' in dot_first_text
+      and "in_flight_duplicate" in dot_second_text,
+      f"calls={dot_single_flight_calls} first={dot_first_text} second={dot_second_text}")
+check("call_tool accepts uppercase/whitespace truthy mutation flags",
+      bool_single_flight_calls == 1
+      and '"calls": 1' in bool_first_text
+      and "in_flight_duplicate" in bool_second_text,
+      f"calls={bool_single_flight_calls} first={bool_first_text} second={bool_second_text}")
+check("call_tool keeps dry_run in mutating operation identity",
+      dry_run_distinct_calls == 2
+      and '"calls": 1' in dry_run_first_text
+      and '"calls": 2' in dry_run_second_text,
+      f"calls={dry_run_distinct_calls} first={dry_run_first_text} second={dry_run_second_text}")
+check("call_tool allows concurrent read-only bridge actions",
+      readonly_bridge_calls == 2
+      and '"calls": 1' in readonly_first_text
+      and '"calls": 2' in readonly_second_text,
+      f"calls={readonly_bridge_calls} first={readonly_first_text} second={readonly_second_text}")
+check("call_tool treats unknown bridge actions as mutating",
+      unknown_bridge_action_calls == 1
+      and '"calls": 1' in unknown_action_first_text
+      and "in_flight_duplicate" in unknown_action_second_text,
+      f"calls={unknown_bridge_action_calls} first={unknown_action_first_text} second={unknown_action_second_text}")
+check("call_tool cancel disables mutating background execution",
+      cancel_retry_calls == 1
+      and "background execution disabled" in cancel_text
+      and '"calls": 1' in retry_text,
+      f"calls={cancel_retry_calls} cancel={cancel_text} retry={retry_text}")
+check("call_tool duplicate cancellation does not cancel original mutating task",
+      duplicate_cancel_calls == 1
+      and '"calls": 1' in original_after_duplicate_cancel_text,
+      f"calls={duplicate_cancel_calls} original={original_after_duplicate_cancel_text}")
+async def _single_flight_cleanup_identity_smoke():
+    key = "smoke-cleanup-key"
+
+    async def done_noop():
+        return None
+
+    old_task = asyncio.create_task(done_noop())
+    await old_task
+    new_task = asyncio.create_task(asyncio.sleep(0.05))
+    try:
+        async with mcp_server._TOOL_SINGLE_FLIGHT_LOCK:
+            mcp_server._TOOL_SINGLE_FLIGHTS[key] = new_task
+        await mcp_server._forget_single_flight(key, old_task)
+        async with mcp_server._TOOL_SINGLE_FLIGHT_LOCK:
+            return mcp_server._TOOL_SINGLE_FLIGHTS.get(key) is new_task
+    finally:
+        new_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await new_task
+        async with mcp_server._TOOL_SINGLE_FLIGHT_LOCK:
+            mcp_server._TOOL_SINGLE_FLIGHTS.pop(key, None)
+
+
+check("call_tool single-flight cleanup is task-identity aware",
+      asyncio.run(_single_flight_cleanup_identity_smoke()),
+      "old task cleanup must not remove replacement task")
 bug_guard_smoke = asyncio.run(mcp_server.call_tool("bug_repro_guard", {
     "task": "debug failing endpoint",
     "error_log": "Traceback: AssertionError",
@@ -317,6 +663,20 @@ check("ui_skill_router chọn tối đa 3 skill",
       ui_route_json.get("ui_route", {}).get("triggered") is True
       and 1 <= len(ui_route_json.get("ui_route", {}).get("selected", [])) <= 3,
       str(ui_route_json))
+ui_selected_slugs = [item.get("slug") for item in ui_route_json.get("ui_route", {}).get("selected", [])]
+check("ui_skill_router includes UI/UX advisor",
+      "ui-ux-advisor" in ui_selected_slugs,
+      str(ui_route_json))
+from tools.integrations import agent_guidance_for_task
+advisor_guidance = agent_guidance_for_task(
+    "build a new onboarding dashboard UX",
+    ["packages/web/src/app/onboarding/page.tsx"],
+)
+check("agent guidance injects market research advisor",
+      "Market research advisor flow" in advisor_guidance
+      and "BA discovery flow" in advisor_guidance
+      and "UI/UX advisor flow" in advisor_guidance,
+      advisor_guidance)
 hallmark_write_block = asyncio.run(mcp_server.call_tool("hallmark_bridge", {
     "action": "write_preflight",
     "task": "ui preflight",
@@ -753,6 +1113,15 @@ finally:
         os.environ.pop("CLAUDE_PROJECT_DIR", None)
     else:
         os.environ["CLAUDE_PROJECT_DIR"] = old_project_dir_ops
+balanced_policy_smoke = asyncio.run(mcp_server.call_tool("policy_profile", {"profile": "balanced"}))
+balanced_policy_json = json.loads(balanced_policy_smoke[0].text)
+heavy_policy_smoke = asyncio.run(mcp_server.call_tool("policy_profile", {"profile": "heavy"}))
+heavy_policy_json = json.loads(heavy_policy_smoke[0].text)
+check("policy_profile runtime mode đúng theo profile",
+      balanced_policy_json.get("settings", {}).get("mode") == "safe"
+      and heavy_policy_json.get("settings", {}).get("mode") == "max"
+      and "balanced/review use mode=safe" in balanced_policy_json.get("rule", ""),
+      f"balanced={balanced_policy_json} heavy={heavy_policy_json}")
 patch_empty = asyncio.run(mcp_server.call_tool("patch_safety_check", {"patch": ""}))
 check("patch_safety_check thiếu patch → error", "error" in json.loads(patch_empty[0].text))
 old_auto_trigger_features = os.environ.get("HARNESS_FEATURES_FILE")
@@ -1007,6 +1376,97 @@ check("ask_codebase redacts short token/password",
 check("ask_codebase redacts authorization assignment",
       "Bearer x" not in _redact_sensitive_text("authorization='Bearer x'"),
       _redact_sensitive_text("authorization='Bearer x'"))
+import install_hooks
+hook_secret_diff = "\n".join([
+    "diff --git a/.env b/.env",
+    "index 111..222 100644",
+    "--- a/.env",
+    "+++ b/.env",
+    "@@ -1 +1 @@",
+    "+ROUTER_API_KEY=sk-live-secret",
+    "diff --git a/app.py b/app.py",
+    "+token='abc123'",
+    "+print('safe')",
+])
+hook_redacted_diff = install_hooks._redact_diff(hook_secret_diff)
+check("pre-commit hook redacts sensitive staged diff",
+      "sk-live-secret" not in hook_redacted_diff
+      and "abc123" not in hook_redacted_diff
+      and "print('safe')" in hook_redacted_diff,
+      hook_redacted_diff)
+hook_generic_redaction = install_hooks._redact_text(
+    "dsn=https://user:pass@example.com/path\nAuthorization: Bearer abcdef\nclient_secret = xyz\n//registry.npmjs.org/:_authToken=npm_secret"
+)
+check("pre-commit hook redacts generic credential patterns",
+      "user:pass" not in hook_generic_redaction
+      and "abcdef" not in hook_generic_redaction
+      and "xyz" not in hook_generic_redaction
+      and "npm_secret" not in hook_generic_redaction,
+      hook_generic_redaction)
+hook_pem_redaction = install_hooks._redact_text(
+    "PRIVATE_KEY='''-----BEGIN PRIVATE KEY-----\nBASE64SECRET\n-----END PRIVATE KEY-----'''"
+)
+check("pre-commit hook redacts embedded PEM blocks",
+      "BASE64SECRET" not in hook_pem_redaction
+      and "REDACTED" in hook_pem_redaction,
+      hook_pem_redaction)
+hook_big_context = install_hooks._staged_file_context(
+    ["README.md"],
+    total_cap=200,
+    per_file_cap=40,
+)
+check("pre-commit hook caps staged file context",
+      "TRUNCATED: staged file exceeded 40 bytes" in hook_big_context
+      or "SKIPPED: staged context cap reached" in hook_big_context,
+      hook_big_context)
+old_hook_git_bytes = install_hooks._git_bytes
+try:
+    def _fake_hook_git_bytes(args):
+        if args[:4] == ["diff", "--cached", "--name-status", "-z"]:
+            return (
+                b"D\x00deleted.py\x00"
+                b"M\x00weird\nname.py\x00"
+                b"A\x00normal.py\x00"
+                b"M\x00submodule.py\x00"
+                b"R100\x00old.env\x00config/.env\x00"
+                b"R086\x00old.py\x00renamed.py\x00"
+                b"C100\x00template.py\x00copied.py\x00"
+            )
+        if args[:2] == ["ls-files", "-s"]:
+            path = args[-1]
+            if path == "submodule.py":
+                return b"160000 abcdef 0\tsubmodule.py\n"
+            return f"100644 abcdef 0\t{path}\n".encode("utf-8")
+        if args[:1] == ["show"]:
+            return b"abc\x00binary"
+        return old_hook_git_bytes(args)
+    install_hooks._git_bytes = _fake_hook_git_bytes
+    weird_files, _, weird_code = install_hooks._staged_review_inputs()
+finally:
+    install_hooks._git_bytes = old_hook_git_bytes
+check("pre-commit hook parses staged paths with NUL delimiters",
+      "weird\nname.py" in weird_files
+      and "normal.py" in weird_files
+      and "renamed.py" in weird_files
+      and "copied.py" in weird_files
+      and "deleted.py" not in weird_files,
+      repr(weird_files))
+check("pre-commit hook omits binary staged blobs",
+      "[BINARY FILE CONTENT OMITTED]" in weird_code,
+      weird_code)
+check("pre-commit hook omits non-regular staged files",
+      "[NON-REGULAR STAGED FILE CONTENT OMITTED]" in weird_code,
+      weird_code)
+check("pre-commit hook marks sensitive paths",
+      install_hooks._is_sensitive_path(".env.local")
+      and install_hooks._is_sensitive_path("keys/prod.pem")
+      and install_hooks._is_sensitive_path(".npmrc")
+      and install_hooks._is_sensitive_path(".aws/credentials")
+      and install_hooks._is_sensitive_path(".docker/config.json")
+      and install_hooks._is_sensitive_path(".config/gcloud/application_default_credentials.json")
+      and install_hooks._is_sensitive_path("id_ed25519")
+      and not install_hooks._is_sensitive_path(".env.example"),
+      "sensitive path classifier regression")
 fallback_answer = _extractive_codebase_answer(
     "frontend xuất Excel gọi API nào",
     "=== FILE: app/api.py ===\n10\tdef export_excel():\n11\t    return workbook\n"
@@ -1564,6 +2024,33 @@ check("fake harness_hook.py command không được tính là lesson hook hợp 
           for h in (entry.get("hooks") if isinstance(entry.get("hooks"), list) else [])
       ),
       fake_hook_settings.read_text(encoding="utf-8"))
+stale_panel_home = SMOKE_DIR / "stale_panel_home"
+stale_panel_settings = stale_panel_home / ".claude" / "settings.json"
+stale_panel_settings.parent.mkdir(parents=True, exist_ok=True)
+stale_panel_settings.write_text(
+    json.dumps({
+        "hooks": {
+            "PostToolUse": [
+                {"id": merge_settings.HOOK_ID, "matcher": "Edit|Write|NotebookEdit", "hooks": [{"type": "command", "command": "echo old mode=max", "timeout": 10}]},
+                {"matcher": "Edit|Write|NotebookEdit", "hooks": [{"type": "command", "command": merge_settings.HOOK_REMINDER_CMD, "timeout": 10}]},
+            ],
+            "UserPromptSubmit": [],
+        }
+    }),
+    encoding="utf-8",
+)
+stale_panel_err = merge_settings.merge_settings_json(stale_panel_settings.parent)
+stale_panel_data = json.loads(stale_panel_settings.read_text(encoding="utf-8"))
+panel_entries = [
+    entry for entry in stale_panel_data["hooks"]["PostToolUse"]
+    if isinstance(entry, dict) and entry.get("id") == merge_settings.HOOK_ID
+]
+check("Claude stale/legacy panel hook được normalize thành một bản profile-aware",
+      stale_panel_err == 0
+      and len(panel_entries) == 1
+      and panel_entries[0]["hooks"][0]["command"] == merge_settings.HOOK_REMINDER_CMD
+      and "mode theo profile" in panel_entries[0]["hooks"][0]["command"],
+      stale_panel_settings.read_text(encoding="utf-8"))
 old_lazy_done = mcp_server._LAZY_SETTINGS_MERGE_DONE
 old_lazy_merge = merge_settings.lazy_merge_if_needed
 lazy_calls = []
@@ -2606,7 +3093,15 @@ Steps:
         return {"status": "stored"}
     def _fake_record_tool_performance_memory(*_args, **_kwargs):
         return {"status": "stored"}
+    async def _drain_mcp_memory_tasks():
+        pending = [
+            task for task in list(mcp_server._background_tasks)
+            if not task.done() and str(task.get_name()).startswith("mcp-memory-")
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
     async def _capture_empty_arg_signal():
+        await _drain_mcp_memory_tasks()
         core_mod.record_text_memory_signals = _fake_record_text_memory_signals
         core_mod.record_tool_performance_memory = _fake_record_tool_performance_memory
         try:
@@ -2616,11 +3111,15 @@ Steps:
                 mcp_server._json_response({"status": "completed", "notes": "Nhớ là empty-args MCP response vẫn phải ghi local memory."}),
                 time.perf_counter(),
             )
-            await asyncio.sleep(0.05)
+            for _ in range(20):
+                if any("empty-args MCP response" in item.get("text", "") for item in captured_empty_arg_signals):
+                    return True
+                await asyncio.sleep(0.05)
+            return False
         finally:
             core_mod.record_text_memory_signals = old_record_text_memory_signals
             core_mod.record_tool_performance_memory = old_record_tool_performance_memory
-    asyncio.run(_capture_empty_arg_signal())
+    empty_arg_signal_seen = asyncio.run(_capture_empty_arg_signal())
     memory_cap_pending = 0
     def _slow_record_tool_performance_memory(*_args, **_kwargs):
         time.sleep(0.2)
@@ -3132,7 +3631,8 @@ check("MCP boundary tự ghi tool performance memory",
       "auto_trigger performance" in mcp_auto_perf_context,
       f"context={mcp_auto_perf_context!r}")
 check("MCP boundary memory signal chạy cả khi args rỗng",
-      any(item.get("source") == "mcp:quick_task" and "empty-args MCP response" in item.get("text", "") for item in captured_empty_arg_signals),
+      empty_arg_signal_seen
+      and any(item.get("source") == "mcp:quick_task" and "empty-args MCP response" in item.get("text", "") for item in captured_empty_arg_signals),
       f"signals={captured_empty_arg_signals!r}")
 check("MCP boundary memory task cap hoạt động",
       memory_cap_pending <= mcp_server.MCP_MEMORY_BACKGROUND_LIMIT,

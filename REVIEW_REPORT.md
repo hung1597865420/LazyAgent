@@ -1,14 +1,25 @@
-# Agent Harness Review Summary
+# Agent Harness - Báo cáo Review Code tự động
 
-Latest verification for the public-ready harness update:
+## Kết luận: **🟢 APPROVE**
 
-- `python -m py_compile` passed for the touched Python modules and all `tools/*.py` files using a PowerShell-expanded file list.
-- `python smoke_test.py` passed with the MCP registry at 90 tools.
-- `router_quota_status` remains only as a deprecated compatibility shim; the quota/costguard implementation was intentionally removed.
-- `tools.quota.router_quota_status` is preserved as a legacy import shim for older callers.
-- No real credentials were found in the staged diff during the final public-readiness pass.
+### Tóm tắt:
+Panel found several medium/low edge cases around staged Git index parsing and review-context completeness, plus one routing/classification ambiguity. No critical/high issues were identified, but the staged review pipeline should be hardened against rename/copy parsing and index snapshot inconsistencies.
 
-Notes:
+## Chi tiết các Findings
 
-- `harness.features.json` should remain default-safe (`off`) in public commits. Local users can opt in with `harness-toggle.bat`.
-- Auto-generated runtime DBs, logs, lessons, local exports, and cost reports should not be treated as release artifacts.
+| Tập tin | Dòng | Mức độ | Nhóm | Lỗi phát hiện | Gợi ý sửa lỗi | Phát hiện bởi |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| install_hooks.py | 882 | MEDIUM | edge_case | `git diff --cached --name-status -z` emits three NUL-separated fields for rename/copy entries (`Rxxx\0old\0new\0` / `Cxxx\0old\0new\0`). If `_staged_paths_from_index()` parses tokens as simple status/path pairs, renamed/copied staged files desynchronize the parser or return the old path, causing `git show :path` to fail and omitting the actual staged file content from review context. This is especially problematic for sensitive destinations such as `.env.production` or `.npmrc`, where the redacted staged blob may be missing from the review payload. | Parse `-z` name-status as a token stream: for statuses starting with `R` or `C`, consume two paths and use the destination path; otherwise consume one path, skipping deleted files. Add tests for `R100 old .env.production`, `C100 old .npmrc`, and a mixed sequence such as `M a.py R100 old new.py A b.py` to verify no desync and destination paths are used. | reviewer, tester |
+| install_hooks.py | 882 | MEDIUM | edge_case | Staged paths beginning with `:` can be interpreted by `git show :path` as an index stage/pathspec expression rather than the intended filename. A staged file literally named `:secrets.env` or `:(top).env` can therefore fail to read, resolve unexpectedly, or be omitted from staged file context. | Read staged blobs through an unambiguous index object reference, e.g. `git cat-file -p :0:<path>` with robust path handling, or otherwise reject/normalize leading-colon pathspec-magic filenames before using them. Add tests with filenames `:foo.py`, `:(top).env`, and `--weird.env` staged in the index. | tester |
+| install_hooks.py | 1144 | MEDIUM | data_integrity | The staged review payload appears to be assembled from multiple separate Git index reads: one for the redacted staged diff and another for staged file context. Without pinning a single index/tree snapshot, a concurrent `git add`, `git reset`, or hook-side mutation between those reads can produce a mixed payload where the diff and blob context refer to different staged states. That can lead reviewers to approve code based on stale or mismatched context. | Create a stable snapshot once at the start of the hook, for example by running `git write-tree` and then deriving both the diff and file blobs from that tree object. Alternatively, capture index metadata/checksum before and after payload assembly and abort/retry if it changes. Add a regression test that mutates the index between diff generation and blob extraction and asserts the hook either uses one consistent snapshot or fails closed. | integrity |
+| mcp_server.py | 1377 | MEDIUM | assumption | Unknown actions for mixed read/write tools are treated as mutating, which can incorrectly reject concurrent read-only calls. For example, two clients calling `hallmark_bridge` with a newly added read-only action such as `explain` or `list_findings` would classify it as mutating and return `in_flight_duplicate` for the second identical call instead of allowing concurrent reads. | Make mutation classification explicit per tool: unknown actions should either be rejected as unsupported before single-flight, or default to read-only only for tools whose dispatcher guarantees non-mutation. Add a regression test with a synthetic/fixture read-only action not in the set to assert desired behavior, or require every supported action to appear in exactly one read/write registry. | tester |
+| install_hooks.py | 882 | LOW | edge_case | Files with valid staged content but no working-tree checkout can be omitted if `_is_regular_staged_file()` depends on filesystem state instead of index mode. In sparse checkout or after removing a staged file from the working tree without unstaging, any `Path(path).is_file()` or `stat()` check returns false, so `_staged_file_context()` may skip an indexed blob that Git can still read. | Base regular-file checks solely on index mode from `git ls-files -s` or `git diff --cached --raw`, accepting mode `100644`/`100755` and rejecting symlink `120000` and submodule `160000`. Add a test that stages a file, removes it from the working tree without unstaging, and verifies `_staged_file_context()` still reads and redacts the blob from the index. | tester |
+| tools/workflow.py | 5908 | LOW | edge_case | Broad `research_signal`/UX routing can route code/debug tasks into market-research or UI-advisor flows. For example, `research why the dashboard test is failing after the API refactor` contains `research` and `dashboard`, but the user is asking for debugging, not market research or UX advice. | Ensure debug/review/test maintenance intent suppresses `market_research_advisor` and `ui_ux_advisor` unless the user explicitly asks for product/UX research. Add tests for `research why dashboard test fails`, `investigate frontend bug`, and `analyze layout regression test failure`, expecting debug/static/code routes without market research. | tester |
+
+## Chi tiết cuộc họp Panel
+| Agent Role | Model sử dụng | Trạng thái | Thời gian phản hồi |
+| :--- | :--- | :--- | :--- |
+| REVIEWER | cx/gpt-5.5-review | ✅ | 18.84s |
+| SECURITY | cx/gpt-5.5-review | ✅ | 15.65s |
+| TESTER | cx/gpt-5.5 | ✅ | 37.19s |
+| INTEGRITY | cx/gpt-5.5-review | ✅ | 33.20s |

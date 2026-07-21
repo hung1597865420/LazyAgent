@@ -34,6 +34,10 @@ UI_BASELINE_WORDS = {"ui", "layout", "spacing", "typography", "polish", "cleanup
 UI_A11Y_WORDS = {"a11y", "accessibility", "aria", "keyboard", "focus", "dialog", "form", "wcag", "screen reader"}
 UI_MOTION_WORDS = {"motion", "animation", "transition", "jank", "scroll", "gsap", "framer", "motion/react", "slow animation"}
 UI_METADATA_WORDS = {"metadata", "seo", "title", "description", "canonical", "open graph", "og:", "twitter card", "robots", "json-ld", "favicon"}
+UI_UX_ADVISOR_WORDS = {
+    "ui", "ux", "design", "redesign", "layout", "screen", "component", "dashboard", "landing",
+    "homepage", "user flow", "usability", "interaction", "microcopy", "visual", "responsive",
+}
 
 SPECKIT_TASK_WORDS = {
     "feature", "project", "new app", "new module", "implement", "build", "spec", "specification",
@@ -155,11 +159,11 @@ def _ui_skill_route(task: str, files: list[str]) -> dict[str, Any]:
     css_like = any(_ext(f) in {".css", ".scss", ".sass", ".less"} for f in files)
     route_like = any(_basename(f) in {"layout.tsx", "page.tsx", "head.tsx", "metadata.ts", "index.html"} for f in files)
 
-    if ui_files or _has_any(text, UI_BASELINE_WORDS):
-        add("baseline-ui", "General UI surface or component work.", [
-            "Fix spacing, hierarchy, typography, empty/loading/error states.",
-            "Prefer existing primitives and tokens before inventing new styles.",
-            "Keep icon-only buttons accessible and stable in size.",
+    if ui_files or _has_any(text, UI_UX_ADVISOR_WORDS):
+        add("ui-ux-advisor", "UI/UX change needs product-design critique before code and final visual checks.", [
+            "Anchor the UI to user job, audience, success metric, and trade-off.",
+            "Review the primary flow, decision points, and empty/loading/error states.",
+            "Critique hierarchy, information scent, microcopy, affordance, spacing, typography, and color semantics.",
         ])
     if html_like or _has_any(text, UI_A11Y_WORDS):
         add("fixing-accessibility", "Interactive HTML/component surface detected.", [
@@ -185,6 +189,12 @@ def _ui_skill_route(task: str, files: list[str]) -> dict[str, Any]:
             "Stop at the top three supported findings.",
             "Use Hallmark preflight before edits and visual_reviewer after implementation when URL exists.",
         ])
+    if ui_files or _has_any(text, UI_BASELINE_WORDS):
+        add("baseline-ui", "General UI surface or component work.", [
+            "Fix spacing, hierarchy, typography, empty/loading/error states.",
+            "Prefer existing primitives and tokens before inventing new styles.",
+            "Keep icon-only buttons accessible and stable in size.",
+        ])
 
     selected = selected[:3]
     return {
@@ -194,6 +204,7 @@ def _ui_skill_route(task: str, files: list[str]) -> dict[str, Any]:
         "topics": [
             "accessibility", "motion", "systems", "visual", "interaction",
             "performance", "craft", "taste", "typography", "color", "3d",
+            "product intent", "user flow", "usability", "microcopy",
         ],
         "post_code_tools": ["a11y_auditor", "visual_reviewer"],
     }
@@ -616,7 +627,35 @@ def integration_router(
 def agent_guidance_for_task(task: str | None, changed_files: list[str] | None = None, root: str | os.PathLike[str] | None = None) -> str:
     """Return a compact prompt block for goal_runner external agents."""
     route = integration_router(task=task, changed_files=changed_files, root=root)
+    try:
+        from .workflow import workflow_router
+        workflow = workflow_router(task=task, changed_files=changed_files)
+    except Exception:
+        workflow = {"routes": []}
+    workflow_names = [item.get("name") for item in workflow.get("routes", []) if isinstance(item, dict)]
     blocks: list[str] = []
+    if "ba_discovery" in workflow_names:
+        blocks.append(
+            "BA discovery flow:\n"
+            "- Before implementation, clarify business goal, actor/stakeholder, primary journey, success metric, acceptance criteria, and open questions.\n"
+            "- Split must-have vs nice-to-have and mark out-of-scope explicitly.\n"
+            "- Feed the clarified requirements into spec/planning instead of coding from a loose prompt."
+        )
+    if "market_research_advisor" in workflow_names:
+        blocks.append(
+            "Market research advisor flow:\n"
+            "- Before coding feature/UI/UX work, research 3-5 comparable products, official docs, pattern galleries, or UX case studies.\n"
+            "- Summarize what each source optimizes for, patterns worth borrowing, trade-offs, and anti-patterns.\n"
+            "- Do not copy branding, proprietary UI, screenshots, or exact composition; translate findings into acceptance criteria and implementation guidance.\n"
+            "- If runtime profile blocks LLM/web research, say so and use the static checklist as fallback."
+        )
+    if "ui_ux_advisor" in workflow_names:
+        blocks.append(
+            "UI/UX advisor flow:\n"
+            "- Anchor the interface to user job, audience, success metric, and priority trade-off.\n"
+            "- Check primary flow, decision points, empty/loading/error states, mobile constraints, hierarchy, microcopy, and feedback.\n"
+            "- Apply findings before implementation, then verify with a11y/visual review when available."
+        )
     hallmark = route["routes"]["hallmark"]
     if hallmark["triggered"]:
         blocks.append(

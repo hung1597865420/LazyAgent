@@ -341,5 +341,5 @@ if ($RunSmoke) {
 Write-Host ''
 Write-Host '=== FULL SETUP DONE ===' -ForegroundColor Green
 Write-Host 'Restart Claude/Gemini/Codex/IDE sessions so they reload MCP config and memory rules.'
-Write-Host 'MCP-only tools installed: install_manifest, adapter_parity_doctor, mcp_inventory, context_budget, integration_router, workflow_router, bug_repro_guard, ui_skill_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector.'
+Write-Host 'MCP-only tools installed: install_manifest, adapter_parity_doctor, mcp_inventory, context_budget, integration_router, workflow_router (BA/market research/UI-UX advisor), bug_repro_guard, ui_skill_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector.'
 Write-Host 'Future maintenance: when a runtime feature changes, update harness-toggle.bat and harness-full-setup.bat together.'

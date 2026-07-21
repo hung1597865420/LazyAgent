@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -21,10 +22,19 @@ HARNESS_SERVER_FILE = Path(__file__).resolve().parents[1] / "mcp_server.py"
 HARNESS_ROOT = Path(__file__).resolve().parents[1]
 
 POLICY_PROFILES: dict[str, dict[str, Any]] = {
-    "fast": {"mode": "safe", "max_iterations": 3, "final_prod_gate": False, "llm": "minimal"},
-    "balanced": {"mode": "max", "max_iterations": 8, "final_prod_gate": True, "llm": "contextual"},
-    "prod": {"mode": "max", "max_iterations": 12, "final_prod_gate": True, "llm": "heavy"},
-    "paranoid": {"mode": "max", "max_iterations": 20, "final_prod_gate": True, "llm": "max"},
+    "off": {"mode": "safe", "max_iterations": 0, "final_prod_gate": False, "llm": "blocked", "auto_llm": False},
+    "light": {"mode": "safe", "max_iterations": 1, "final_prod_gate": False, "llm": "manual-only", "auto_llm": False},
+    "standard": {"mode": "safe", "max_iterations": 2, "final_prod_gate": False, "llm": "manual-only", "auto_llm": False},
+    "balanced": {"mode": "safe", "max_iterations": 4, "final_prod_gate": False, "llm": "contextual", "auto_llm": True},
+    "4": {"alias_for": "balanced"},
+    "review": {"mode": "safe", "max_iterations": 5, "final_prod_gate": False, "llm": "review-contextual", "auto_llm": True},
+    "5": {"alias_for": "review"},
+    "heavy": {"mode": "max", "max_iterations": 8, "final_prod_gate": True, "llm": "heavy", "auto_llm": True},
+    "7": {"alias_for": "heavy"},
+    "max": {"mode": "max", "max_iterations": 12, "final_prod_gate": True, "llm": "max", "auto_llm": True},
+    "fast": {"alias_for": "standard"},
+    "prod": {"alias_for": "max"},
+    "paranoid": {"alias_for": "max"},
 }
 
 
@@ -228,8 +238,19 @@ async def policy_profile(profile: str = "balanced") -> dict[str, Any]:
     key = (profile or "balanced").strip().lower()
     if key not in POLICY_PROFILES:
         return {"error": "invalid_argument", "detail": f"profile must be one of: {', '.join(POLICY_PROFILES)}"}
-    intelligence = orchestrate(stage="policy_profile", files=[], diff="", task=f"profile {key}", mode=key)
-    return {"status": "completed", "profile": key, "settings": POLICY_PROFILES[key], "profiles": POLICY_PROFILES, "orchestrator": intelligence}
+    raw_settings = POLICY_PROFILES[key]
+    canonical = str(raw_settings.get("alias_for") or key)
+    settings = POLICY_PROFILES.get(canonical, raw_settings)
+    intelligence = orchestrate(stage="policy_profile", files=[], diff="", task=f"profile {canonical}", mode=settings.get("mode", "safe"))
+    return {
+        "status": "completed",
+        "profile": canonical,
+        "requested_profile": key,
+        "settings": settings,
+        "profiles": POLICY_PROFILES,
+        "rule": "balanced/review use mode=safe; only heavy/max/prod/paranoid use mode=max.",
+        "orchestrator": intelligence,
+    }
 
 
 def _lock_status() -> dict[str, Any]:
@@ -618,6 +639,66 @@ def _agent_harness_server(harness: str) -> dict[str, Any] | None:
     return None
 
 
+def _hook_commands(settings: dict[str, Any], event: str) -> list[str]:
+    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    entries = hooks.get(event) if isinstance(hooks.get(event), list) else []
+    commands: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for hook in entry.get("hooks", []):
+            if isinstance(hook, dict) and isinstance(hook.get("command"), str):
+                commands.append(hook["command"])
+    return commands
+
+
+def _claude_hook_status(home: Path) -> dict[str, Any]:
+    settings_path = home / ".claude" / "settings.json"
+    settings = _read_json_safe(settings_path)
+    prompt_commands = _hook_commands(settings, "UserPromptSubmit")
+    post_commands = _hook_commands(settings, "PostToolUse")
+    expected_hook = str(HARNESS_ROOT / "harness_hook.py").replace("\\", "/")
+    prompt_ok = any("harness_hook.py" in cmd and expected_hook in cmd.replace("\\", "/") for cmd in prompt_commands)
+    post_lesson_ok = any("harness_hook.py" in cmd and expected_hook in cmd.replace("\\", "/") for cmd in post_commands)
+    post_profile_ok = any("runtime profile" in cmd.lower() and "mode theo profile" in cmd.lower() for cmd in post_commands)
+    active_profile = "unknown"
+    context_probe_ok = False
+    context_probe_excerpt = ""
+    try:
+        from runtime_flags import load_feature_flags
+        import harness_hook
+
+        flags = load_feature_flags(HARNESS_ROOT)
+        active_profile = str(flags.get("profile") or "standard")
+        context_probe = harness_hook._runtime_profile_context(HARNESS_ROOT)
+        context_probe_ok = f"profile: {active_profile}" in context_probe and "Profile in harness.features.json wins" in context_probe
+        context_probe_excerpt = context_probe[:600]
+    except Exception as exc:
+        context_probe_excerpt = f"{type(exc).__name__}: {exc}"
+    issues = []
+    if not settings_path.exists():
+        issues.append("Claude settings.json missing; prompt profile hook cannot run")
+    if not prompt_ok:
+        issues.append("Claude UserPromptSubmit hook missing/stale; profile snapshot may not be injected")
+    if not post_lesson_ok:
+        issues.append("Claude PostToolUse harness_hook missing/stale; edit profile reminder/lesson hook may not run")
+    if not post_profile_ok:
+        issues.append("Claude PostToolUse reminder missing profile-aware wording")
+    if not context_probe_ok:
+        issues.append("Claude profile hook context probe failed; runtime profile may not be visible to hooks")
+    return {
+        "settings_file": _display_path(str(settings_path)),
+        "active_profile": active_profile,
+        "prompt_profile_hook_ok": prompt_ok,
+        "post_edit_hook_ok": post_lesson_ok,
+        "post_edit_profile_reminder_ok": post_profile_ok,
+        "context_probe_ok": context_probe_ok,
+        "context_probe_excerpt": context_probe_excerpt,
+        "python": _display_path(sys.executable),
+        "issues": issues,
+    }
+
+
 def _adapter_record(target: str, rules_path: Path, markers: list[str], mcp_harness: str) -> dict[str, Any]:
     text = _read_text_safe(rules_path)
     server = _agent_harness_server(mcp_harness)
@@ -636,11 +717,15 @@ def _adapter_record(target: str, rules_path: Path, markers: list[str], mcp_harne
         issues.append("agent-harness MCP server missing")
     elif not mcp_ok:
         issues.append("MCP server disabled or points at a different mcp_server.py")
+    hook_status = _claude_hook_status(Path.home()) if target == "claude" else None
+    if hook_status:
+        issues.extend(hook_status.get("issues", []))
     return {
         "target": target,
         "rules_file": _display_path(str(rules_path)),
         "rules_ok": rule_ok,
         "mcp_ok": mcp_ok,
+        "hooks": hook_status,
         "server": _redact_value(server or {}),
         "status": "ok" if not issues else "error",
         "issues": issues,

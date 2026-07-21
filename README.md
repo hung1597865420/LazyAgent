@@ -300,18 +300,54 @@ Thang profile theo mức sử dụng token: `off` = 0/10 hard-off, `light` = 1/1
 
 Profile `standard` vẫn bật `llm=true`, nghĩa là bạn gọi tool LLM thủ công vẫn được; nó chỉ tắt `auto-pilot-llm`, `auto-watch-llm`, và `static-llm` để tránh tự động gọi LLM nền. Profile `off` thì tắt cả `llm=false`, đúng nghĩa không gọi model.
 
-Agent policy theo profile được inject cho mọi client chính qua `merge_settings.py`: Claude đọc `~/.claude/CLAUDE.md`, Gemini/Antigravity đọc `~/.gemini/GEMINI.md`, Codex đọc `~/.codex/AGENTS.md`, và agent generic/user-level đọc `~/AGENTS.md`. Policy này đứng trên các rule tự động khác: profile thấp không được tự nâng profile, không được bypass `llm.enabled=false`, và nếu profile không cho phép LLM thì agent phải dùng static/local fallback rồi báo ngắn `profile <name> đang chặn LLM`.
+Agent policy theo profile được inject cho mọi client chính qua `merge_settings.py`: Claude đọc `~/.claude/CLAUDE.md`, Gemini/Antigravity đọc `~/.gemini/GEMINI.md`, Codex đọc `~/.codex/AGENTS.md`, và agent generic/user-level đọc `~/AGENTS.md`. Policy này đứng trên các rule tự động khác: profile thấp không được tự nâng profile, không được bypass `llm.enabled=false`, và nếu profile không cho phép LLM thì agent phải dùng static/local fallback rồi báo ngắn `profile <name> đang chặn LLM`. Claude/Gemini/Codex contract mới: đầu mỗi prompt/session phải refresh profile global, không dùng cache từ repo trước; khi chuẩn bị gọi harness tool phải coi snapshot `%USERPROFILE%\.agent-harness\harness.features.json` là source of truth.
+
+Nếu Claude không có vẻ nhận profile mới, kiểm theo thứ tự này:
+
+```powershell
+harness-toggle.bat status
+python merge_settings.py
+python -c "import asyncio,json; from tools.ops import adapter_parity_doctor; print(json.dumps(asyncio.run(adapter_parity_doctor()), indent=2, ensure_ascii=False))"
+```
+
+Trong output của `adapter_parity_doctor`, record `claude.hooks` phải có `prompt_profile_hook_ok=true`, `post_edit_hook_ok=true`, `post_edit_profile_reminder_ok=true`, `context_probe_ok=true`, và `active_profile` đúng với `%USERPROFILE%\.agent-harness\harness.features.json`. Nếu các dòng này pass mà Claude vẫn không gọi harness theo profile, restart Claude Code/new session để nó reload `~/.claude/settings.json` và `~/.claude/CLAUDE.md`; session cũ có thể cache hook/rule từ trước khi merge. Với Gemini/Antigravity hiện chưa có hook prompt tương đương trong setup này, nên rule bắt buộc agent tự đọc file profile global hoặc gọi `harness-toggle.bat status/json` ở đầu prompt/session.
+
+Hai lỗi profile hay gây hiểu nhầm:
+
+- Claude hook inject profile vào context nội bộ nên user có thể không thấy message ngoài UI, nhất là khi hook config có `suppressOutput=true`.
+- Nếu agent đọc đúng profile nhưng vẫn gọi `mode=max` dưới `balanced`/`review`, thường là rule generated hoặc `policy_profile` stale. Chạy `python merge_settings.py`, restart client, rồi test lại. Kỳ vọng hiện tại: `policy_profile("balanced")` và `policy_profile("review")` trả `mode="safe"`; chỉ `heavy`/`max` mới tự động dùng `mode="max"`.
+
+Prompt test nhanh cho Claude/Gemini:
+
+```text
+Đọc runtime profile hiện tại rồi trả lời ngắn:
+1. active harness profile là gì?
+2. profile này được dùng auto_trigger mode nào?
+3. Nếu turn này vừa edit code bằng Edit/Write/MultiEdit thì trước final answer phải tự chạy tool gì?
+Không sửa file.
+```
+
+Với profile `balanced`, câu trả lời đúng phải là `auto_trigger mode=safe`, và sau code edit phải tự chạy `auto_trigger stage=final mode=safe` hoặc `panel_review` một lần cho batch. Nếu sửa docs/typo nhỏ thì `auto_trigger` có thể trả `status=skipped`, `reason=docs-only change`; đó là đúng exception.
 
 ### 2.2.1. Distilled routers đã chưng cất vào Auto-Pilot
 
 Harness không vendor nguyên repo Hallmark, Spec Kit, `ibelick/ui-skills`, `mattpocock/skills` hay `kangarooking/cangjie-skill` vào core. Thay vào đó các repo này được chưng cất thành route/check tĩnh: `integration_router`, `ui_skill_router`, `workflow_router`, `bug_repro_guard`, cùng bridge thật `hallmark_bridge`/`speckit_bridge`. `auto_trigger` tự trả `integration_routes` + `workflow_routes`, và `goal_runner` tự bơm guidance vào prompt agent ngoài.
 
 - **Hallmark bridge:** `hallmark_bridge(action="preflight")` đọc framework/tokens/fonts/motion/ui scope theo kiểu Hallmark trước khi code UI; `audit_plan` trả checklist; `write_preflight` ghi `.hallmark/preflight.json` khi `allow_mutation=true` và profile cho phép. `a11y_auditor` vẫn chỉ là post-code audit WCAG/design-state, không phải tool thiết kế.
-- **UI Skills router:** `ui_skill_router` lấy taxonomy của `ibelick/ui-skills`, chọn tối đa 3 checklist nhỏ (`baseline-ui`, `fixing-accessibility`, `fixing-motion-performance`, `fixing-metadata`, `improve-ui`) để tránh UI task nào cũng kéo review nặng. Auto-Pilot vẫn dùng `a11y_auditor`/`visual_reviewer` sau code khi phù hợp.
-- **Spec Kit bridge:** `speckit_bridge(action="status"|"snapshot")` đọc CLI/artifacts/specs hiện có; `init` gọi `specify init --here --integration <agent>` nếu CLI có sẵn; `scaffold` tạo `specs/<feature>/spec.md`, `plan.md`, `tasks.md` fallback khi profile/allow_mutation cho phép.
-- **Workflow router:** `workflow_router` lấy phần Matt workflow: debug/spec/tickets/wayfinder/domain-context/code-review-axes/TDD seam/architecture deepening. `bug_repro_guard` là P0 static check: debug task phải có repro command/output trước khi fix kiểu đoán mò.
+- **UI Skills router:** `ui_skill_router` lấy taxonomy của `ibelick/ui-skills`, chọn tối đa 3 checklist nhỏ (`ui-ux-advisor`, `baseline-ui`, `fixing-accessibility`, `fixing-motion-performance`, `fixing-metadata`, `improve-ui`) để tránh UI task nào cũng kéo review nặng. `ui-ux-advisor` là cố vấn product-design cho mọi lần chỉnh UI/UX: neo vào user job/audience/success metric, kiểm primary flow/state/microcopy/hierarchy trước khi code. Auto-Pilot vẫn dùng `a11y_auditor`/`visual_reviewer` sau code khi phù hợp.
+- **Spec Kit bridge:** `speckit_bridge(action="status"|"snapshot")` đọc CLI/artifacts/specs hiện có; `init` gọi `specify init --here --integration <agent>` nếu CLI có sẵn; `scaffold` tạo `specs/<feature>/spec.md`, `plan.md`, `tasks.md` fallback khi profile/allow_mutation cho phép. Feature mới đi qua BA discovery trước rồi mới vào Spec Kit/spec-first.
+- **Workflow router:** `workflow_router` lấy phần Matt workflow và thêm bước BA + research advisor: feature/product/workflow/project mới đi `ba_discovery` -> `market_research_advisor` -> `spec_first`; UI/UX edit đi `market_research_advisor` -> `ui_ux_advisor` -> `ui_skill_router`. `market_research_advisor` là route để agent chính hoặc goal_runner gọi web/official docs/product examples khi profile cho phép, rồi tạo brief ngắn cho code agent tham khảo. Debug/spec/tickets/wayfinder/domain-context/code-review-axes/TDD seam/architecture deepening vẫn được route tĩnh. `bug_repro_guard` là P0 static check: debug task phải có repro command/output trước khi fix kiểu đoán mò.
 - **Lesson quality gate:** `lesson_curator` và mọi đường ghi global procedure dùng Cangjie-style static RIA-TV gate: title/summary, actionable steps, trigger, boundary, should-trigger/should-not-trigger/edge-case prompts, và reject common-sense/secret/local/debug-only memory trước khi promote global.
 - **Profile gate:** profile `off` chỉ cho bridge/router chạy read-only/status/preflight/snapshot/static report; không tự gọi Hallmark/Spec Kit/Workflow LLM workflow, không tự init/scaffold Spec Kit, không gọi `goal_runner`.
+
+Market pattern mapping:
+
+| Thị trường đang làm | LazyAgent áp dụng |
+|---|---|
+| Product discovery/prioritization gom feedback, insight, business goal, roadmap trước khi build | `ba_discovery` bắt feature/product/workflow mới phải có goal, actor, journey, acceptance criteria, open questions trước `spec_first` |
+| Competitive/product research soi đối thủ, docs, pattern gallery, UX case study trước khi chốt flow | `market_research_advisor` yêu cầu 3-5 nguồn tham khảo, rút pattern nên mượn, trade-off, anti-pattern, acceptance criteria update |
+| Usability testing kiểm flow, state, hiểu nhầm của user trước khi dev quá sâu | `ui_ux_advisor` kiểm primary flow, decision points, empty/loading/error states, mobile constraints, microcopy |
+| Design critique trong tool thiết kế kiểm hierarchy, layout, accessibility, UX decisions | `ui_skill_router` chọn `ui-ux-advisor` + tối đa 2 checklist nhỏ khác; sau code dùng `a11y_auditor` và `visual_reviewer` |
 
 ### 2.2.2. awesome-llm-apps / OfficeCLI / DesktopCommander đã chưng cất thế nào
 
@@ -430,7 +466,7 @@ Nếu dùng `uv`, `conda`, hoặc venv riêng, thay `python` trong lệnh `claud
 | Nhóm | Tools | Phụ thuộc chính | Khi dùng |
 |---|---|---|---|
 | Orchestration | `goal_autopilot`, `goal_supervisor`, `goal_runner`, `auto_trigger`, `prod_readiness_gate`, `release_orchestrator`, `run_single_agent`, `list_agents` | MCP connected, `.env` nếu gọi agent LLM, optional agent CLI | Prompt-only goal flow, direct prompt runner, hard next-action loop, Auto-Pilot, production/release gate, gọi thẳng agent, xem model mapping |
-| Harness ops | `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`, `integration_router`, `workflow_router`, `bug_repro_guard`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `scope_creep_detector`, `office_bridge` | Git, optional agent CLI, optional `specify` CLI, optional `officecli` | Self-check, dry-run install manifest, cross-agent parity, MCP config inventory, context/token overhead audit, ask_codebase preflight, runner resume/status, audit ledger, profiles, adapters, benchmark dry-run, isolated patch check, Hallmark preflight, UI/workflow routing, debug repro guard, Spec Kit status/init/scaffold, scope drift, Office doc inspect/validate |
+| Harness ops | `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`, `integration_router`, `workflow_router`, `bug_repro_guard`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `scope_creep_detector`, `office_bridge` | Git, optional agent CLI, optional `specify` CLI, optional `officecli` | Self-check, dry-run install manifest, cross-agent parity, MCP config inventory, context/token overhead audit, ask_codebase preflight, runner resume/status, audit ledger, profiles, adapters, benchmark dry-run, isolated patch check, Hallmark preflight, BA discovery/UI/workflow routing, debug repro guard, Spec Kit status/init/scaffold, scope drift, Office doc inspect/validate |
 | Deep reasoning/review | `consult`, `alt_implementation`, `panel_review`, `suggest_fix`, `quick_task`, `ask_codebase`, `swarm_debug` | 9Router models, `SPARE_MODELS`, workspace files | Design, alternative implementation, review cuối, debug bí, việc vặt, hỏi codebase |
 | Security fix loop | `security_autofix`, `auto_tester`, `run_in_sandbox` | Git worktree, pytest, 9Router debugger/tester | Auto-fix Critical/High security finding, sinh test, chạy reproducer cô lập |
 | Wiki/memory | `wiki_ingest`, `wiki_query`, `wiki_lint`, `doc_sync`, `lesson_curator` | `llmwiki/raw`, `llmwiki/wiki`, `.harness_lessons.jsonl`, `~/.claude/.harness_global_lessons.jsonl`, README | Ingest/query wiki, ghi lesson local/global, lọc lesson trước khi promote global, đồng bộ docs |

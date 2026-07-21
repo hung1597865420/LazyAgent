@@ -617,7 +617,12 @@ async def auto_trigger(
             "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
         }
-    has_ui = bool(ui_files) or _has_any(text, {"a11y", "accessibility", "i18n", "translation", "wcag"})
+    has_ui = bool(ui_files) or _has_any(text, {
+        "ui", "ux", "frontend", "front-end", "design", "redesign", "layout", "screen",
+        "component", "dashboard", "landing", "homepage", "user flow", "usability",
+        "interaction", "microcopy", "visual", "responsive",
+        "a11y", "accessibility", "i18n", "translation", "wcag",
+    })
     has_deps = bool(dependency_files)
     has_tests = bool(test_files) or _has_any(text, {"pytest", "coverage", "flaky", "mutation test", "benchmark"})
     has_perf = _has_any(text, {"performance", "regression", "slow", "latency", "throughput", "load test", "benchmark"})

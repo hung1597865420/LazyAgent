@@ -93,6 +93,19 @@ def _runtime_profile_context(root: Path) -> str:
         return bool(value)
 
     static_llm = bool(flags.get("static_llm", False))
+    can_manual_llm = b(llm, "enabled", True)
+    auto_mode = str(auto_pilot.get("mode", "safe") or "safe").strip().lower()
+    profile_rank = {
+        "off": 0, "light": 1, "standard": 2, "balanced": 4, "4": 4,
+        "review": 5, "5": 5, "heavy": 7, "7": 7, "max": 9,
+    }.get(profile.lower(), 2)
+    if profile_rank <= 0 or not can_manual_llm:
+        action_line = "Active rule: profile blocks Harness LLM/background work; use static/local checks only and say `profile off đang chặn LLM` when relevant."
+    elif profile_rank >= 7:
+        action_line = "Active rule: heavy/max profile allows proactive Harness checks; use auto_trigger mode=max for meaningful code batches when appropriate."
+    else:
+        action_line = f"Active rule: use Harness selectively under this profile; use auto_trigger mode={auto_mode or 'safe'} for post-edit/final checks and do NOT use mode=max unless the current user prompt explicitly asks for max/prod/release or the active profile is heavy/max."
+
     return (
         "Agent Harness runtime profile snapshot for this prompt:\n"
         f"- profile: {profile}\n"
@@ -100,17 +113,31 @@ def _runtime_profile_context(root: Path) -> str:
         f"- auto_pilot.enabled: {b(auto_pilot, 'enabled', False)}; mode: {auto_pilot.get('mode', 'safe')}; llm: {b(auto_pilot, 'llm', False)}\n"
         f"- auto_watch.enabled: {b(auto_watch, 'enabled', False)}; mode: {auto_watch.get('mode', 'safe')}; llm: {b(auto_watch, 'llm', False)}\n"
         f"- hooks.enabled: {b(hooks, 'enabled', True)}; lessons.enabled: {b(lessons, 'enabled', True)}; finops.enabled: {b(finops, 'enabled', True)}\n"
-        "Profile in harness.features.json wins over automatic rules. Do not change profile unless the current user prompt explicitly asks."
+        "Profile in harness.features.json wins over automatic rules. Do not change profile unless the current user prompt explicitly asks.\n"
+        f"{action_line}\n"
+        "Mandatory code-turn contract: if this turn edits code in a meaningful batch, run auto_trigger stage=post_edit after edits and stage=final before the final answer, or run panel_review once for the whole batch. Do not wait for the user to ask.\n"
+        "For feature/product/UI/UX work, call workflow_router first; if it returns market_research_advisor, prepare a short research brief before coding when the profile permits."
     )
 
 
-def _emit_additional_context(parts: list[str]) -> None:
+def _post_edit_context(root: Path) -> str:
+    return (
+        _runtime_profile_context(root)
+        + "\n\nPost-edit Harness reminder:\n"
+        "- REQUIRED: If this was a meaningful coding edit, run auto_trigger with changed_files/task/stage=post_edit using the active profile's allowed mode; balanced/review use mode=safe.\n"
+        "- REQUIRED: Before final answer for code changes, run one final auto_trigger or panel_review for the whole batch unless the user explicitly asked to skip review.\n"
+        "- FORBIDDEN: Do not use auto_trigger mode=max under balanced/review/standard unless the current user prompt explicitly asks for max/prod/release.\n"
+        "- Never send real .env secrets into panel_review; use secret/config scanners instead."
+    )
+
+
+def _emit_additional_context(parts: list[str], event_name: str = "UserPromptSubmit") -> None:
     body = "\n\n".join(p.strip() for p in parts if p and p.strip())
     if not body:
         return
     print(json.dumps({
         "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
+            "hookEventName": event_name,
             "additionalContext": body,
         }
     }, ensure_ascii=True))
@@ -188,8 +215,10 @@ def main() -> int:
         return 0
 
     tool = _tool_name(payload)
-    if tool in EDIT_TOOLS and _feature_enabled("HARNESS_LESSONS_ENABLED", True, root):
-        _record_edit(payload, root, tool)
+    if tool in EDIT_TOOLS:
+        if _feature_enabled("HARNESS_LESSONS_ENABLED", True, root):
+            _record_edit(payload, root, tool)
+        _emit_additional_context([_post_edit_context(root)], event_name="PostToolUse")
     return 0
 
 

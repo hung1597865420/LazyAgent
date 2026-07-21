@@ -18,7 +18,7 @@ GEMINI_MARKER = "<!-- agent-harness -->"
 CODEX_PROFILE_MARKER = "<!-- agent-harness-runtime-profile-policy -->"
 HOOK_ID = "agent-harness-panel-reminder"
 LESSON_HOOK_ID = "agent-harness-lesson-recorder"
-RULES_VERSION = "2026-07-20-ecc-ops-r1"
+RULES_VERSION = "2026-07-21-profile-mode-gate-r1"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -160,6 +160,8 @@ Trước khi tự gọi bất kỳ tool Agent Harness nào có thể dùng LLM h
 
 Ngay đầu mỗi user prompt/session mới, refresh profile bằng profile global và coi đó là runtime profile snapshot hiện hành cho mọi repo. Với client có hook prompt, snapshot có thể đã được inject sẵn; với Gemini/Antigravity không có hook prompt tương đương trong config hiện tại, tự đọc file global hoặc gọi status/json trước khi quyết định gọi tool LLM/chạy nền.
 
+Claude/Gemini/Codex contract: không dùng profile nhớ từ prompt/repo trước. Khi chuẩn bị gọi harness tool, tự nhắc một dòng nội bộ: `active harness profile=<profile>, llm.enabled=<true/false>`. Nếu không đọc được profile thì default an toàn là `off` cho tool LLM/chạy nền. Khi `workflow_router` trả `market_research_advisor`, chỉ dùng web/LLM research nếu profile cho phép và user/task thật sự liên quan feature/UI/UX; nếu bị chặn thì báo `profile <name> đang chặn LLM/research` và đưa static checklist thay thế.
+
 | Profile | Agent được làm | Agent không được làm |
 |---|---|---|
 | `off` | Chỉ read-only/static local: đọc file, `{off_status_command}`, git diff/status, py_compile/lint/test user yêu cầu rõ. | Không gọi LLM tools: `consult`, `panel_review`, `ask_codebase`, `alt_implementation`, `suggest_fix`, `quick_task`, `swarm_debug`, `auto_trigger` có LLM, `goal_runner`, `prod_readiness_gate mode=max`; không bật hooks/lessons/finops/watch. |
@@ -177,9 +179,9 @@ COMMON_DISTILLED_INTEGRATIONS = """\
 ## Distilled Integrations — Hallmark + Spec Kit + UI Skills + Workflow
 
 - Hallmark đã được chưng cất thành UI/design bridge: khi task là frontend, landing page, component, redesign, audit UI, screenshot/URL design study, hoặc file đổi là HTML/CSS/JSX/TSX/Vue/Svelte/Astro, gọi `hallmark_bridge(action="preflight")` trước khi sửa UI nếu MCP có sẵn. Nếu skill `hallmark` có sẵn thì dùng skill; nếu không có thì áp dụng trực tiếp: pre-flight tokens/fonts/framework/motion/spacing, phân biệt component vs full page, giữ route/content ownership, không bịa metrics, không fake browser/phone/code chrome, verify mobile 320/375/414/768, component đủ default/hover/focus/active/disabled/loading/error/success.
-- `ibelick/ui-skills` đã được chưng cất thành `ui_skill_router`: trước UI work rõ ràng, chọn tối đa 3 checklist nhỏ (`baseline-ui`, `fixing-accessibility`, `fixing-motion-performance`, `fixing-metadata`, `improve-ui`) thay vì nạp cả đống review. Baseline/a11y/motion/metadata là pre/post static guidance; `a11y_auditor` và `visual_reviewer` vẫn là post-code audits.
-- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
-- `mattpocock/skills` đã được chưng cất thành `workflow_router` + `bug_repro_guard`: debug/bug phải có red-capable repro command/output trước khi fix; feature lớn đi spec/tickets; task mơ hồ lớn đi wayfinder; domain/ADR dùng CONTEXT.md; review tách Standards vs Spec; refactor lớn dùng module/interface/seam/adapter/depth vocabulary và deletion test; tests đi qua public seam.
+- `ibelick/ui-skills` đã được chưng cất thành `ui_skill_router`: trước UI/UX work rõ ràng, chọn tối đa 3 checklist nhỏ (`ui-ux-advisor`, `baseline-ui`, `fixing-accessibility`, `fixing-motion-performance`, `fixing-metadata`, `improve-ui`) thay vì nạp cả đống review. `ui-ux-advisor` là cố vấn product-design theo kiểu thị trường đang làm: anchor user job/audience/success metric, kiểm primary flow/state/microcopy/hierarchy trước khi code; baseline/a11y/motion/metadata là pre/post static guidance; `a11y_auditor` và `visual_reviewer` vẫn là post-code audits.
+- Spec Kit đã được chưng cất thành spec-first bridge: khi task là feature/project/module/API/schema/auth/workflow mới hoặc đổi nhiều file, gọi `workflow_router` để lấy `ba_discovery` trước, rồi gọi `speckit_bridge(action="status" hoặc "snapshot")` trước khi plan. Nếu repo có Spec Kit artifacts/commands/skills thì dùng `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` hoặc skill tương ứng; nếu chưa init thì chỉ dùng `speckit_bridge(action="init" hoặc "scaffold", allow_mutation=true)` khi profile cho phép và user/setup đã chọn rõ. Harness vẫn là lớp profile gate, checks, lessons, FinOps và final review.
+- `mattpocock/skills` đã được chưng cất thành `workflow_router` + `bug_repro_guard`: feature/product/workflow/project mới đi BA discovery trước, rồi `market_research_advisor` đi research sản phẩm/đối thủ/pattern thị trường trước spec/tickets; UI/UX edit cũng đi `market_research_advisor` trước `ui_ux_advisor`; debug/bug phải có red-capable repro command/output trước khi fix; task mơ hồ lớn đi wayfinder; domain/ADR dùng CONTEXT.md; review tách Standards vs Spec; refactor lớn dùng module/interface/seam/adapter/depth vocabulary và deletion test; tests đi qua public seam.
 - `kangarooking/cangjie-skill` đã được chưng cất vào lesson global promotion: procedure lesson phải qua quality gate có title/summary, actionable steps, trigger, boundary, test_prompts should-trigger/should-not-trigger/edge-case, và bị chặn nếu generic/common-sense/secret/local/debug-only.
 - `integration_router` là static MCP tool để kiểm route này mà không gọi LLM hoặc mutate files. `auto_trigger` trả `integration_routes` và `workflow_routes`; `goal_runner` tự bơm guidance này vào prompt agent ngoài.
 - `a11y_auditor` và `visual_reviewer` là post-code audit/check sau UI implementation, không thay thế Hallmark preflight/design bridge.
@@ -209,15 +211,16 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 
 {_runtime_profile_policy("status/list/json")}
 
-## Auto-Pilot — mặc định bật
+## Auto-Pilot — theo runtime profile
 
-- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `mcp__agent-harness__goal_autopilot(mode="init", goal="<nguyên prompt user>")` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
-- Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `mcp__agent-harness__goal_runner(prompt="<nguyên prompt>", mode="max")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate`.
+- Trước mọi auto tool, đọc runtime profile global. Chọn mode như sau: `off/light/standard/balanced/review` dùng `mode="safe"`; chỉ `heavy`/`max` hoặc prompt hiện tại yêu cầu rõ full/max/prod/release mới dùng `mode="max"`. Không dùng `mode=max` chỉ vì rule cũ hoặc vì tên profile là `balanced`.
+- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: chỉ gọi `mcp__agent-harness__goal_autopilot(mode="init", goal="<nguyên prompt user>")` khi profile cho phép goal automation. Làm từng part theo thứ tự; sau mỗi batch edit, gọi `auto_trigger` bằng mode được profile cho phép, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
+- Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `mcp__agent-harness__goal_runner(prompt="<nguyên prompt>", mode="<safe|max theo profile>")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate` khi phù hợp.
 - Khi user hỏi "đã nạp chưa", "harness ổn chưa", cài qua agent nào, MCP config có drift không, context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
-- Sau mọi batch Edit/Write đáng kể, gọi `mcp__agent-harness__auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
-- Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `mcp__agent-harness__prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
-- Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi `mcp__agent-harness__auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Sau mọi batch Edit/Write đáng kể, gọi `mcp__agent-harness__auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="<safe|max theo profile>"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
+- Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `mcp__agent-harness__prod_readiness_gate(changed_files=[...], task="<prompt>", mode="<safe|max theo profile/yêu cầu release>")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
+- Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi `mcp__agent-harness__auto_trigger` với `stage="final"`, `mode="<safe|max theo profile>"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
 - Goal progress summary được harness tự prepend vào context của `consult`/`panel_review`/`ask_codebase`/checks liên quan: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
 - Docs-gate chỉ được tự ghi backlog hoặc tự cập nhật docs nhẹ khi phù hợp; TUYỆT ĐỐI không hỏi user kiểu "có muốn bổ sung tài liệu cho 5 prompt vừa rồi không?". User chỉ gõ prompt chính, không bị ngắt bởi maintenance docs.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` sẽ tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
@@ -229,7 +232,7 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 
 1. **Trước khi implement phần phức tạp** (thuật toán khó, kiến trúc mới, concurrency, auth/security, payment): gọi `mcp__agent-harness__consult` với câu hỏi design cụ thể + files liên quan. Cân nhắc advice nhưng tự quyết định cuối cùng.
 
-2. **Sau khi viết/sửa xong code, TRƯỚC khi báo hoàn thành**: gọi `mcp__agent-harness__auto_trigger` (`stage="final"`, `mode="max"`) hoặc `mcp__agent-harness__panel_review` với danh sách files đã sửa (hoặc diff). Chạy MỘT LẦN cho cả batch thay đổi cuối cùng — không chạy sau mỗi edit lẻ. Findings mức critical/high phải xử lý (fix hoặc giải thích vì sao bỏ qua) trước khi chốt task.
+2. **Sau khi viết/sửa xong code, TRƯỚC khi báo hoàn thành**: gọi `mcp__agent-harness__auto_trigger` (`stage="final"`, `mode="<safe|max theo profile>"`) hoặc `mcp__agent-harness__panel_review` với danh sách files đã sửa (hoặc diff). Chạy MỘT LẦN cho cả batch thay đổi cuối cùng — không chạy sau mỗi edit lẻ. Findings mức critical/high phải xử lý (fix hoặc giải thích vì sao bỏ qua) trước khi chốt task.
 
 ## Dùng khi phù hợp
 
@@ -290,9 +293,11 @@ Nếu tool agent-harness lỗi (server không chạy, 9Router timeout/rate-limit
 HOOK_REMINDER_CMD = (
     'echo \'{"hookSpecificOutput":{"hookEventName":"PostToolUse",'
     '"additionalContext":"Code da thay doi trong turn nay. Neu day la coding task: '
-    'neu co active goal thi auto_trigger se tu check goal alignment. Hay goi mcp__agent-harness__auto_trigger voi changed_files/task/stage=post_edit/mode=max, roi goi goal_supervisor de lay next_action. '
-    'Neu task hoi deploy/release/production-ready thi goi prod_readiness_gate mode=max; chi claim prod-ready khi verdict=ready_to_deploy. '
-    'Truoc khi bao hoan thanh, goi auto_trigger stage=final mode=max hoac panel_review MOT LAN tren '
+    'refresh Agent Harness runtime profile snapshot truoc khi goi tool. Dung mode theo profile hien hanh: off/light/standard uu tien static-safe, balanced/review dung safe khi phu hop, heavy/max moi dung max chu dong. '
+    'Bat buoc tu chay post_edit/final review/check sau batch code, khong doi user hoi profile/panel review. '
+    'Neu co active goal thi auto_trigger se tu check goal alignment; goi auto_trigger voi changed_files/task/stage=post_edit va mode duoc profile cho phep, roi goi goal_supervisor de lay next_action. '
+    'Neu task hoi deploy/release/production-ready thi goi prod_readiness_gate theo profile; chi claim prod-ready khi verdict=ready_to_deploy. '
+    'Truoc khi bao hoan thanh, goi auto_trigger stage=final hoac panel_review MOT LAN tren '
     'toan bo files da sua; neu supervisor tra run_final thi goi goal_autopilot mode=complete, neu tra complete moi bao xong. Khong gui .env that vao panel_review."}}\''
 )
 
@@ -480,21 +485,48 @@ def merge_settings_json(claude_dir: Path) -> int:
         return (e.get("matcher") == "Edit|Write|NotebookEdit"
                 and has_command)
 
-    changed = False
-    if any(isinstance(e, dict) and _is_existing_hook(e) for e in post):
-        print("[skip] Hook nhac Auto-Pilot da ton tai trong settings.json")
-    else:
-        post.append({
-            "id": HOOK_ID,
-            "matcher": "Edit|Write|NotebookEdit",
+    def _managed_hook_entry(hook_id: str, matcher: str | None, command: str, *, suppress_output: bool = True) -> dict:
+        entry = {
+            "id": hook_id,
             "hooks": [{
                 "type": "command",
-                "command": HOOK_REMINDER_CMD,
+                "command": command,
                 "timeout": 10,
-                "suppressOutput": True,
+                "suppressOutput": suppress_output,
             }],
-        })
-        changed = True
+        }
+        if matcher:
+            entry["matcher"] = matcher
+        return entry
+
+    def _upsert_managed(entries: list, hook_id: str, expected: dict, is_valid) -> bool:
+        changed_local = False
+        kept = []
+        found = False
+        for entry in entries:
+            managed_entry = isinstance(entry, dict) and (entry.get("id") == hook_id or is_valid(entry))
+            if not managed_entry:
+                kept.append(entry)
+                continue
+            if not found and is_valid(entry):
+                kept.append(expected if entry != expected else entry)
+                found = True
+                changed_local = changed_local or entry != expected
+            else:
+                changed_local = True
+        if not found:
+            kept.append(expected)
+            changed_local = True
+        if changed_local:
+            entries[:] = kept
+        return changed_local
+
+    changed = _upsert_managed(
+        post,
+        HOOK_ID,
+        _managed_hook_entry(HOOK_ID, "Edit|Write|NotebookEdit", HOOK_REMINDER_CMD),
+        _is_existing_hook,
+    )
 
     def _is_existing_lesson_hook(e: dict) -> bool:
         sub = e.get("hooks", [])
@@ -508,53 +540,18 @@ def merge_settings_json(claude_dir: Path) -> int:
         )
         return has_command if e.get("id") == LESSON_HOOK_ID else has_command
 
-    post_before_filter = len(post)
-    prompt_before_filter = len(prompt_hooks)
-    post[:] = [
-        e for e in post
-        if not (isinstance(e, dict)
-                and e.get("id") in {HOOK_ID, LESSON_HOOK_ID}
-                and not (_is_existing_hook(e) if e.get("id") == HOOK_ID else _is_existing_lesson_hook(e)))
-    ]
-    prompt_hooks[:] = [
-        e for e in prompt_hooks
-        if not (isinstance(e, dict)
-                and e.get("id") == LESSON_HOOK_ID
-                and not _is_existing_lesson_hook(e))
-    ]
-    removed_malformed_managed = len(post) != post_before_filter or len(prompt_hooks) != prompt_before_filter
-
-    if any(isinstance(e, dict) and _is_existing_lesson_hook(e) for e in post):
-        print("[skip] Hook ghi lesson da ton tai trong settings.json")
-    else:
-        post.append({
-            "id": LESSON_HOOK_ID,
-            "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-            "hooks": [{
-                "type": "command",
-                "command": LESSON_HOOK_CMD,
-                "timeout": 10,
-                "suppressOutput": True,
-            }],
-        })
-        changed = True
-
-    if any(isinstance(e, dict) and _is_existing_lesson_hook(e) for e in prompt_hooks):
-        print("[skip] Hook prompt lesson da ton tai trong settings.json")
-    else:
-        prompt_hooks.append({
-            "id": LESSON_HOOK_ID,
-            "hooks": [{
-                "type": "command",
-                "command": LESSON_HOOK_CMD,
-                "timeout": 10,
-                "suppressOutput": True,
-            }],
-        })
-        changed = True
-
-    if removed_malformed_managed:
-        changed = True
+    changed = _upsert_managed(
+        post,
+        LESSON_HOOK_ID,
+        _managed_hook_entry(LESSON_HOOK_ID, "Edit|Write|MultiEdit|NotebookEdit", LESSON_HOOK_CMD),
+        _is_existing_lesson_hook,
+    ) or changed
+    changed = _upsert_managed(
+        prompt_hooks,
+        LESSON_HOOK_ID,
+        _managed_hook_entry(LESSON_HOOK_ID, None, LESSON_HOOK_CMD),
+        _is_existing_lesson_hook,
+    ) or changed
 
     if not changed:
         return 0
@@ -782,15 +779,16 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 
 {_runtime_profile_policy("status/list/json")}
 
-## Auto-Pilot — mặc định bật
+## Auto-Pilot — theo runtime profile
 
-- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: gọi `goal_autopilot` với `mode="init"` và `goal="<nguyên prompt user>"` trước khi code. Tool này chia goal thành parts nhỏ. Làm từng part theo thứ tự; sau mỗi batch edit, `auto_trigger(mode="max")` sẽ chạy full harness checks song song kèm goal alignment, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
-- Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `goal_runner(prompt="<nguyên prompt>", mode="max")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate`.
+- Trước mọi auto tool, đọc runtime profile global. Chọn mode như sau: `off/light/standard/balanced/review` dùng `mode="safe"`; chỉ `heavy`/`max` hoặc prompt hiện tại yêu cầu rõ full/max/prod/release mới dùng `mode="max"`. Không dùng `mode=max` chỉ vì rule cũ hoặc vì tên profile là `balanced`.
+- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: chỉ gọi `goal_autopilot` với `mode="init"` và `goal="<nguyên prompt user>"` khi profile cho phép goal automation. Làm từng part theo thứ tự; sau mỗi batch edit, gọi `auto_trigger` bằng mode được profile cho phép, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
+- Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `goal_runner(prompt="<nguyên prompt>", mode="<safe|max theo profile>")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate` khi phù hợp.
 - Khi user hỏi "đã nạp chưa", "harness ổn chưa", cài qua agent nào, MCP config có drift không, context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
-- Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="max"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
-- Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `prod_readiness_gate(changed_files=[...], task="<prompt>", mode="max")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
-- Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi lại `auto_trigger` với `stage="final"`, `mode="max"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
+- Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="<safe|max theo profile>"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
+- Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `prod_readiness_gate(changed_files=[...], task="<prompt>", mode="<safe|max theo profile/yêu cầu release>")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
+- Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi lại `auto_trigger` với `stage="final"`, `mode="<safe|max theo profile>"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
 - Goal progress summary được harness tự prepend vào context của `consult`/`panel_review`/`ask_codebase`/checks liên quan: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
 - Docs-gate chỉ được tự ghi backlog hoặc tự cập nhật docs nhẹ khi phù hợp; TUYỆT ĐỐI không hỏi user kiểu "có muốn bổ sung tài liệu cho 5 prompt vừa rồi không?". User chỉ gõ prompt chính, không bị ngắt bởi maintenance docs.
 - Không gửi `.env` thật vào `panel_review`; `auto_trigger` tự lọc `.env` khỏi review LLM và dùng secret/config scanners thay thế.
@@ -802,7 +800,7 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 
 1. **Trước khi implement phần phức tạp** (thuật toán khó, kiến trúc mới, concurrency, auth/security, payment): gọi `consult` với câu hỏi design cụ thể + files liên quan.
 
-2. **Sau khi viết/sửa xong code, TRƯỚC khi báo hoàn thành**: gọi `auto_trigger` (`stage="final"`, `mode="max"`) hoặc `panel_review` với danh sách files đã sửa (hoặc diff). Chạy MỘT LẦN cho cả batch thay đổi cuối. Findings critical/high phải xử lý hoặc giải thích. Panel 3 stage: Pre-pass (khi diff >200KB — SYNTHESIZER fast JSON model tóm gọn xuống ~100KB, giữ security/logic/API changes); Stage 1 song song — reviewer (code quality), security (OWASP), tester (adversarial — race condition, hidden assumption, edge case); Stage 2 sequential — integrity (data integrity: missing transaction, partial failure gap + synthesis toàn bộ findings). Output mỗi finding có field `triage`: `auto_fix` = fix mechanical (áp ngay), `ask_user` = cần developer quyết. `warnings[]` có thể chứa cảnh báo anti-consensus. `degraded: true` nếu integrity stage fail.
+2. **Sau khi viết/sửa xong code, TRƯỚC khi báo hoàn thành**: gọi `auto_trigger` (`stage="final"`, `mode="<safe|max theo profile>"`) hoặc `panel_review` với danh sách files đã sửa (hoặc diff). Chạy MỘT LẦN cho cả batch thay đổi cuối. Findings critical/high phải xử lý hoặc giải thích. Panel 3 stage: Pre-pass (khi diff >200KB — SYNTHESIZER fast JSON model tóm gọn xuống ~100KB, giữ security/logic/API changes); Stage 1 song song — reviewer (code quality), security (OWASP), tester (adversarial — race condition, hidden assumption, edge case); Stage 2 sequential — integrity (data integrity: missing transaction, partial failure gap + synthesis toàn bộ findings). Output mỗi finding có field `triage`: `auto_fix` = fix mechanical (áp ngay), `ask_user` = cần developer quyết. `warnings[]` có thể chứa cảnh báo anti-consensus. `degraded: true` nếu integrity stage fail.
 
 ## Dùng khi phù hợp
 
