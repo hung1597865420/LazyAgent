@@ -3,15 +3,21 @@
 ## Kết luận: **🟢 APPROVE**
 
 ### Tóm tắt:
-Panel không tìm thấy issue nào.
+Panel không tìm thấy finding critical/high, nhưng có một số rủi ro medium quanh default profile `heavy`, DNS pinning dùng state process-global, và tính nhất quán của global Auto-Watch registry. Nên xử lý các finding medium trước khi phát hành rộng vì chúng ảnh hưởng đến opt-in, concurrency và shared state.
 
 ## Chi tiết các Findings
 
-✅ Không tìm thấy lỗi nào!
+| Tập tin | Dòng | Mức độ | Nhóm | Lỗi phát hiện | Gợi ý sửa lỗi | Phát hiện bởi |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| harness.features.json | 2194 | MEDIUM | secrets | Default runtime profile bị đổi sang `heavy`, bật sẵn nhiều feature nhạy cảm như `llm`, `static_llm`, `hooks`, `auto_pilot`, `auto_watch`, và `auto_watch.llm`. Fresh checkout/install có thể khởi động global Auto-Watch và LLM-backed automation mà không có opt-in rõ ràng theo repo; file thay đổi, proprietary code, `.env`/config hoặc nội dung nhạy cảm có thể bị xử lý bởi automation/LLM/hooks ngoài mong đợi. Đây cũng là thay đổi hành vi runtime so với baseline an toàn/off trước đó. | Giữ default committed profile ở trạng thái conservative, ví dụ `profile: off` và disable các feature network/LLM/background execution mặc định: `llm.enabled=false`, `static_llm.enabled=false`, `hooks.enabled=false`, `auto_pilot.enabled=false`, `auto_watch.enabled=false`, `auto_watch.llm=false`. Chỉ cho phép bật `heavy`/`max` qua command/profile opt-in rõ ràng, tốt nhất có warning hoặc migration prompt. Thêm test từ clean HOME/repo để assert setup/status/start không tạo global pid file và không bật `auto_watch.llm` nếu chưa opt-in. | reviewer, security, tester |
+| tools/analysis.py | 4798 | MEDIUM | race_condition | DNS-pinned `load_tester()` có khả năng dùng monkeypatch/process-global DNS resolution trong khi `_LOAD_TEST_DNS_LOCK` chỉ serialize các DNS-pinned load tests với nhau. Nếu cùng process MCP có request A chạy `load_tester()` với hostname DNS được bật và request B đồng thời chạy tool/network call khác, B có thể observe resolver đang bị patch/pinned của A, dẫn đến resolution sai, fail bất thường, hoặc áp chính sách pinning không thuộc request của B. | Tránh monkeypatch `socket.getaddrinfo` ở process-global scope. Dùng resolver per-session/per-adapter, kết nối đến pinned IP với Host/SNI gốc khi cần, hoặc nếu bắt buộc patch global thì phải guard toàn bộ hostname networking trong process bằng cùng resolver lock. Thêm concurrency test với hai thread: một thread chạy hostname `load_tester()` có DNS enabled, thread còn lại thực hiện normal `requests.get()`/tool network call tới hostname khác; assert call thứ hai không bao giờ nhận pinned address hoặc resolver failure từ call thứ nhất. | tester |
+| tools/watch_registry.py | 8282 | MEDIUM | race_condition | Global Auto-Watch registry là shared mutable state dưới `~/.agent-harness/watch.repos.json`; nhiều process/startup path có thể đồng thời gọi `register_repo()`/startup kick và thực hiện read-modify-write trên cùng registry. Nếu registry update không được bảo vệ bằng file lock và atomic replace, một repo registration có thể bị lost update, file JSON có thể bị ghi chồng một phần, hoặc supervisor đọc registry ở trạng thái không nhất quán. | Bọc mọi registry mutation bằng cross-platform file lock, ghi ra temporary file rồi `fsync` và atomic rename/replace. Với concurrent registration, merge lại state mới nhất sau khi lấy lock thay vì ghi snapshot cũ. Thêm test multiprocess: spawn nhiều process đồng thời `register_repo()` các repo khác nhau, sau đó assert registry JSON hợp lệ và chứa đủ tất cả repo. | integrity |
+| tools/watch_registry.py | 8282 | LOW | edge_case | Global registry nằm dưới `~/.agent-harness`; nếu `HOME`/`USERPROFILE` unset, read-only, hoặc trỏ tới non-directory path, các startup path hiện luôn đăng ký repo cho Auto-Watch có thể fail thay vì degrade gracefully. Ví dụ chạy MCP/server dưới Windows service/container account với HOME invalid và `auto_watch` enabled sẽ khiến `_kick_project_auto_watch()` gọi `register_repo()` rồi gặp lỗi tạo registry/pid file. | Validate home/registry directory trước khi khởi tạo global registry. Nếu không thể tạo/ghi registry, degrade sang disabled hoặc per-project no-op status kèm warning, không để exception escape. Thêm test với `HOME`/`USERPROFILE` trỏ tới temporary regular file hoặc unwritable directory, gọi auto-watch kick/status path và assert không crash, status báo global watcher unavailable. | tester |
 
 ## Chi tiết cuộc họp Panel
 | Agent Role | Model sử dụng | Trạng thái | Thời gian phản hồi |
 | :--- | :--- | :--- | :--- |
-| REVIEWER | cx/gpt-5.5-review | ✅ | 21.28s |
-| SECURITY | cx/gpt-5.5-review | ✅ | 12.91s |
-| TESTER | cx/gpt-5.5 | ✅ | 23.46s |
+| REVIEWER | cx/gpt-5.5-review | ✅ | 19.80s |
+| SECURITY | cx/gpt-5.5-review | ✅ | 16.89s |
+| TESTER | cx/gpt-5.5 | ✅ | 31.99s |
+| INTEGRITY | cx/gpt-5.5-review | ✅ | 34.66s |
