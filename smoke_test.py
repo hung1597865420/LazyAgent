@@ -264,6 +264,7 @@ expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "prov
             "i18n_auditor", "polyglot_reviewer", "git_archaeologist", "feature_flag_auditor",
             "dead_code_scanner", "profiler", "coverage_analyzer", "incident_responder",
             "api_contract_tester", "chaos_tester", "index_codebase", "secret_scanner",
+            "review_context_graph", "graph_health", "graph_minimal_context",
             "changelog_generator", "env_parity_checker", "load_tester", "complexity_analyzer",
             "migration_validator", "sql_query_analyzer", "openapi_spec_sync",
             "breaking_change_detector", "flaky_test_detector", "duplicate_code_scanner",
@@ -1566,7 +1567,7 @@ watch_changed = auto_watch.changed_files(snap1, snap2)
 check("auto_watch ignore .git và detect file đổi",
       "src/app.py" in watch_changed
       and "src/.harness_utils/config.py" in snap1
-      and ".harness_docs/policy.md" in snap1
+      and ".harness_docs/policy.md" not in snap1
       and ".git/config" not in snap1,
       str(watch_changed))
 check("auto_watch ignore harness runtime artifacts",
@@ -3649,6 +3650,12 @@ r_index_mcp = asyncio.run(mcp_server.call_tool("index_codebase", {"force": False
 check("index_codebase MCP dispatch chạy được", "status" in json.loads(r_index_mcp[0].text), r_index_mcp[0].text)
 r_search = asyncio.run(st.semantic_search(query="test", top_k=2))
 check("semantic_search chạy được", "results" in r_search and "warnings" in r_search, str(r_search))
+r_graph_min = asyncio.run(st.graph_minimal_context(task="review smoke"))
+check("graph_minimal_context chạy được", "status" in r_graph_min and "next_tool_suggestions" in r_graph_min, str(r_graph_min))
+r_graph_health = asyncio.run(st.graph_health(limit=3))
+check("graph_health chạy được", "status" in r_graph_health and "knowledge_gaps" in r_graph_health, str(r_graph_health))
+r_graph_review_mcp = asyncio.run(mcp_server.call_tool("review_context_graph", {"changed_files": ["tools/graph_review.py"], "detail_level": "minimal"}))
+check("review_context_graph MCP dispatch chạy được", "risk_score" in json.loads(r_graph_review_mcp[0].text), r_graph_review_mcp[0].text)
 
 # 28. finops_stats test
 from agents import get_finops_stats

@@ -19,19 +19,33 @@ from pathlib import Path
 from config import WORKSPACE_ROOT
 from runtime_flags import bool_env_string, bool_flag, choice_flag, float_flag
 from tools.auto import auto_trigger
+from tools.watch_registry import (
+    claim_global_pid,
+    clear_global_pid,
+    heartbeat_global_pid,
+    list_repos,
+    register_repo,
+)
 
 IGNORE_DIRS = {
     ".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache",
-    ".ruff_cache", ".harness_cache", ".harness_sandbox", ".harness_smoke",
+    ".ruff_cache", ".harness", ".harness_cache", ".harness_sandbox", ".harness_smoke",
     "node_modules", "venv", ".venv", "dist", "build",
 }
 IGNORE_DIR_PREFIXES = (
     ".harness_sandbox_",
+    ".harness_smoke_",
+    ".harness_targeted_test_",
+    ".harness_registry_test_",
     ".harness_worktree_",
 )
 IGNORE_SUFFIXES = {
     ".tmp", ".temp", ".swp", ".swo", ".pyc", ".pyo", ".log", ".lock",
-    ".processing",
+    ".pid", ".processing",
+}
+DEPENDENCY_LOCK_FILES = {
+    "poetry.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
+    "pipfile.lock", "uv.lock", "cargo.lock", "composer.lock",
 }
 IGNORE_FILES = {
     "REVIEW_REPORT.md",
@@ -49,11 +63,13 @@ IGNORE_ROOT_FILE_RE = re.compile(r"^\.harness_[A-Za-z0-9_.-]+\.(?:db|jsonl|pid|l
 LOCK_FILE = ".harness_auto_watch.lock"
 PID_FILE = ".harness_auto_watch.pid"
 LOG_FILE = ".harness_auto_watch.log"
+ROTATED_LOG_RE = re.compile(r".+\.log\.\d+$", re.I)
 MAX_LOG_BYTES = 2_000_000
 MAX_LOG_FILES = 60
 REDACT_KEYS = ("key", "token", "secret", "password", "credential", "authorization")
 _last_log_warning = 0.0
 _PID_TOKEN = uuid.uuid4().hex
+_ENV_TRIGGER_LOCK = asyncio.Lock()
 
 
 def _enabled() -> bool:
@@ -68,24 +84,42 @@ def _watch_auto_llm() -> str | None:
     return bool_env_string("HARNESS_AUTO_WATCH_LLM", False, root=_root())
 
 
-async def _auto_trigger_from_watch(*, changed_files: list[str], task: str, stage: str) -> dict:
-    previous_auto_llm = os.getenv("HARNESS_AUTO_LLM")
-    watch_auto_llm = _watch_auto_llm()
-    if watch_auto_llm is not None:
-        os.environ["HARNESS_AUTO_LLM"] = watch_auto_llm
-    try:
-        return await auto_trigger(
-            changed_files=changed_files,
-            task=task,
-            stage=stage,
-            mode=_watch_mode(),
-        )
-    finally:
+async def _auto_trigger_from_watch(*, changed_files: list[str], task: str, stage: str, root: Path | None = None) -> dict:
+    async with _ENV_TRIGGER_LOCK:
+        previous_auto_llm = os.getenv("HARNESS_AUTO_LLM")
+        previous_watch_root = os.getenv("HARNESS_WATCH_ROOT")
+        previous_workspace = os.getenv("WORKSPACE_ROOT")
+        previous_claude_dir = os.getenv("CLAUDE_PROJECT_DIR")
+        watch_auto_llm = _watch_auto_llm()
         if watch_auto_llm is not None:
-            if previous_auto_llm is None:
-                os.environ.pop("HARNESS_AUTO_LLM", None)
-            else:
-                os.environ["HARNESS_AUTO_LLM"] = previous_auto_llm
+            os.environ["HARNESS_AUTO_LLM"] = watch_auto_llm
+        if root is not None:
+            root_s = str(root.resolve())
+            os.environ["HARNESS_WATCH_ROOT"] = root_s
+            os.environ["WORKSPACE_ROOT"] = root_s
+            os.environ["CLAUDE_PROJECT_DIR"] = root_s
+        try:
+            return await auto_trigger(
+                changed_files=changed_files,
+                task=task,
+                stage=stage,
+                mode=_watch_mode(),
+            )
+        finally:
+            for name, old in (
+                ("HARNESS_WATCH_ROOT", previous_watch_root),
+                ("WORKSPACE_ROOT", previous_workspace),
+                ("CLAUDE_PROJECT_DIR", previous_claude_dir),
+            ):
+                if old is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = old
+            if watch_auto_llm is not None:
+                if previous_auto_llm is None:
+                    os.environ.pop("HARNESS_AUTO_LLM", None)
+                else:
+                    os.environ["HARNESS_AUTO_LLM"] = previous_auto_llm
 
 
 def _safe_float_env(name: str, default: float, min_value: float, max_value: float | None = None) -> float:
@@ -115,12 +149,14 @@ def _ignored(path: Path, root: Path) -> bool:
     root_runtime_file = len(rel_parts) == 1 and (
         name in IGNORE_ROOT_FILES or bool(IGNORE_ROOT_FILE_RE.match(name))
     )
+    dependency_lock_file = name.lower() in DEPENDENCY_LOCK_FILES
     return (
         name.startswith(".#")
         or name.endswith("~")
         or name in IGNORE_FILES
         or root_runtime_file
-        or path.suffix.lower() in IGNORE_SUFFIXES
+        or (path.suffix.lower() in IGNORE_SUFFIXES and not dependency_lock_file)
+        or bool(ROTATED_LOG_RE.match(name))
         or name in {LOCK_FILE, PID_FILE, LOG_FILE}
     )
 
@@ -142,7 +178,9 @@ def snapshot(root: Path) -> dict[str, tuple[int, int]]:
             continue
         dirnames[:] = [
             name for name in dirnames
-            if name not in IGNORE_DIRS and not name.startswith(IGNORE_DIR_PREFIXES)
+            if name not in IGNORE_DIRS
+            and not name.startswith(IGNORE_DIR_PREFIXES)
+            and not (not rel_parts and name.startswith(".harness_"))
         ]
         for filename in filenames:
             path = base / filename
@@ -211,9 +249,11 @@ def _lock_stale_and_owner_dead(lock: Path, ttl: float = 900.0) -> bool:
         return True
     try:
         pid = int(data.get("pid", 0))
+        ts = float(data.get("ts", 0))
     except (ValueError, TypeError):
         return True
-    return not _pid_alive(pid)
+    expired = ts <= 0 or (time.time() - ts) > ttl
+    return expired and not _pid_alive(pid)
 
 
 def _acquire_lock(lock: Path, ttl: float = 900.0) -> str | None:
@@ -257,9 +297,12 @@ def _pid_file_fresh(pid_file: Path, ttl: float = 60.0) -> bool:
         return False
     try:
         pid = int(data.get("pid", 0))
+        ts = float(data.get("ts", 0))
     except (ValueError, TypeError):
         return False
-    return pid != os.getpid() and _pid_alive(pid)
+    if pid == os.getpid() or ts <= 0 or (time.time() - ts) > ttl:
+        return False
+    return _pid_alive(pid)
 
 
 def _claim_pid_file(pid_file: Path) -> int | None:
@@ -369,8 +412,92 @@ async def run_once(root: Path | None = None, previous: dict[str, tuple[int, int]
         changed_files=files,
         task="auto_watch detected workspace file changes",
         stage="post_edit",
+        root=root,
     )
     return {"status": "triggered", "changed_files": files, "auto_trigger": result}
+
+
+def _global_watch_enabled() -> bool:
+    return os.getenv("HARNESS_AUTO_WATCH_SINGLE", "").strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def _claim_global_pid() -> str | None:
+    token = uuid.uuid4().hex
+    return token if claim_global_pid(token) else None
+
+
+async def watch_global_forever() -> None:
+    if not _enabled():
+        print("[auto_watch] disabled (HARNESS_AUTO_WATCH=0)")
+        return
+
+    try:
+        register_repo(_root())
+    except Exception:
+        pass
+    token = _claim_global_pid()
+    if token is None:
+        print("[auto_watch] global watcher already running")
+        return
+
+    interval = _safe_float_env("HARNESS_AUTO_WATCH_INTERVAL", 3.0, 0.5, 300.0)
+    debounce = _safe_float_env("HARNESS_AUTO_WATCH_DEBOUNCE", 2.0, 0.5, 300.0)
+    snapshots: dict[str, dict[str, tuple[int, int]]] = {}
+    print(f"[auto_watch] global watcher interval={interval}s debounce={debounce}s")
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            if not heartbeat_global_pid(token):
+                print("[auto_watch] global watcher ownership changed, exiting")
+                return
+            if not _enabled():
+                print("[auto_watch] disabled by runtime feature flags, exiting")
+                return
+            roots = [Path(r["path"]).resolve() for r in list_repos() if r.get("path")]
+            for root in roots:
+                if not root.exists():
+                    snapshots.pop(str(root), None)
+                    continue
+                before = snapshots.get(str(root))
+                current = snapshot(root)
+                if before is None:
+                    snapshots[str(root)] = current
+                    continue
+                files = changed_files(before, current)
+                if not files:
+                    snapshots[str(root)] = current
+                    continue
+                await asyncio.sleep(debounce)
+                current = snapshot(root)
+                files = changed_files(before, current)
+                if not files:
+                    snapshots[str(root)] = current
+                    continue
+                lock_info = _acquire_lock(root / LOCK_FILE)
+                if lock_info is None:
+                    snapshots[str(root)] = current
+                    continue
+                try:
+                    result = await _auto_trigger_from_watch(
+                        changed_files=files[:MAX_LOG_FILES],
+                        task="auto_watch global detected workspace file changes",
+                        stage="post_edit",
+                        root=root,
+                    )
+                    _append_log(root, {
+                        "ts": time.time(),
+                        "global": True,
+                        "changed_files": files[:MAX_LOG_FILES],
+                        "changed_count": len(files),
+                        "result": result,
+                    })
+                except Exception as e:
+                    _append_log(root, {"ts": time.time(), "global": True, "changed_files": files, "error": str(e)})
+                finally:
+                    _release_lock(root / LOCK_FILE, lock_info)
+                    snapshots[str(root)] = current
+    finally:
+        clear_global_pid(token)
 
 
 async def watch_forever() -> None:
@@ -442,6 +569,7 @@ async def watch_forever() -> None:
                     changed_files=files[:MAX_LOG_FILES],
                     task="auto_watch detected workspace file changes",
                     stage="post_edit",
+                    root=root,
                 )
                 _append_log(root, {
                     "ts": time.time(),
@@ -463,7 +591,10 @@ async def watch_forever() -> None:
 
 
 def main() -> None:
-    asyncio.run(watch_forever())
+    if _global_watch_enabled():
+        asyncio.run(watch_global_forever())
+    else:
+        asyncio.run(watch_forever())
 
 
 if __name__ == "__main__":

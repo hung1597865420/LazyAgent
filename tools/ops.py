@@ -790,8 +790,12 @@ def _auto_watch_status() -> dict[str, Any]:
     alive = False
     if pid_path.exists():
         try:
-            pid = int(pid_path.read_text(encoding="utf-8", errors="replace").strip().split()[0])
-        except (OSError, ValueError, IndexError):
+            raw_pid = pid_path.read_text(encoding="utf-8", errors="replace").strip()
+            if raw_pid.startswith("{"):
+                pid = int((json.loads(raw_pid) or {}).get("pid", 0))
+            else:
+                pid = int(raw_pid.split()[0])
+        except (OSError, ValueError, IndexError, json.JSONDecodeError, TypeError):
             pid = None
     if pid:
         if os.name == "nt":
@@ -799,12 +803,33 @@ def _auto_watch_status() -> dict[str, Any]:
             alive = rc == 0 and str(pid) in out
         else:
             alive = Path(f"/proc/{pid}").exists()
+    global_pid = None
+    global_alive = False
+    registry_count = 0
+    global_pid_file = ""
+    registry_file = ""
+    try:
+        from .watch_registry import GLOBAL_PID_FILE, REGISTRY_FILE, global_pid_active, list_repos, read_global_pid
+        registry_file = _display_path(str(REGISTRY_FILE))
+        global_pid_file = _display_path(str(GLOBAL_PID_FILE))
+        registry_count = len(list_repos())
+        data = read_global_pid()
+        if data:
+            global_pid = int(data.get("pid", 0))
+            global_alive = global_pid_active(data)
+    except Exception:
+        pass
     return {
         "pid": pid,
         "alive": alive,
         "pid_file": _display_path(str(pid_path)),
         "log_file": _display_path(str(log_path)),
         "log_exists": log_path.exists(),
+        "global_pid": global_pid,
+        "global_alive": global_alive,
+        "global_pid_file": global_pid_file,
+        "global_registry_file": registry_file,
+        "global_registry_repos": registry_count,
     }
 
 

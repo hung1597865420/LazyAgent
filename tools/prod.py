@@ -205,7 +205,8 @@ async def prod_readiness_gate(
     panel_files = _safe_panel_files(code_files or files)
     docs_only = _docs_only(files)
     removed_safe_files = sorted(set(files) - set(scan_files))
-    sensitive_only = bool(files) and len(removed_safe_files) == len(files)
+    removed_panel_files = sorted(set(code_files or files) - set(panel_files))
+    sensitive_only = bool(files) and len(removed_panel_files) == len(code_files or files)
     has_api = _has_any(text, {"api", "route", "endpoint", "openapi", "request", "response", "pydantic"})
     has_container = any(_basename(f) in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for f in files)
     has_ci = any(".github/workflows" in f.replace("\\", "/").lower() or _basename(f) == ".gitlab-ci.yml" for f in files)
@@ -301,10 +302,10 @@ async def prod_readiness_gate(
         warnings.append("docs-only safe gate skipped heavy deploy checks; use mode=max before a real production release")
     if diff and not files:
         warnings.append("diff was provided without changed_files; file-scoped checks may be incomplete")
-    if removed_safe_files:
-        warnings.append(f"Sensitive files excluded from LLM review/content scanners: {removed_safe_files[:10]}")
+    if removed_panel_files:
+        warnings.append(f"Sensitive files excluded from LLM review: {removed_panel_files[:10]}; local secret scanner still scans redacted snippets")
     if sensitive_only:
-        warnings.append("sensitive-only change: content review skipped; rely on secret/env/config checks and inspect metadata manually")
+        warnings.append("sensitive-only change: LLM content review skipped; rely on secret/env/config checks and inspect metadata manually")
 
     if critical:
         verdict = "rollback_required"

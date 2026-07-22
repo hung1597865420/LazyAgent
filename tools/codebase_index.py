@@ -8,6 +8,7 @@ Singleton per WORKSPACE_ROOT, lazy-build on first query, incremental update via 
 from __future__ import annotations
 
 import ast
+import ctypes
 import hashlib
 import json
 import logging
@@ -16,6 +17,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,10 +33,15 @@ _log = logging.getLogger("harness.codebase_index")
 # ── Skip dirs ──────────────────────────────────────────────────────────────────
 _SKIP_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
-    ".pytest_cache", ".ruff_cache", ".harness_worktree", ".harness_sandbox",
-    ".harness_cache", ".gemini", ".claude", ".next", "dist", "build", "coverage",
+    ".pytest_cache", ".ruff_cache", ".harness", ".harness_worktree", ".harness_sandbox",
+    ".harness_cache", ".harness_smoke", ".gemini", ".claude", ".next", "dist", "build", "coverage",
     "target", "vendor", ".idea", ".vscode", "out", ".tox", ".eggs", "site-packages",
 }
+_SKIP_DIR_PREFIXES = (
+    ".harness_worktree_",
+    ".harness_sandbox_",
+    ".harness_smoke_",
+)
 
 # ── Supported extensions ───────────────────────────────────────────────────────
 _TEXT_EXTS = {
@@ -62,6 +69,7 @@ _LANG_BY_EXT: dict[str, str] = {
 _IGNORE_SYMBOL_NAMES = {"__init__", "main", "__new__", "__repr__", "__str__"}
 _WORD_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 _MAX_FILE_BYTES = 500_000  # skip files > 500KB
+_INDEX_SCHEMA_VERSION = 4
 
 
 # ── Singleton registry ─────────────────────────────────────────────────────────
@@ -91,6 +99,7 @@ class CodebaseIndex:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.cache_dir / "codebase_index.db"
         self.meta_path = self.cache_dir / "codebase_index_meta.json"
+        self.build_lock_path = self.cache_dir / "codebase_index.lock"
         self._rlock = threading.RLock()   # reentrant — same thread can re-acquire
         self._building = False
         self._conn: Optional[sqlite3.Connection] = None
@@ -130,11 +139,31 @@ class CodebaseIndex:
                 self._building = False
 
     def _build_internal(self, force: bool) -> dict:
+        lock_claim = self._claim_build_lock()
+        if lock_claim is None:
+            if self._has_index_data():
+                return {
+                    "status": "locked_reused",
+                    "files_indexed": self._scalar("SELECT COUNT(*) FROM files"),
+                    "symbols_indexed": self._scalar("SELECT COUNT(*) FROM symbols"),
+                    "languages": self._language_counts(),
+                    "tree_sitter": _TS_AVAILABLE,
+                    "duration_ms": 0,
+                    "warnings": ["Another process is rebuilding the code index; reused current index."],
+                }
+            return {"status": "locked", "message": "Another process is rebuilding the code index"}
+        try:
+            return self._build_internal_locked(force)
+        finally:
+            self._release_build_lock(lock_claim)
+
+    def _build_internal_locked(self, force: bool) -> dict:
         started = time.time()
         snapshot = self._compute_snapshot()
         prev = self._load_meta()
 
-        if (not force and prev.get("snapshot_digest") == snapshot["digest"]
+        if (not force and prev.get("schema_version") == _INDEX_SCHEMA_VERSION
+                and prev.get("snapshot_digest") == snapshot["digest"]
                 and self._has_index_data()):
             return {
                 "status": "reused",
@@ -146,12 +175,12 @@ class CodebaseIndex:
             }
 
         files = self._iter_files()
-        self._reset_index()
         files_indexed = symbols_indexed = refs_indexed = 0
         warnings: list[str] = []
 
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            self._clear_index_rows()
             for path in files:
                 rel = self._rel(path)
                 try:
@@ -176,11 +205,27 @@ class CodebaseIndex:
                     self._insert_ref(file_id, rel, r)
                     refs_indexed += 1
 
+            end_snapshot = self._compute_snapshot()
+            if end_snapshot["digest"] != snapshot["digest"]:
+                self.conn.rollback()
+                return {
+                    "status": "changed_during_build",
+                    "files_indexed": self._scalar("SELECT COUNT(*) FROM files") if self._has_index_data() else 0,
+                    "symbols_indexed": self._scalar("SELECT COUNT(*) FROM symbols") if self._has_index_data() else 0,
+                    "languages": self._language_counts() if self._has_index_data() else {},
+                    "tree_sitter": _TS_AVAILABLE,
+                    "warnings": ["Files changed while rebuilding code index; rolled back and will retry on next query."],
+                    "duration_ms": int((time.time() - started) * 1000),
+                }
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
-        self._save_meta({"snapshot_digest": snapshot["digest"], "built_at": time.time()})
+        self._save_meta({
+            "snapshot_digest": snapshot["digest"],
+            "built_at": time.time(),
+            "schema_version": _INDEX_SCHEMA_VERSION,
+        })
         _log.info("Index built: %d files, %d symbols (%s)", files_indexed, symbols_indexed,
                   "tree-sitter" if _TS_AVAILABLE else "fallback")
 
@@ -245,14 +290,28 @@ class CodebaseIndex:
         self._ensure_indexed()
         rel = self._normalize_rel(file_path)
         rows = self.conn.execute(
-            "SELECT path,symbol,kind,language,snippet FROM symbols WHERE path=? ORDER BY line",
+            "SELECT path,symbol,kind,language,line,end_line,snippet,signature FROM symbols WHERE path=? ORDER BY line",
             (rel,),
         ).fetchall()
         return [
             {"path": r["path"], "symbol": r["symbol"], "kind": r["kind"],
-             "language": r["language"], "score": 1.0, "snippet": _trim(r["snippet"], 200)}
+             "language": r["language"], "line": r["line"], "end_line": r["end_line"],
+             "signature": r["signature"], "score": 1.0, "snippet": _trim(r["snippet"], 200)}
             for r in rows
         ]
+
+    def get_changed_symbols(self, file_path: str, ranges: list[tuple[int, int]] | None = None) -> list[dict]:
+        """Return symbols in a file, optionally limited to changed line ranges."""
+        symbols = self.get_symbols(file_path)
+        if not ranges:
+            return symbols
+        out: list[dict] = []
+        for sym in symbols:
+            start = int(sym.get("line") or 1)
+            end = int(sym.get("end_line") or start)
+            if any(start <= r_end and end >= r_start for r_start, r_end in ranges):
+                out.append(sym)
+        return out
 
     def find_dead_code(self) -> list[dict]:
         """Tìm symbols không được reference từ nơi nào khác (polyglot)."""
@@ -302,6 +361,167 @@ class CodebaseIndex:
             for r in rows if r["path"]
         ]
 
+    def get_refs_to(self, symbol: str, kind: str | None = None, limit: int = 500) -> list[dict]:
+        """Return raw references to a symbol, optionally filtered by ref kind."""
+        self._ensure_indexed()
+        symbol = (symbol or "").strip()
+        if not symbol:
+            return []
+        limit = max(1, min(int(limit), 5000))
+        if kind:
+            rows = self.conn.execute(
+                """
+                SELECT r.path, r.owner_symbol, r.ref_symbol, r.line, r.kind,
+                       s.kind AS owner_kind, s.language, s.snippet
+                FROM refs r
+                LEFT JOIN symbols s ON s.path=r.path AND s.symbol=r.owner_symbol
+                WHERE r.ref_symbol=? AND r.kind=?
+                ORDER BY r.path, r.line
+                LIMIT ?
+                """,
+                (symbol, kind, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT r.path, r.owner_symbol, r.ref_symbol, r.line, r.kind,
+                       s.kind AS owner_kind, s.language, s.snippet
+                FROM refs r
+                LEFT JOIN symbols s ON s.path=r.path AND s.symbol=r.owner_symbol
+                WHERE r.ref_symbol=?
+                ORDER BY r.path, r.line
+                LIMIT ?
+                """,
+                (symbol, limit),
+            ).fetchall()
+        return [
+            {
+                "path": r["path"],
+                "owner_symbol": r["owner_symbol"],
+                "ref_symbol": r["ref_symbol"],
+                "line": r["line"],
+                "kind": r["kind"],
+                "owner_kind": r["owner_kind"] or "file",
+                "language": r["language"],
+                "snippet": _trim(r["snippet"], 200),
+            }
+            for r in rows
+        ]
+
+    def get_refs_by_owner(self, owner_symbol: str, path: str | None = None, limit: int = 500) -> list[dict]:
+        """Return outgoing references from a symbol."""
+        self._ensure_indexed()
+        owner_symbol = (owner_symbol or "").strip()
+        if not owner_symbol:
+            return []
+        limit = max(1, min(int(limit), 5000))
+        if path:
+            rows = self.conn.execute(
+                """
+                SELECT path, owner_symbol, ref_symbol, line, kind
+                FROM refs
+                WHERE owner_symbol=? AND path=?
+                ORDER BY line
+                LIMIT ?
+                """,
+                (owner_symbol, self._normalize_rel(path), limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT path, owner_symbol, ref_symbol, line, kind
+                FROM refs
+                WHERE owner_symbol=?
+                ORDER BY path, line
+                LIMIT ?
+                """,
+                (owner_symbol, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def graph_stats(self) -> dict:
+        """Return compact graph stats for review pre-pass tools."""
+        self._ensure_indexed()
+        return {
+            "files": self._scalar("SELECT COUNT(*) FROM files"),
+            "symbols": self._scalar("SELECT COUNT(*) FROM symbols"),
+            "refs": self._scalar("SELECT COUNT(*) FROM refs"),
+            "languages": self._language_counts(),
+        }
+
+    def hub_nodes(self, limit: int = 10) -> list[dict]:
+        """Find high-degree symbols based on incoming/outgoing refs."""
+        self._ensure_indexed()
+        limit = max(1, min(int(limit), 100))
+        rows = self.conn.execute(
+            """
+            SELECT s.path, s.symbol, s.kind, s.language, s.line, s.snippet,
+                   COALESCE(inb.inbound, 0) AS inbound,
+                   COALESCE(outb.outbound, 0) AS outbound,
+                   COALESCE(inb.inbound, 0) + COALESCE(outb.outbound, 0) AS degree
+            FROM symbols s
+            LEFT JOIN (
+                SELECT ref_symbol, COUNT(*) AS inbound
+                FROM refs GROUP BY ref_symbol
+            ) inb ON inb.ref_symbol=s.symbol OR inb.ref_symbol=substr(s.symbol, instr(s.symbol, '.') + 1)
+            LEFT JOIN (
+                SELECT owner_symbol, path, COUNT(*) AS outbound
+                FROM refs GROUP BY owner_symbol, path
+            ) outb ON outb.owner_symbol=s.symbol AND outb.path=s.path
+            WHERE s.symbol IS NOT NULL AND s.symbol NOT IN ('main', '__init__')
+            ORDER BY degree DESC, inbound DESC, s.path
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "path": r["path"], "symbol": r["symbol"], "kind": r["kind"],
+                "language": r["language"], "line": r["line"],
+                "inbound": int(r["inbound"] or 0), "outbound": int(r["outbound"] or 0),
+                "degree": int(r["degree"] or 0), "snippet": _trim(r["snippet"], 200),
+            }
+            for r in rows
+            if int(r["degree"] or 0) > 0
+        ]
+
+    def bridge_nodes(self, limit: int = 10) -> list[dict]:
+        """Find simple architectural chokepoints spanning many files."""
+        self._ensure_indexed()
+        limit = max(1, min(int(limit), 100))
+        rows = self.conn.execute(
+            """
+            SELECT s.path, s.symbol, s.kind, s.language, s.line, s.snippet,
+                   COUNT(DISTINCT r.path) AS inbound_files,
+                   COUNT(r.id) AS inbound_refs,
+                   COALESCE(outb.outbound_files, 0) AS outbound_files
+            FROM symbols s
+            LEFT JOIN refs r ON r.ref_symbol=s.symbol OR r.ref_symbol=substr(s.symbol, instr(s.symbol, '.') + 1)
+            LEFT JOIN (
+                SELECT owner_symbol, path, COUNT(DISTINCT ref_symbol) AS outbound_files
+                FROM refs GROUP BY owner_symbol, path
+            ) outb ON outb.owner_symbol=s.symbol AND outb.path=s.path
+            WHERE s.symbol IS NOT NULL AND s.symbol NOT IN ('main', '__init__')
+            GROUP BY s.path, s.symbol, s.kind, s.language, s.line, s.snippet, outb.outbound_files
+            ORDER BY inbound_files DESC, inbound_refs DESC, outbound_files DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "path": r["path"], "symbol": r["symbol"], "kind": r["kind"],
+                "language": r["language"], "line": r["line"],
+                "inbound_files": int(r["inbound_files"] or 0),
+                "inbound_refs": int(r["inbound_refs"] or 0),
+                "outbound_files": int(r["outbound_files"] or 0),
+                "bridge_score": int(r["inbound_files"] or 0) + int(r["outbound_files"] or 0),
+                "snippet": _trim(r["snippet"], 200),
+            }
+            for r in rows
+            if int(r["inbound_files"] or 0) > 1
+        ]
+
     # ── Lazy init ──────────────────────────────────────────────────────────────
     def _ensure_indexed(self) -> None:
         if self._has_index_data():
@@ -344,14 +564,103 @@ class CodebaseIndex:
             CREATE INDEX IF NOT EXISTS idx_refs_own ON refs(owner_symbol);
             CREATE INDEX IF NOT EXISTS idx_refs_path ON refs(path);
         """)
+        self._ensure_column("files", "content", "TEXT")
+        self._ensure_column("symbols", "signature", "TEXT")
+        self._ensure_column("refs", "owner_symbol", "TEXT")
+        self._ensure_column("refs", "line", "INTEGER")
+        self._ensure_column("refs", "kind", "TEXT")
+        self._ensure_column("search_source", "content", "TEXT")
+        search_cols = self._table_columns("search_index")
+        if search_cols and "content" not in search_cols:
+            c.execute("DROP TABLE IF EXISTS search_index")
+            c.execute(
+                "CREATE VIRTUAL TABLE search_index "
+                "USING fts5(path, symbol, kind, language, snippet, content, "
+                "content='search_source', content_rowid='rowid')"
+            )
         c.commit()
 
+    def _table_columns(self, table: str) -> set[str]:
+        try:
+            return {str(row["name"]) for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        except sqlite3.OperationalError:
+            return set()
+
+    def _ensure_column(self, table: str, column: str, sql_type: str) -> None:
+        if column in self._table_columns(table):
+            return
+        try:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+        except sqlite3.OperationalError:
+            pass
+
     def _reset_index(self) -> None:
-        self.conn.executescript(
-            "DELETE FROM refs; DELETE FROM symbols; DELETE FROM files;"
-            "DELETE FROM search_index; DELETE FROM search_source;"
-        )
+        self._clear_index_rows()
         self.conn.commit()
+
+    def _clear_index_rows(self) -> None:
+        for table in ("refs", "symbols", "files", "search_index", "search_source"):
+            self.conn.execute(f"DELETE FROM {table}")
+
+    def _pid_alive(self, pid: int) -> bool:
+        if pid <= 0:
+            return False
+        if os.name == "nt":
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return False
+                return code.value == 259
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        try:
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    def _lock_owner_alive(self) -> bool:
+        try:
+            data = json.loads(self.build_lock_path.read_text(encoding="utf-8"))
+            return self._pid_alive(int(data.get("pid", 0)))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return False
+
+    def _claim_build_lock(self, timeout: float = 60.0) -> tuple[int, str] | None:
+        deadline = time.time() + max(0.1, timeout)
+        while time.time() < deadline:
+            try:
+                if self.build_lock_path.exists():
+                    if not self._lock_owner_alive():
+                        self.build_lock_path.unlink()
+            except OSError:
+                pass
+            try:
+                fd = os.open(str(self.build_lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                token = uuid.uuid4().hex
+                os.write(fd, json.dumps({"pid": os.getpid(), "token": token, "ts": time.time()}).encode("utf-8"))
+                return fd, token
+            except OSError:
+                time.sleep(0.1)
+        return None
+
+    def _release_build_lock(self, claim: tuple[int, str]) -> None:
+        fd, token = claim
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            data = json.loads(self.build_lock_path.read_text(encoding="utf-8"))
+            if int(data.get("pid", 0)) == os.getpid() and data.get("token") == token:
+                self.build_lock_path.unlink()
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
 
     def _insert_file(self, rel: str, language: str, content: str, mtime: float) -> int:
         snippet = _trim(" ".join(content.split()), 200)
@@ -426,7 +735,7 @@ class CodebaseIndex:
         out: list[Path] = []
         for p in self.root.rglob("*"):
             try:
-                if any(part in _SKIP_DIRS for part in p.parts):
+                if any(part in _SKIP_DIRS or part.startswith(_SKIP_DIR_PREFIXES) or part.startswith(".harness_") for part in p.parts):
                     continue
                 if not p.is_file() or p.suffix.lower() not in _TEXT_EXTS:
                     continue
@@ -570,20 +879,59 @@ def _py_refs(content: str) -> list[dict]:
             self.generic_visit(node)
             stack.pop()
 
+        def visit_Import(self, node: ast.Import) -> None:
+            owner = ".".join(stack) if stack else None
+            for alias in node.names:
+                root_name = (alias.name or "").split(".", 1)[0]
+                if root_name:
+                    refs.append({
+                        "owner_symbol": owner,
+                        "ref_symbol": root_name,
+                        "line": getattr(node, "lineno", 1),
+                        "kind": "import",
+                    })
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            owner = ".".join(stack) if stack else None
+            module = node.module or ""
+            if module:
+                refs.append({
+                    "owner_symbol": owner,
+                    "ref_symbol": module.split(".", 1)[0],
+                    "line": getattr(node, "lineno", 1),
+                    "kind": "import",
+                })
+            for alias in node.names:
+                if alias.name and alias.name != "*":
+                    refs.append({
+                        "owner_symbol": owner,
+                        "ref_symbol": alias.name,
+                        "line": getattr(node, "lineno", 1),
+                        "kind": "import",
+                    })
+            self.generic_visit(node)
+
         def _visit_func(self, node: Any) -> None:
-            owner = self._enter(node)
-            for child in ast.walk(node):
-                if isinstance(child, ast.Call):
-                    name = None
-                    if isinstance(child.func, ast.Name):
-                        name = child.func.id
-                    elif isinstance(child.func, ast.Attribute):
-                        name = child.func.attr
-                    if name:
-                        refs.append({"owner_symbol": owner, "ref_symbol": name,
-                                     "line": getattr(child, "lineno", node.lineno), "kind": "call"})
+            self._enter(node)
             self.generic_visit(node)
             stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            owner = ".".join(stack) if stack else None
+            name = None
+            if isinstance(node.func, ast.Name):
+                name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                name = node.func.attr
+            if name:
+                refs.append({
+                    "owner_symbol": owner,
+                    "ref_symbol": name,
+                    "line": getattr(node, "lineno", 1),
+                    "kind": "call",
+                })
+            self.generic_visit(node)
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             self._visit_func(node)
@@ -682,6 +1030,11 @@ def _regex_symbols(content: str) -> list[dict]:
 def _regex_refs(content: str) -> list[dict]:
     refs: list[dict] = []
     for idx, line in enumerate(content.splitlines(), 1):
+        stripped = line.strip()
+        import_match = re.match(r"(?:import|from|require)\s+['\"]?([A-Za-z_][\w./-]*)", stripped)
+        if import_match:
+            ref = import_match.group(1).replace("/", ".").split(".", 1)[0]
+            refs.append({"owner_symbol": None, "ref_symbol": ref, "line": idx, "kind": "import"})
         for m in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", line):
             refs.append({"owner_symbol": None, "ref_symbol": m.group(1), "line": idx, "kind": "call"})
     return refs

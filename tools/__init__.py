@@ -39,6 +39,7 @@ from .analysis import (
     secret_scanner, changelog_generator, env_parity_checker, load_tester, complexity_analyzer,
     index_codebase,
 )
+from .graph_review import graph_health, graph_minimal_context, review_context_graph
 from .swarm import swarm_debug, ask_codebase, quick_task
 from .security import config_security_audit
 from .intel import (
@@ -126,6 +127,9 @@ __all__ = [
     "load_tester",
     "complexity_analyzer",
     "index_codebase",
+    "review_context_graph",
+    "graph_health",
+    "graph_minimal_context",
     "swarm_debug",
     "ask_codebase",
     "quick_task",

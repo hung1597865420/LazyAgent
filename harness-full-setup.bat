@@ -39,7 +39,7 @@ Purpose:
   + Codex, install memory/background integration, and write a global runtime profile.
   Also verifies the current MCP-only bridges are present: Hallmark/Spec Kit,
   UI/workflow routers, bug repro guard, OfficeCLI bridge, scope-creep guard,
-  install manifest, adapter parity, MCP inventory, and context budget/status doctor.
+  graph review, install manifest, adapter parity, MCP inventory, and context budget/status doctor.
   Default profile is off. Use --profile max to enable every runtime feature
   and start background helpers.
 
@@ -54,7 +54,7 @@ Options:
   --profile <off|max|heavy|review|balanced|standard|light>
       Global runtime profile to write. Default: off.
       Default off still installs configs/hooks/rules, but prevents background
-      tools, LLM calls, watcher, lessons, and FinOps writes until user enables
+      tools, LLM calls, global watcher, lessons, and FinOps writes until user enables
       a higher profile explicitly.
   --no-smoke
       Skip smoke_test.py.
@@ -222,8 +222,10 @@ foreach ($required in @(
     'harness-toggle.bat',
     'tools\ops.py',
     'tools\integrations.py',
+    'tools\graph_review.py',
     'tools\office_bridge.py',
-    'tools\scope_guard.py'
+    'tools\scope_guard.py',
+    'tools\watch_registry.py'
 )) {
     if (-not (Test-Path (Join-Path $Root $required))) {
         throw "Missing required file: $required. Run this bat from the harness repo folder."
@@ -316,7 +318,7 @@ if ($InstallStartupTask) {
 }
 if ($StartWatch) {
     Invoke-Toggle @('action','watch','start')
-    Write-Host '[ok] Auto-Watch start requested for this harness folder. For other projects, it will also spawn after first MCP call when auto-watch is enabled.'
+    Write-Host '[ok] Global Auto-Watch start requested. Repos register automatically on MCP use into %USERPROFILE%\.agent-harness\watch.repos.json.'
 } else {
     if ($Profile -eq 'off') {
         Write-Host '[skip] Default profile off; watcher is not started.'
@@ -341,5 +343,5 @@ if ($RunSmoke) {
 Write-Host ''
 Write-Host '=== FULL SETUP DONE ===' -ForegroundColor Green
 Write-Host 'Restart Claude/Gemini/Codex/IDE sessions so they reload MCP config and memory rules.'
-Write-Host 'MCP-only tools installed: install_manifest, adapter_parity_doctor, mcp_inventory, context_budget, integration_router, workflow_router (BA/market research/UI-UX advisor), bug_repro_guard, ui_skill_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector.'
+Write-Host 'MCP-only tools installed: install_manifest, adapter_parity_doctor, mcp_inventory, context_budget, graph_minimal_context, review_context_graph, graph_health, integration_router, workflow_router (BA/market research/UI-UX advisor), bug_repro_guard, ui_skill_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector.'
 Write-Host 'Future maintenance: when a runtime feature changes, update harness-toggle.bat and harness-full-setup.bat together.'

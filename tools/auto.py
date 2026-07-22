@@ -8,10 +8,14 @@ import ast
 import hashlib
 import inspect
 import json
+import math
 import os
 import re
+import signal
+import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from runtime_flags import bool_flag, choice_flag
@@ -26,7 +30,11 @@ CODE_EXTS = {
     ".cs", ".php", ".rb", ".swift", ".kt", ".kts", ".sql", ".html", ".css",
 }
 UI_EXTS = {".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue"}
-DEP_FILES = {"requirements.txt", "package.json", "pyproject.toml", "poetry.lock", "package-lock.json", "pnpm-lock.yaml"}
+DEP_FILES = {
+    "requirements.txt", "package.json", "pyproject.toml", "poetry.lock",
+    "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
+    "pipfile.lock", "uv.lock", "cargo.lock", "composer.lock", "go.sum",
+}
 SENSITIVE_NAMES = {".env", ".env.local", ".env.production", ".env.development", ".env.test"}
 DEFAULT_TOOL_TIMEOUT_SECONDS = 180.0
 MAX_TOOL_TIMEOUT_SECONDS = 240.0
@@ -80,6 +88,7 @@ def _auto_max_tools(mode: str) -> int:
 def _tool_priority(name: str) -> int:
     priorities = {
         "goal_alignment": 0,
+        "review_context_graph": 5,
         "secret_scanner": 10,
         "config_security_audit": 11,
         "env_parity_checker": 12,
@@ -125,8 +134,16 @@ LLM_AUTO_TOOLS = {
 }
 
 RUNTIME_ARTIFACT_NAMES = {"REVIEW_REPORT.md"}
+RUNTIME_ARTIFACT_DIRS = {".harness", ".harness_cache", ".harness_sandbox", ".harness_smoke"}
 RUNTIME_ARTIFACT_PATHS = {("llmwiki", "raw", ".bootstrapped")}
-RUNTIME_ARTIFACT_PREFIXES = (".harness_",)
+RUNTIME_ARTIFACT_PREFIXES = (
+    ".harness_sandbox_",
+    ".harness_smoke_",
+    ".harness_targeted_test_",
+    ".harness_registry_test_",
+    ".harness_worktree_",
+)
+RUNTIME_ROOT_FILE_RE = re.compile(r"^\.harness_[A-Za-z0-9_.-]+\.(?:db|jsonl|pid|lock|log)(?:\.\d+)?$")
 
 
 def _is_runtime_artifact(path: str) -> bool:
@@ -135,13 +152,24 @@ def _is_runtime_artifact(path: str) -> bool:
         return True
     parts = tuple(p for p in norm.split("/") if p)
     name = parts[-1] if parts else norm
-    if parts in RUNTIME_ARTIFACT_PATHS or name in RUNTIME_ARTIFACT_NAMES:
+    if any(parts == artifact or parts[:len(artifact)] == artifact for artifact in RUNTIME_ARTIFACT_PATHS):
+        return True
+    if name in RUNTIME_ARTIFACT_NAMES:
         return True
     if len(parts) >= 2 and parts[0] == ".claude" and parts[1] == "audit":
         return True
-    if len(parts) == 1 and name.startswith(RUNTIME_ARTIFACT_PREFIXES):
+    if len(parts) > 1 and parts[0].startswith(".harness_"):
         return True
-    return any(part.startswith(".harness_sandbox_") or part.startswith(".harness_worktree_") for part in parts)
+    if any(part in RUNTIME_ARTIFACT_DIRS or part.startswith(RUNTIME_ARTIFACT_PREFIXES) for part in parts):
+        return True
+    lower_name = name.lower()
+    if lower_name in DEP_FILES:
+        return False
+    if len(parts) == 1 and RUNTIME_ROOT_FILE_RE.match(name):
+        return True
+    if lower_name.endswith((".log", ".lock", ".pid", ".tmp", ".temp", ".swp", ".swo", ".pyc", ".pyo", ".processing")) or re.match(r".+\.log\.\d+$", lower_name):
+        return True
+    return False
 
 
 def _consume_task_exception(task: asyncio.Task) -> None:
@@ -152,17 +180,46 @@ def _consume_task_exception(task: asyncio.Task) -> None:
         pass
 
 
-def _norm_files(files: list[str] | None) -> list[str]:
+def _norm_files(files: list[str] | tuple[str, ...] | set[str] | str | None) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
-    for item in files or []:
+    if isinstance(files, str):
+        items: Any = [files]
+    elif isinstance(files, (list, tuple, set)):
+        items = files
+    else:
+        items = []
+    root_path = Path(_get_active_workspace()).resolve()
+    for item in items:
         if not isinstance(item, str):
             continue
-        f = item.strip().replace("\\", "/")
+        raw = item.strip().replace("\\", "/")
+        if not raw:
+            continue
+        try:
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                candidate = root_path / candidate
+            resolved = candidate.resolve(strict=False)
+            if root_path != resolved and root_path not in resolved.parents:
+                continue
+            f = resolved.relative_to(root_path).as_posix()
+        except Exception:
+            continue
         if f and f not in seen:
             seen.add(f)
             out.append(f)
     return out
+
+
+def _norm_tool_names(names: list[str] | tuple[str, ...] | set[str] | str | None) -> set[str]:
+    if isinstance(names, str):
+        items: Any = [names]
+    elif isinstance(names, (list, tuple, set)):
+        items = names
+    else:
+        items = []
+    return {item.strip() for item in items if isinstance(item, str) and item.strip()}
 
 
 def _ext(path: str) -> str:
@@ -186,8 +243,39 @@ def _safe_panel_files(files: list[str]) -> list[str]:
     return [f for f in files if _ext(f) not in SENSITIVE_NAMES]
 
 
+def _safe_secret_scan_files(files: list[str] | None) -> list[str]:
+    root = _get_active_workspace()
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in files or []:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        raw = item.strip().replace("\\", "/")
+        if _is_runtime_artifact(raw):
+            continue
+        try:
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                candidate = Path(root) / candidate
+            if candidate.is_symlink():
+                continue
+            resolved = candidate.resolve(strict=True)
+            root_path = Path(root).resolve()
+            if root_path != resolved and root_path not in resolved.parents:
+                continue
+            if not resolved.is_file():
+                continue
+            rel = resolved.relative_to(root_path).as_posix()
+        except Exception:
+            continue
+        if rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+    return out
+
+
 def _safe_scan_files(files: list[str]) -> list[str]:
-    return [f for f in files if _ext(f) not in SENSITIVE_NAMES]
+    return _safe_secret_scan_files(files)
 
 
 def _has_any(text: str, words: set[str]) -> bool:
@@ -302,16 +390,72 @@ def _discover_api_endpoints(files: list[str]) -> list[dict[str, str]]:
 def _summarize_result(result: Any) -> dict:
     if not isinstance(result, dict):
         return {"ok": True, "result_type": type(result).__name__}
-    summary: dict[str, Any] = {"ok": "error" not in result}
+    summary: dict[str, Any] = {"ok": _normalize_result_ok(result["ok"]) if "ok" in result else "error" not in result}
     for key in (
         "error", "status", "message", "verdict", "part_status", "summary", "score", "findings_count", "errors_count",
         "dead_symbols_count", "issues_count", "secrets_found", "warnings",
+        "risk", "risk_score", "changed_symbol_count", "impacted_file_count", "test_gap_count",
     ):
         if key in result:
             summary[key] = result[key]
     if "findings" in result and isinstance(result["findings"], list):
         summary["findings_count"] = len(result["findings"])
-    return summary
+    return _compact_auto_payload(summary)
+
+
+def _normalize_result_ok(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return False
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "ok", "pass", "passed", "success", "completed"}
+    return False
+
+
+def _safe_repr(value: Any) -> str:
+    try:
+        return repr(value)
+    except Exception as exc:
+        return f"<unreprable:{type(value).__name__}:{type(exc).__name__}>"
+
+
+def _compact_auto_payload(value: Any, *, max_string: int = 700, max_list: int = 8, max_dict: int = 24, depth: int = 0) -> Any:
+    if depth > 4:
+        return "<truncated:depth>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.replace("\x00", " ")
+        if len(text) <= max_string:
+            return text
+        return text[:max_string].rstrip() + f"... <truncated {len(text) - max_string} chars>"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        ordered = list(value) if not isinstance(value, (set, frozenset)) else sorted(value, key=_safe_repr)
+        out = [
+            _compact_auto_payload(item, max_string=max_string, max_list=max_list, max_dict=max_dict, depth=depth + 1)
+            for item in ordered[:max_list]
+        ]
+        if len(ordered) > max_list:
+            out.append(f"<truncated {len(ordered) - max_list} items>")
+        return out
+    if isinstance(value, dict):
+        items = list(value.items())
+        out = {
+            str(k): _compact_auto_payload(v, max_string=max_string, max_list=max_list, max_dict=max_dict, depth=depth + 1)
+            for k, v in items[:max_dict]
+        }
+        if len(items) > max_dict:
+            out["<truncated_keys>"] = len(items) - max_dict
+        return out
+    text = _safe_repr(value)
+    if len(text) <= max_string:
+        return text
+    return text[:max_string].rstrip() + f"... <truncated {len(text) - max_string} chars>"
 
 
 def _auto_lesson_worthy_text(text: str, stage: str) -> bool:
@@ -434,7 +578,7 @@ async def _run_named(name: str, factory) -> dict:
         task.add_done_callback(_consume_task_exception)
         raise
     except Exception as e:
-        return {"tool": name, "ok": False, "error": type(e).__name__, "detail": str(e) or repr(e)}
+        return _compact_auto_payload({"tool": name, "ok": False, "error": type(e).__name__, "detail": str(e) or repr(e)})
 
 
 def _parse_subprocess_payload(out: str, err: str) -> dict[str, Any] | None:
@@ -451,13 +595,15 @@ def _parse_subprocess_payload(out: str, err: str) -> dict[str, Any] | None:
 
 async def _run_subprocess_job(name: str, module: str, function: str, kwargs: dict[str, Any]) -> dict:
     script = (
-        "import asyncio, importlib, inspect, json, sys\n"
+        "import asyncio, importlib, inspect, json, os, sys\n"
         "try:\n"
         "    sys.stdout.reconfigure(encoding='utf-8')\n"
         "    sys.stderr.reconfigure(encoding='utf-8')\n"
         "except Exception:\n"
         "    pass\n"
         "try:\n"
+        "    repo_root = os.path.realpath(sys.argv[3])\n"
+        "    sys.path = [repo_root] + [p for p in sys.path if os.path.realpath(p or os.getcwd()) != os.getcwd()]\n"
         "    mod = importlib.import_module(sys.argv[1])\n"
         "    fn = getattr(mod, sys.argv[2])\n"
         "    kwargs = json.loads(sys.stdin.read() or '{}')\n"
@@ -476,17 +622,22 @@ async def _run_subprocess_job(name: str, module: str, function: str, kwargs: dic
     env["PYTHONIOENCODING"] = "utf-8"
     env["WORKSPACE_ROOT"] = active_workspace
     env["CLAUDE_PROJECT_DIR"] = active_workspace
+    proc_kwargs: dict[str, Any] = {"cwd": repo_root, "env": env}
+    if os.name == "nt":
+        proc_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        proc_kwargs["start_new_session"] = True
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-c",
         script,
         module,
         function,
+        repo_root,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=active_workspace,
-        env=env,
+        **proc_kwargs,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -494,37 +645,53 @@ async def _run_subprocess_job(name: str, module: str, function: str, kwargs: dic
             timeout=_auto_tool_timeout_seconds(),
         )
     except asyncio.TimeoutError:
-        proc.kill()
-        try:
-            await proc.communicate()
-        except Exception:
-            await proc.wait()
+        await _kill_subprocess_tree(proc)
         return {"tool": name, "ok": False, "error": "timeout"}
     except asyncio.CancelledError:
         if proc.returncode is None:
-            proc.kill()
-            try:
-                await proc.communicate()
-            except Exception:
-                await proc.wait()
+            await _kill_subprocess_tree(proc)
         raise
     out = stdout.decode("utf-8", errors="replace").strip()
     err = stderr.decode("utf-8", errors="replace").strip()
     payload = _parse_subprocess_payload(out, err)
     if payload is None:
-        return {"tool": name, "ok": False, "error": "invalid_subprocess_json", "detail": (err or out)[-1000:]}
+        return _compact_auto_payload({"tool": name, "ok": False, "error": "invalid_subprocess_json", "detail": (err or out)[-1000:]})
     if not payload.get("ok"):
-        return {"tool": name, "ok": False, "error": payload.get("error", "subprocess_error"), "detail": payload.get("detail", "")}
+        return _compact_auto_payload({"tool": name, "ok": False, "error": payload.get("error", "subprocess_error"), "detail": payload.get("detail", "")})
     return {"tool": name, **_summarize_result(payload.get("result"))}
 
 
+async def _kill_subprocess_tree(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    try:
+        if os.name == "nt":
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.communicate()
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await proc.communicate()
+    except Exception:
+        await proc.wait()
+
+
 async def auto_trigger(
-    changed_files: list[str] | None = None,
+    changed_files: list[str] | tuple[str, ...] | set[str] | str | None = None,
     diff: str | None = None,
     task: str | None = None,
     stage: str = "post_edit",
     mode: str | None = None,
-    exclude_tools: list[str] | set[str] | None = None,
+    exclude_tools: list[str] | tuple[str, ...] | set[str] | str | None = None,
 ) -> dict:
     """Run contextual checks automatically after edits.
 
@@ -633,7 +800,7 @@ async def auto_trigger(
 
     selected: list[str] = []
     job_specs: list[tuple[str, str, str, dict[str, Any]]] = []
-    excluded = {str(name) for name in (exclude_tools or [])}
+    excluded = _norm_tool_names(exclude_tools)
     orchestrator: dict[str, Any] = {"status": "not_run"}
 
     def add(name: str, module: str, function: str, **kwargs: Any) -> None:
@@ -641,10 +808,12 @@ async def auto_trigger(
             return
         job_specs.append((name, module, function, kwargs))
 
-    scan_files = _safe_scan_files(files)
+    scan_files = _safe_secret_scan_files(files)
 
     if active_goal:
         add("goal_alignment", "tools.goal", "check_goal", changed_files=files, diff=diff, task=task_context or task_with_goal)
+    if code_files and (risky or len(code_files) > 1 or stage in {"final", "pre_complete"} or mode == "max"):
+        add("review_context_graph", "tools.graph_review", "review_context_graph", changed_files=code_files, detail_level="minimal")
     if has_trace or _has_any(text, {"bug", "debug", "diagnose", "traceback", "exception", "crash", "regression"}):
         add("bug_repro_guard", "tools.workflow", "bug_repro_guard", task=task_context or task_with_goal, error_log=text[:4000], changed_files=files, diff=diff)
     if (mode == "max" or has_config or has_security) and scan_files:
@@ -865,14 +1034,30 @@ async def auto_trigger(
         })
     except Exception:
         orchestrator = {"status": "skipped"}
-    if panel_files != (code_files or files) or scan_files != files:
-        warnings.append(".env-like files were kept out of content scanners/review to avoid exposing secret values")
+    if panel_files != (code_files or files):
+        warnings.append(".env-like files were kept out of LLM review to avoid exposing secret values; local secret scanner still scans them with redacted snippets")
     if goal_changed_mid_run:
         warnings.append("active goal changed or completed while auto_trigger was running; dropped stale goal_alignment result")
+    compact_results = [_compact_auto_payload(result) for result in results]
+    compact_prior_lessons = _compact_auto_payload(prior_lessons, max_string=1800) if prior_lessons else ""
+    compact_integration_routes = _compact_auto_payload(integration_routes, max_string=500, max_list=6)
+    compact_workflow_routes = _compact_auto_payload(workflow_routes, max_string=500, max_list=6)
+    compact_orchestrator = _compact_auto_payload(orchestrator, max_string=700, max_list=8)
+    status = "degraded" if skipped_tools or pending else "completed"
+    guidance = "OK to continue; inspect warnings only if relevant."
+    if blockers:
+        guidance = "Address failed_tools/blockers before reporting completion."
+    elif skipped_tools or pending:
+        guidance = "Checks completed with deferred/timeout items; do not treat skipped tools as code failures unless they match the task."
     return {
-        "status": "degraded" if skipped_tools or pending else "completed",
+        "status": status,
         "mode": mode,
         "stage": stage,
+        "summary": (
+            f"auto_trigger {status}: {len(files)} file(s), "
+            f"{len(selected)} selected, {len(skipped_tools)} skipped, {len(blockers)} blocker(s)."
+        ),
+        "agent_guidance": guidance,
         "batch_id": batch_id,
         "diff_hash": diff_hash,
         "files": files,
@@ -882,14 +1067,14 @@ async def auto_trigger(
         "selected_tools": selected,
         "skipped_tools": skipped_tools,
         "timeout_budget_exceeded": bool(pending),
-        "results": results,
+        "results": compact_results,
         "blockers_count": len(blockers),
         "failed_tools": failed_tools,
-        "prior_lessons": prior_lessons,
-        "integration_routes": integration_routes,
-        "workflow_routes": workflow_routes,
+        "prior_lessons": compact_prior_lessons,
+        "integration_routes": compact_integration_routes,
+        "workflow_routes": compact_workflow_routes,
         "lessons_recorded": lessons_recorded,
         "causality_recorded": causality_recorded,
-        "orchestrator": orchestrator,
-        "warnings": warnings,
+        "orchestrator": compact_orchestrator,
+        "warnings": _compact_auto_payload(warnings, max_string=400, max_list=10),
     }

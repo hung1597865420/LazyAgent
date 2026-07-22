@@ -130,6 +130,11 @@ from tools.analysis import (
     complexity_analyzer,
     index_codebase,
 )
+from tools.graph_review import (
+    graph_health,
+    graph_minimal_context,
+    review_context_graph,
+)
 from tools.quality import (
     migration_validator,
     sql_query_analyzer,

@@ -15,6 +15,7 @@ import statistics
 import subprocess
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -27,6 +28,7 @@ from agents import AgentRole
 from .fix import suggest_fix
 
 _log = logging.getLogger("harness.analysis")
+_LOAD_TEST_DNS_LOCK = asyncio.Lock()
 
 
 def _optional_llm_enabled() -> bool:
@@ -344,7 +346,7 @@ _TEXT_EXTS = {
 }
 _SKIP_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
-    ".pytest_cache", ".ruff_cache", ".harness_worktree", ".harness_sandbox",
+    ".pytest_cache", ".ruff_cache", ".harness", ".harness_worktree", ".harness_sandbox",
     ".harness_cache", ".gemini", ".claude",
 }
 _SKIP_FILENAMES = {".env", ".env.local", ".env.prod", ".env.production", ".env.staging"}
@@ -372,18 +374,14 @@ def _iter_candidate_files(
             if resolved.is_file():
                 if skip_env and _is_env_file(resolved.name):
                     return
-                if resolved.name in _SKIP_FILENAMES and not skip_env:
-                    return
                 if resolved.suffix.lower() in exts or (not skip_env and resolved.name.startswith(".env")):
                     collected.append(resolved)
             elif resolved.is_dir():
                 for child in resolved.rglob("*"):
-                    if any(part in _SKIP_DIRS for part in child.parts):
+                    if any(part in _SKIP_DIRS or part.startswith(".harness_") for part in child.parts):
                         continue
                     if child.is_file():
                         if skip_env and _is_env_file(child.name):
-                            continue
-                        if child.name in _SKIP_FILENAMES:
                             continue
                         if child.suffix.lower() in exts or (not skip_env and child.name.startswith(".env")):
                             collected.append(child.resolve())
@@ -396,12 +394,10 @@ def _iter_candidate_files(
                 _safe_add(root / p)
     else:
         for child in root.rglob("*"):
-            if any(part in _SKIP_DIRS for part in child.parts):
+            if any(part in _SKIP_DIRS or part.startswith(".harness_") for part in child.parts):
                 continue
             if child.is_file():
                 if skip_env and _is_env_file(child.name):
-                    continue
-                if child.name in _SKIP_FILENAMES:
                     continue
                 if child.suffix.lower() in exts or (not skip_env and child.name.startswith(".env")):
                     collected.append(child.resolve())
@@ -544,6 +540,31 @@ _SECRET_PATTERNS: list[tuple[str, str, str]] = [
 _ALLOWLIST_MARKERS = ("# pragma: allowlist secret", "noqa: secret", "nosecret", "# nosec")
 
 
+def _redact_secret_snippet(snippet: str) -> str:
+    text = str(snippet or "")[:240]
+    if re.search(r"-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----", text.replace("\\n", "\n")):
+        return "-----BEGIN PRIVATE KEY-----<redacted>"
+    env_match = re.match(r"^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.*)$", text)
+    if env_match:
+        comment = ""
+        value = env_match.group(2).split("\\n", 1)[0].split("\n", 1)[0]
+        if " #" in value:
+            comment = " #" + value.split(" #", 1)[1][:60]
+        return (env_match.group(1) + "<redacted>" + comment)[:180]
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9_\-\.=:+/]{8,}", r"\1<redacted>", text)
+    text = re.sub(r"\bsk_live_[A-Za-z0-9]{8,}\b", "sk_live_<redacted>", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_\-]{12,}\b", "sk-<redacted>", text)
+    text = re.sub(r"\bAKIA[0-9A-Z]{16}\b", "AKIA<redacted>", text)
+    text = re.sub(r"\bgh[pousr]_[A-Za-z0-9]{12,}\b", "gh_<redacted>", text)
+    text = re.sub(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", "xox-<redacted>", text)
+    text = re.sub(
+        r"(?i)(\b(?:api[_-]?key|access[_-]?key|secret[_-]?key|token|auth[_-]?token|password|passwd|pwd|db_password)\b\s*[:=]\s*['\"]?)([^'\"\s#]{3,})",
+        r"\1<redacted>",
+        text,
+    )
+    return text[:180]
+
+
 # ── 5 New tools ───────────────────────────────────────────────────────────────
 
 async def secret_scanner(paths: list[str] | None = None) -> dict:
@@ -551,7 +572,7 @@ async def secret_scanner(paths: list[str] | None = None) -> dict:
     findings: list[dict] = []
     warnings: list[str] = []
 
-    files = _iter_candidate_files(paths, skip_env=True)
+    files = _iter_candidate_files(paths, skip_env=False)
     if not files:
         return {"findings": [], "findings_count": 0, "scanned_files": 0, "warnings": warnings}
 
@@ -575,7 +596,7 @@ async def secret_scanner(paths: list[str] | None = None) -> dict:
                 if re.search(pattern, line):
                     findings.append({
                         "file": rel, "line": idx, "type": secret_type,
-                        "severity": severity, "snippet": line.strip()[:180],
+                        "severity": severity, "snippet": _redact_secret_snippet(line.strip()),
                     })
 
         # Full-content scan with DOTALL to catch secrets in triple-quoted/multiline strings.
@@ -588,7 +609,7 @@ async def secret_scanner(paths: list[str] | None = None) -> dict:
                         continue
                     findings.append({
                         "file": rel, "line": lineno, "type": secret_type,
-                        "severity": severity, "snippet": snippet[:180], "multiline": True,
+                        "severity": severity, "snippet": _redact_secret_snippet(snippet), "multiline": True,
                     })
             except re.error as exc:
                 warnings.append(f"Pattern '{secret_type}' lỗi khi multiline scan: {exc}")
@@ -612,7 +633,7 @@ async def secret_scanner(paths: list[str] | None = None) -> dict:
                             "file": rel, "line": lineno,
                             "type": "high_entropy_string",
                             "severity": "medium" if entropy < 4.8 else "high",
-                            "snippet": candidate[:80],
+                            "snippet": _redact_secret_snippet(candidate[:80]),
                             "entropy": round(entropy, 2),
                         })
             except Exception as e:
@@ -778,36 +799,114 @@ async def env_parity_checker(example_file: str = ".env.example", env_file: str =
     }
 
 
-def _is_ssrf_blocked(url: str) -> str | None:
-    """Return error message if URL targets a private/internal address, else None.
-    Fail-closed: if hostname cannot be resolved, the request is blocked."""
+def _ip_block_reason(ip: ipaddress._BaseAddress) -> str | None:
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    if (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+        return f"URL tới địa chỉ nội bộ/reserved không được phép: {ip}"
+    return None
+
+
+def _suspicious_host_reason(hostname: str) -> str | None:
+    host = hostname.strip().strip("[]").lower().rstrip(".")
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
+        return "Hostname localhost không được phép"
+    try:
+        ip = ipaddress.ip_address(host)
+        return _ip_block_reason(ip)
+    except ValueError:
+        pass
+    if re.fullmatch(r"\d+", host):
+        return "Numeric IPv4 hostname không chuẩn bị chặn để tránh SSRF"
+    if re.fullmatch(r"0x[0-9a-f]+", host):
+        return "Hex IPv4 hostname không chuẩn bị chặn để tránh SSRF"
+    if re.fullmatch(r"[0-9.]+", host):
+        return "IPv4 hostname không chuẩn bị chặn để tránh SSRF"
+    if re.search(r"(^|[.])0[0-9]+", host):
+        return "Octal-like hostname không chuẩn bị chặn để tránh SSRF"
+    return None
+
+
+def _is_ip_literal_host(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname.strip().strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_public_infos(hostname: str, port: int) -> tuple[list, str | None]:
+    suspicious = _suspicious_host_reason(hostname)
+    if suspicious:
+        return [], suspicious
+    try:
+        infos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return [], f"Hostname '{hostname}' không resolve được — blocked để tránh SSRF"
+    if not infos:
+        return [], f"Hostname '{hostname}' không có địa chỉ nào — blocked"
+    for _fam, _type, _proto, _canon, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return [], f"Không parse được địa chỉ resolved '{ip_str}'"
+        blocked = _ip_block_reason(ip)
+        if blocked:
+            return [], blocked
+    return infos, None
+
+
+def _ssrf_checked_target(url: str) -> tuple[str | None, list, str | None]:
+    """Return hostname, validated getaddrinfo rows, error. Fail-closed."""
     try:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
-            return f"Scheme không hỗ trợ: {parsed.scheme!r} (chỉ http/https)"
+            return None, [], f"Scheme không hỗ trợ: {parsed.scheme!r} (chỉ http/https)"
         hostname = parsed.hostname or ""
         if not hostname:
-            return "URL thiếu hostname"
+            return None, [], "URL thiếu hostname"
+        if not _is_ip_literal_host(hostname):
+            if not bool_flag("HARNESS_LOAD_TEST_ALLOW_DNS", False):
+                return (
+                    hostname, [],
+                    "Load tester chặn hostname DNS mặc định để tránh DNS rebinding/SSRF; "
+                    "dùng public IP literal hoặc bật HARNESS_LOAD_TEST_ALLOW_DNS=1 khi thật sự cần."
+                )
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        # Resolve ALL addresses (IPv4 + IPv6); fail-closed if resolution fails.
-        try:
-            infos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
-        except socket.gaierror:
-            return f"Hostname '{hostname}' không resolve được — blocked để tránh SSRF"
-        if not infos:
-            return f"Hostname '{hostname}' không có địa chỉ nào — blocked"
-        for _fam, _type, _proto, _canon, sockaddr in infos:
-            ip_str = sockaddr[0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-            except ValueError:
-                return f"Không parse được địa chỉ resolved '{ip_str}'"
-            if (ip.is_private or ip.is_loopback or ip.is_link_local
-                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-                return f"URL tới địa chỉ nội bộ/reserved không được phép: {ip}"
+        infos, err = _resolve_public_infos(hostname, port)
+        if err:
+            return hostname, [], err
+        return hostname, infos, None
     except Exception as e:
-        return f"URL không hợp lệ: {e}"
-    return None
+        return None, [], f"URL không hợp lệ: {e}"
+
+
+def _is_ssrf_blocked(url: str) -> str | None:
+    return _ssrf_checked_target(url)[2]
+
+
+@contextmanager
+def _pinned_getaddrinfo(hostname: str, infos: list):
+    original = socket.getaddrinfo
+    host_key = hostname.lower().rstrip(".")
+
+    def pinned(host, port, *args, **kwargs):
+        try:
+            requested = str(host).lower().rstrip(".")
+        except Exception:
+            requested = ""
+        if requested == host_key:
+            return infos
+        return original(host, port, *args, **kwargs)
+
+    socket.getaddrinfo = pinned
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original
 
 
 async def load_tester(url: str, requests_count: int = 100, concurrency: int = 10, method: str = "GET") -> dict:
@@ -815,7 +914,7 @@ async def load_tester(url: str, requests_count: int = 100, concurrency: int = 10
     warnings: list[str] = []
     if not url or not isinstance(url, str):
         return {"error": "url không hợp lệ", "warnings": warnings}
-    ssrf_err = _is_ssrf_blocked(url)
+    hostname, pinned_infos, ssrf_err = _ssrf_checked_target(url)
     if ssrf_err:
         return {"error": ssrf_err, "warnings": warnings}
     try:
@@ -869,8 +968,13 @@ async def load_tester(url: str, requests_count: int = 100, concurrency: int = 10
     timeout = httpx.Timeout(10.0, connect=5.0)
     limits = httpx.Limits(max_connections=max(concurrency, 1), max_keepalive_connections=max(concurrency, 1))
     wall_t0 = time.perf_counter()
-    async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=False) as client:
-        await asyncio.gather(*(_one(client, i) for i in range(requests_count)))
+    async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=False, trust_env=False) as client:
+        if _is_ip_literal_host(hostname or ""):
+            await asyncio.gather(*(_one(client, i) for i in range(requests_count)))
+        else:
+            async with _LOAD_TEST_DNS_LOCK:
+                with _pinned_getaddrinfo(hostname or "", pinned_infos):
+                    await asyncio.gather(*(_one(client, i) for i in range(requests_count)))
     total_s = time.perf_counter() - wall_t0
 
     if not results:

@@ -205,7 +205,7 @@ async def panel_review(
     cache_hash = _calculate_review_hash(
         files=files, diff=diff, code=code, focus=focus,
         staged=staged, since_commit=since_commit,
-        fast=fast, agent_timeout=agent_timeout, cache_schema=2,
+        fast=fast, agent_timeout=agent_timeout, cache_schema=3,
     )
     cache_file = os.path.join(cache_dir, f"review_{cache_hash}.json")
     if os.path.exists(cache_file):
@@ -222,8 +222,35 @@ async def panel_review(
             except Exception:
                 pass
 
+    graph_context: dict = {}
+    if files:
+        try:
+            from .graph_review import review_context_graph
+            graph_context = await review_context_graph(
+                changed_files=files,
+                detail_level="minimal" if fast else "standard",
+            )
+            if graph_context.get("status") == "ok":
+                savings = graph_context.get("context_savings") or {}
+                saved_pct = savings.get("saved_percent")
+                suffix = f", saved~{saved_pct}%" if saved_pct is not None else ""
+                warnings.append(
+                    f"Graph review pre-pass: risk={graph_context.get('risk')} "
+                    f"score={graph_context.get('risk_score')}{suffix}"
+                )
+        except Exception as e:
+            warnings.append(f"Graph review pre-pass skipped: {e}")
+
     ctx, file_warnings = _assemble_context(files=files, diff=diff, code=code, total_cap=ctx_cap)
     warnings.extend(file_warnings)
+    if graph_context:
+        graph_text = json.dumps(graph_context, ensure_ascii=False, indent=2, default=str)
+        ctx = (
+            "STATIC GRAPH REVIEW PRE-PASS (local, CRG-lite):\n"
+            f"{graph_text[:40_000]}\n\n"
+            "RAW REVIEW CONTEXT:\n"
+            f"{ctx}"
+        )[:ctx_cap]
     if fast and ctx_cap < MAX_TOTAL_BYTES:
         warnings.append(f"fast=True: context bị cap ở {ctx_cap//1000}KB để tăng tốc")
     if not ctx:

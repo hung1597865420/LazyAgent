@@ -12,6 +12,7 @@
       "modules": [
         "runtime-rules",
         "mcp-config",
+        "graph-review",
         "hooks",
         "lessons",
         "llmwiki"
@@ -28,6 +29,7 @@
       "modules": [
         "runtime-rules",
         "mcp-config",
+        "graph-review",
         "hooks",
         "lessons"
       ]
@@ -41,6 +43,7 @@
       "modules": [
         "runtime-rules",
         "mcp-config",
+        "graph-review",
         "lessons"
       ]
     },
@@ -53,6 +56,7 @@
       "modules": [
         "runtime-rules",
         "mcp-config",
+        "graph-review",
         "lessons"
       ]
     }
@@ -64,6 +68,10 @@
     },
     "mcp-config": {
       "description": "MCP server entry pointing each client at this repo's mcp_server.py.",
+      "cost": "static"
+    },
+    "graph-review": {
+      "description": "CRG-lite static graph review tools: minimal context, changed-symbol blast radius, risk/test gaps, graph health.",
       "cost": "static"
     },
     "hooks": {
@@ -92,7 +100,8 @@
       "description": "Rules and MCP config only.",
       "modules": [
         "runtime-rules",
-        "mcp-config"
+        "mcp-config",
+        "graph-review"
       ]
     },
     "standard": {
@@ -100,6 +109,7 @@
       "modules": [
         "runtime-rules",
         "mcp-config",
+        "graph-review",
         "hooks",
         "lessons",
         "llmwiki"
@@ -110,6 +120,7 @@
       "modules": [
         "runtime-rules",
         "mcp-config",
+        "graph-review",
         "hooks",
         "lessons",
         "llmwiki",

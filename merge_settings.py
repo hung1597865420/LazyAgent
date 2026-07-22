@@ -786,7 +786,7 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 - Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `goal_runner(prompt="<nguyên prompt>", mode="<safe|max theo profile>")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate` khi phù hợp.
 - Khi user hỏi "đã nạp chưa", "harness ổn chưa", cài qua agent nào, MCP config có drift không, context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
-- Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="<safe|max theo profile>"`. Tool này tự chạy secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
+- Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="<safe|max theo profile>"`. Tool này tự chạy `review_context_graph` static pre-pass trước, rồi secret/env/config/devops/complexity/dead-code/duplicate/panel_review theo context.
 - Khi user hỏi deploy/release/production-ready hoặc trước khi nói "sẵn sàng lên prod": gọi `prod_readiness_gate(changed_files=[...], task="<prompt>", mode="<safe|max theo profile/yêu cầu release>")`. Chỉ được claim prod-ready khi verdict là `ready_to_deploy`; `deploy_then_verify` cần nói rõ bước verify sau deploy; `fix_required` thì sửa rồi chạy lại; `blocked_needs_user` thì hỏi user; `rollback_required` thì dừng deploy/rollback nếu đã deploy.
 - Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi lại `auto_trigger` với `stage="final"`, `mode="<safe|max theo profile>"` cho toàn bộ files đã sửa trong batch. Nếu `auto_trigger` đã chạy `panel_review` trên batch cuối thì không gọi `panel_review` riêng lần nữa.
 - Goal progress summary được harness tự prepend vào context của `consult`/`panel_review`/`ask_codebase`/checks liên quan: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
@@ -809,7 +809,8 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 5. **Cần so sánh 2 hướng implement**: `alt_implementation`.
 6. **Việc vặt** (fixtures, mock data, boilerplate): `quick_task`.
 7. **Tìm kiếm symbol/file/hàm**: `semantic_search` — polyglot, 158 ngôn ngữ, FTS5. Index tự build lần đầu.
-8. **Rebuild index sau refactor lớn**: `index_codebase` với `force=true`.
+8. **Graph review local/static**: `graph_minimal_context` trước task review/debug/refactor lớn; `review_context_graph` trước `panel_review` khi có changed files; `graph_health` khi cần hub/bridge/test-gap/dead-code hotspots. Không gọi 9Router.
+9. **Rebuild index sau refactor lớn**: `index_codebase` với `force=true`.
 
 ## Tự động theo context
 
@@ -823,6 +824,7 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 - `config_security_audit` — khi thêm file config mới, sửa .env, CORS config, hoặc trước deploy
 - `devops_pipeline` — trước commit/PR: quality gate (ruff+mypy+black) để bắt lỗi lint/type trước panel_review
 - `security_autofix` — sau panel_review tìm thấy Critical/High security finding
+- `review_context_graph` — static CRG-lite pre-pass cho changed symbols, blast radius, test gaps, risk score, token savings trước panel/PR review
 
 **Tier 2:**
 - `migration_validator` — khi viết/sửa file trong thư mục migrations/, alembic/versions/
@@ -844,6 +846,7 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 - `polyglot_reviewer` — khi codebase có >1 ngôn ngữ và files vừa sửa span nhiều ngôn ngữ
 - `a11y_auditor` — khi có thay đổi HTML/JSX/CSS/template
 - `dependency_graph_visualizer` — khi gặp ImportError, circular import, hoặc thêm module mới
+- `graph_health` — sau refactor lớn hoặc trước architecture review để tìm hub nodes, bridge/chokepoint nodes, dead-code candidates, untested hotspots
 - `release_orchestrator` — khi release/deploy/prod-ready; điều phối checklist release sau prod gate
 - `provenance_checker` — trước release/deploy; kiểm commit/remote/hash/SBOM/lockfile/build provenance
 - `auth_matrix_auditor` — khi sửa auth/permission/API endpoint có ownership/object-level access

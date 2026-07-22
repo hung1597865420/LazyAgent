@@ -1053,6 +1053,41 @@ async def list_tools() -> list[types.Tool]:
             }
         ),
         types.Tool(
+            name="review_context_graph",
+            description="Static CRG-style review pre-pass: changed symbols, blast radius, test gaps, risk score, and estimated context savings. Does not call 9Router.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "base": {"type": "string", "description": "Git ref to diff against (default HEAD~1)"},
+                    "detail_level": {"type": "string", "description": "minimal or standard"},
+                    "max_callers_per_symbol": {"type": "integer", "description": "Caller/reference cap per symbol"}
+                }
+            }
+        ),
+        types.Tool(
+            name="graph_health",
+            description="Static graph architecture health: hub nodes, bridge/chokepoint nodes, dead-code candidates, untested hotspots, suggested review questions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max items per section (default 10)"}
+                }
+            }
+        ),
+        types.Tool(
+            name="graph_minimal_context",
+            description="Ultra-compact local graph context for agents before expensive search/review. Does not call 9Router.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "Current task description"},
+                    "changed_files": _FILES_SCHEMA,
+                    "base": {"type": "string", "description": "Git ref to diff against (default HEAD~1)"}
+                }
+            }
+        ),
+        types.Tool(
             name="profiler",
             description="cProfile + tracemalloc cho Python code. Tìm bottleneck CPU và memory.",
             inputSchema={
@@ -1623,6 +1658,29 @@ def _auto_watch_enabled() -> bool:
     return bool_flag("HARNESS_AUTO_WATCH", False, root=_active_workspace())
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def _project_watcher_alive(root: str) -> bool:
     pid_file = os.path.join(root, ".harness_auto_watch.pid")
     try:
@@ -1650,6 +1708,14 @@ def _project_watcher_alive(root: str) -> bool:
             return True
         except PermissionError:
             return True
+    except Exception:
+        return False
+
+
+def _global_watcher_alive() -> bool:
+    try:
+        from tools.watch_registry import global_pid_active
+        return global_pid_active()
     except Exception:
         return False
 
@@ -1716,7 +1782,15 @@ def _kick_project_auto_watch() -> None:
     root = _active_workspace()
     if not os.path.isdir(root):
         return
+    try:
+        from tools.watch_registry import register_repo
+        register_repo(root)
+    except Exception:
+        pass
     with _auto_watch_lock:
+        if _global_watcher_alive():
+            _auto_watch_roots.add(root)
+            return
         if root in _auto_watch_roots and _project_watcher_alive(root):
             return
         _auto_watch_roots.discard(root)
@@ -1725,7 +1799,8 @@ def _kick_project_auto_watch() -> None:
             return
 
         env = os.environ.copy()
-        env["HARNESS_WATCH_ROOT"] = root
+        env["HARNESS_AUTO_WATCH_GLOBAL"] = "1"
+        env.pop("HARNESS_WATCH_ROOT", None)
         script = Path(__file__).with_name("auto_watch.py")
         log_path = Path(root) / ".harness_auto_watch.bootstrap.log"
         try:
@@ -1744,10 +1819,10 @@ def _kick_project_auto_watch() -> None:
                 subprocess.Popen([_watcher_python(), str(script)], **popen_kwargs)
             deadline = time.time() + 10.0
             while time.time() < deadline:
-                if _project_watcher_alive(root):
+                if _global_watcher_alive() or _project_watcher_alive(root):
                     break
                 time.sleep(0.1)
-            if _project_watcher_alive(root):
+            if _global_watcher_alive() or _project_watcher_alive(root):
                 _auto_watch_roots.add(root)
                 _log.info("Started Auto-Watch for %s", root)
             else:
@@ -1756,7 +1831,7 @@ def _kick_project_auto_watch() -> None:
         except Exception as e:
             _log.debug("Auto-Watch start skipped for %s: %s", root, e)
         finally:
-            if _project_watcher_alive(root):
+            if _global_watcher_alive() or _project_watcher_alive(root):
                 _release_startup_lock(root, startup_fd)
             else:
                 # Keep the startup lock file briefly as an in-flight marker. Slow
@@ -2475,6 +2550,24 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
         if name == "index_codebase":
             return _json_response(await st.index_codebase(force=args.get("force", False)))
+
+        if name == "review_context_graph":
+            return _json_response(await st.review_context_graph(
+                changed_files=args.get("changed_files"),
+                base=args.get("base", "HEAD~1"),
+                detail_level=args.get("detail_level", "standard"),
+                max_callers_per_symbol=args.get("max_callers_per_symbol", 25),
+            ))
+
+        if name == "graph_health":
+            return _json_response(await st.graph_health(limit=args.get("limit", 10)))
+
+        if name == "graph_minimal_context":
+            return _json_response(await st.graph_minimal_context(
+                task=args.get("task", ""),
+                changed_files=args.get("changed_files"),
+                base=args.get("base", "HEAD~1"),
+            ))
 
         if name == "profiler":
             code = args.get("code")

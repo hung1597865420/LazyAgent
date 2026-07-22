@@ -164,13 +164,13 @@ function Feature-Note([string]$Name) {
         'lessons' { return 'Lesson memory write/inject/background learning. Off keeps old data but stops new capture.' }
         'auto-pilot' { return 'Contextual auto_trigger checks after edits/final gates.' }
         'auto-pilot-llm' { return 'Allows Auto-Pilot selected checks to call LLM review tools.' }
-        'auto-watch' { return 'Background file watcher daemon. Main thing to keep off on slow machines.' }
+        'auto-watch' { return 'Global background file watcher. One supervisor reads ~/.agent-harness/watch.repos.json; keep off on slow machines.' }
         'auto-watch-llm' { return 'Allows watcher-triggered checks to call LLM tools.' }
         'static-llm' { return 'Optional LLM enrichment for static-first analyzers/gap tools.' }
         'wiki' { return 'On-demand llmwiki preference marker; no daemon by itself.' }
         'code-index' { return 'On-demand semantic/code index preference marker; builds when requested.' }
         'dashboard' { return 'Manual web dashboard marker; action dashboard start launches server.py.' }
-        'mcp-bridges' { return 'Read-only/static MCP tools: install manifest, adapter parity, MCP inventory, context budget, workflow/UI routers, bug repro guard, Hallmark/Spec Kit, Office bridge, scope guard. No profile toggle needed.' }
+        'mcp-bridges' { return 'Read-only/static MCP tools: install manifest, graph review, adapter parity, MCP inventory, context budget, workflow/UI routers, bug repro guard, Hallmark/Spec Kit, Office bridge, scope guard. No profile toggle needed.' }
         'auto-pilot-mode' { return 'safe = conservative checks, max = aggressive fan-out.' }
         'auto-watch-mode' { return 'safe/max mode used by watcher-triggered Auto-Pilot.' }
         'auto-watch-time' { return 'Polling interval and debounce seconds for watcher.' }
@@ -413,7 +413,7 @@ function Start-Watch {
     if (-not $cmd) { $cmd = Get-Command python -ErrorAction SilentlyContinue }
     if (-not $cmd) { throw 'python/pythonw not found on PATH.' }
     Start-Process -FilePath $cmd.Source -ArgumentList @($script) -WorkingDirectory $Root -WindowStyle Hidden
-    Write-Host 'auto_watch start requested'
+    Write-Host 'auto_watch global start requested'
 }
 
 function Start-Dashboard {
@@ -458,6 +458,12 @@ function Show-Status {
     } else {
         Write-Host 'auto_watch processes: none'
     }
+    $watchRegistry = Join-Path $FeatureDir 'watch.repos.json'
+    $watchPid = Join-Path $FeatureDir 'auto_watch.global.pid'
+    Write-Host "auto_watch global registry: $watchRegistry"
+    if (Test-Path $watchPid) {
+        Write-Host "auto_watch global pid file: $watchPid"
+    }
 }
 
 function Show-Json {
@@ -474,7 +480,7 @@ Features you can toggle:
   lessons          Lesson memory write/inject/background learning.
   auto-pilot       Contextual auto_trigger checks after edits/final gates.
   auto-pilot-llm   Allows Auto-Pilot selected checks to call LLM review tools.
-  auto-watch       Background file watcher daemon; keep off on slow machines.
+  auto-watch       Global background file watcher; one supervisor watches registered repos.
   auto-watch-llm   Allows watcher-triggered checks to call LLM tools.
   static-llm       Optional LLM enrichment for static-first analyzers/gap tools.
   wiki             On-demand llmwiki preference marker; no daemon by itself.
@@ -486,6 +492,9 @@ MCP-only/read-only tools, installed by full setup and not toggled here:
   adapter_parity_doctor Check Claude/Codex/Gemini/Antigravity rule + MCP drift.
   mcp_inventory        Inventory MCP configs and duplicated/drifted servers.
   context_budget       Estimate rules/skills/MCP token overhead + status.
+  graph_minimal_context Ultra-compact local graph context before expensive tools.
+  review_context_graph Static CRG-lite review pre-pass: changed symbols, blast radius, risk, test gaps, token savings.
+  graph_health         Static graph health: hubs, bridge nodes, dead-code candidates, untested hotspots.
   integration_router   Static router for Hallmark UI + UI Skills + Spec Kit spec flows.
   workflow_router      Static router for BA, market research, UI/UX advisor, debug/spec/domain/review/TDD/architecture.
   bug_repro_guard      Static guard requiring red-capable repro before debug fixing.
@@ -502,7 +511,7 @@ Profiles:
   balanced, 4      4/10: Auto-Pilot may use LLM; watcher off, static LLM off.
   review, 5        5/10: Auto-Pilot LLM + static LLM; watcher safe, watcher LLM off.
   heavy, 7         7/10: Auto-Pilot max + static LLM; watcher off unless enabled separately.
-  max              8-9/10: aggressive checks + fast watcher + LLM enrichment.
+  max              8-9/10: aggressive checks + fast global watcher + LLM enrichment.
 
 Commands:
   harness-toggle.bat status

@@ -1,40 +1,40 @@
 {
-    "profile":  "off",
-    "description":  "Profile \u0027off\u0027 written by harness-toggle.bat.",
+    "profile":  "heavy",
+    "description":  "Profile \u0027heavy\u0027 written by harness-toggle.bat.",
     "llm":  {
-                "enabled":  false,
-                "static":  false
+                "enabled":  true,
+                "static":  true
             },
     "finops":  {
-                   "enabled":  false
+                   "enabled":  true
                },
     "hooks":  {
-                  "enabled":  false
+                  "enabled":  true
               },
     "lessons":  {
-                    "enabled":  false
+                    "enabled":  true
                 },
     "auto_pilot":  {
-                       "enabled":  false,
-                       "mode":  "safe",
-                       "llm":  false
+                       "enabled":  true,
+                       "mode":  "max",
+                       "llm":  true
                    },
     "auto_watch":  {
-                       "enabled":  false,
+                       "enabled":  true,
                        "mode":  "safe",
-                       "llm":  false,
+                       "llm":  true,
                        "interval":  3,
                        "debounce":  2
                    },
-    "static_llm":  false,
+    "static_llm":  true,
     "manual_features":  {
                             "hooks":  {
-                                          "enabled":  false,
+                                          "enabled":  true,
                                           "status":  "soft-toggle",
-                                          "note":  "Global hook config remains installed; harness_hook.py exits immediately when hooks.enabled=false."
+                                          "note":  "Global hook config remains installed; hooks.enabled=false still allows read-only profile snapshot injection, but disables lesson/edit hook work."
                                       },
                             "lessons":  {
-                                            "enabled":  false,
+                                            "enabled":  true,
                                             "status":  "soft-toggle",
                                             "note":  "Disables lesson write/inject paths without deleting existing lesson DB files."
                                         },
@@ -49,7 +49,7 @@
                                                "note":  "Preference only; code index tools run when explicitly called."
                                            },
                             "finops":  {
-                                           "enabled":  false,
+                                           "enabled":  true,
                                            "status":  "soft-toggle",
                                            "note":  "Disables new FinOps DB writes when finops.enabled=false."
                                        },
