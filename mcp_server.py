@@ -28,6 +28,7 @@ from mcp import types
 from agents import Agent, AgentRole, get_finops_stats
 from config import MODELS, WORKSPACE_ROOT, get_llm_client, get_model_config
 from runtime_flags import bool_flag
+from tools.workspace_context import get_active_workspace_override, workspace_scope
 import support_tools as st
 
 logging.basicConfig(
@@ -174,6 +175,20 @@ def _mutation_identity_args(name: str, arguments: dict) -> dict:
     canonical = _canonicalize_for_single_flight(dict(arguments or {}))
     if "action" in canonical:
         canonical["action"] = str(canonical.get("action") or "").strip().lower()
+    if name == "goal_autopilot":
+        mode = str(canonical.get("mode") or "").strip().lower()
+        if mode in {"complete", "block", "status"}:
+            return {"mode": mode}
+        if mode == "init":
+            return {"mode": mode, "goal": canonical.get("goal")}
+        if mode == "check":
+            return {
+                "mode": mode,
+                "changed_files": canonical.get("changed_files", []),
+                "diff": canonical.get("diff", ""),
+                "task": canonical.get("task", ""),
+                "context": canonical.get("context", ""),
+            }
     if _tool_call_is_mutating(name, canonical):
         for key in _NON_IDENTITY_MUTATION_ARGS:
             canonical.pop(key, None)
@@ -1826,6 +1841,9 @@ async def _ensure_fresh_tool_modules_locked() -> list[str]:
 
 
 def _active_workspace() -> str:
+    override = get_active_workspace_override()
+    if override:
+        return os.path.abspath(str(override))
     workspace = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
     if not workspace:
         meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
@@ -1833,9 +1851,9 @@ def _active_workspace() -> str:
             try:
                 workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
             except Exception:
-                workspace = None
+                workspace = ""
     workspace = workspace or (os.getenv("WORKSPACE_ROOT") or "").strip()
-    return os.path.abspath(workspace or WORKSPACE_ROOT)
+    return os.path.abspath(workspace or os.getcwd() or WORKSPACE_ROOT)
 
 
 def _auto_watch_enabled() -> bool:
@@ -2061,6 +2079,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     import time
     from agents import current_run_id, log_run_to_db
 
+    workspace_cm = workspace_scope(_active_workspace())
+    workspace_cm.__enter__()
     run_id = f"mcp-{uuid.uuid4().hex[:8]}"
     run_token = current_run_id.set(run_id)
     start_time = time.perf_counter()
@@ -2184,6 +2204,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         return res
     finally:
         current_run_id.reset(run_token)
+        workspace_cm.__exit__(None, None, None)
         if tool_name not in ("list_agents", "finops_stats", "router_quota_status"):
             def _log_task(t: asyncio.Task, _rid=run_id, _n=tool_name, _s=start_time) -> None:
                 try:

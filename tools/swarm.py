@@ -251,8 +251,12 @@ def _direct_workspace_hits(question: str, limit: int = 10) -> list[str]:
                 rel = path.relative_to(root).as_posix()
             except (OSError, ValueError):
                 continue
+            rel_lower = rel.lower()
+            name_lower = Path(rel).name.lower()
+            if name_lower == "review_report.md" or name_lower.startswith(".harness_") or "/.claude/audit/" in rel_lower:
+                continue
             scanned += 1
-            path_lower = rel.lower()
+            path_lower = rel_lower
             score = 0
             for term in terms:
                 if term in path_lower:
@@ -269,8 +273,10 @@ def _direct_workspace_hits(question: str, limit: int = 10) -> list[str]:
                             break
             except OSError:
                 continue
+            if suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".cs", ".php", ".rb"} and any(term in path_lower for term in terms):
+                score += 20
             if suffix in {".md", ".txt", ".rst", ".adoc"}:
-                score -= 8
+                score -= 18
             if "/test" in path_lower or path_lower.startswith("test_") or path_lower.endswith("_test.py"):
                 score -= 6
             if score > 0:
@@ -287,7 +293,12 @@ def _skip_auto_selected_file(path: str) -> bool:
     rel = path.replace("\\", "/").strip("/")
     first = rel.split("/", 1)[0]
     name = Path(rel).name.lower()
-    return first in _ASK_DIRECT_SKIP_DIRS or name.startswith(".env") or name.startswith(".harness_")
+    return (
+        first in _ASK_DIRECT_SKIP_DIRS
+        or name.startswith(".env")
+        or name.startswith(".harness_")
+        or name == "review_report.md"
+    )
 
 
 def _sanitize_ask_files(files: list[str] | None) -> tuple[list[str], list[str]]:

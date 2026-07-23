@@ -4,6 +4,7 @@ Idempotent: chạy lại bao nhiêu lần cũng không tạo trùng lặp.
 """
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -18,7 +19,7 @@ GEMINI_MARKER = "<!-- agent-harness -->"
 CODEX_PROFILE_MARKER = "<!-- agent-harness-runtime-profile-policy -->"
 HOOK_ID = "agent-harness-panel-reminder"
 LESSON_HOOK_ID = "agent-harness-lesson-recorder"
-RULES_VERSION = "2026-07-21-profile-mode-gate-r1"
+RULES_VERSION = "2026-07-23-precode-lifecycle-r1"
 RULES_STAMP_FILE = ".harness_rules_version"
 
 
@@ -197,6 +198,22 @@ def _shared_rule_source_note() -> str:
     return f"> {SHARED_AGENT_RULE_SOURCE}"
 
 
+COMMON_AUTO_PILOT_RULES = """\
+## Auto-Pilot — theo runtime profile
+
+- **Tool lifecycle bắt buộc:** `preflight_trigger` chạy TRƯỚC khi plan/code để phân bổ BA/market research/UI/spec/ask_codebase/consult/alt_implementation. Client hook như Claude `UserPromptSubmit` có thể đã inject `Harness pre-code lifecycle snapshot`; coi snapshot đó là preflight bắt buộc, không bỏ qua chỉ vì chưa tự gọi tool. `auto_trigger` chỉ chạy SAU batch edit hoặc final. Không chờ `auto_trigger` cuối mới phát hiện BA/consult/ask_codebase.
+- `tool_lifecycle` là source map toàn bộ MCP tools theo phase: session_start, cross_session_coordination, orchestration_loop, preflight_before_code, during_implementation, post_edit_batch, background_watch, final_review, release_gate, memory_docs_ops. Khi phân vân tool nào chạy lúc nào, gọi static tool này trước.
+- Trước mọi auto tool, đọc runtime profile global. Chọn mode như sau: `off/light/standard/balanced/review` dùng `mode="safe"`; chỉ `heavy`/`max` hoặc prompt hiện tại yêu cầu rõ full/max/prod/release mới dùng `mode="max"`. Không dùng `mode=max` chỉ vì rule cũ hoặc vì tên profile là `balanced`.
+- Khi bắt đầu coding task không tầm thường: gọi `preflight_trigger(task="<prompt>", changed_files=[... nếu đã biết], mode="<safe|max theo profile>")`. Chạy/áp dụng các item `required=true` không bị profile block trước khi code: BA checklist, `ask_codebase`, `consult`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `bug_repro_guard`.
+- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: chỉ gọi `goal_autopilot(mode="init", goal="<nguyên prompt user>")` khi profile cho phép goal automation. Nếu hook đã báo `Harness goal lifecycle ... status=initialized_static/existing_active`, dùng active goal đó ngay và không init trùng. Làm từng part theo thứ tự; sau mỗi batch edit, gọi `auto_trigger` bằng mode được profile cho phép, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
+- Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `goal_runner(prompt="<nguyên prompt>", mode="<safe|max theo profile>")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate` khi phù hợp.
+- Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
+- Sau mọi batch Edit/Write đáng kể, gọi `auto_trigger` với `changed_files`, `task`, `stage="post_edit"`, `mode="<safe|max theo profile>"`. Tool này tự chạy static/risk checks theo context; không dùng nó thay BA/preflight.
+- `auto_watch` chỉ được xem là `background_watch`: hậu kiểm post-edit safe/static sau debounce. Watcher không được gọi BA/market research/ask_codebase/consult/alt_implementation/panel_review/goal_runner, không tự bật LLM, không tự nâng safe lên max, và không thay thế `preflight_trigger`.
+- Trước khi báo hoàn thành, nếu có active goal thì gọi `goal_supervisor(...)` trước; chỉ gọi `goal_autopilot(mode="complete", changed_files=[...], diff="<nếu có>", context="<summary>")` khi supervisor trả `run_final`, và chỉ báo xong khi supervisor trả `complete`. Nếu không có active goal, gọi `auto_trigger(stage="final", mode="<safe|max theo profile>")` hoặc `panel_review` một lần cho toàn bộ batch.
+"""
+
+
 def _norm_command(command: object) -> str:
     return " ".join(str(command or "").split())
 
@@ -213,12 +230,12 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 
 ## Auto-Pilot — theo runtime profile
 
-- **Tool lifecycle bắt buộc:** `preflight_trigger` chạy TRƯỚC khi plan/code để phân bổ BA/market research/UI/spec/ask_codebase/consult/alt_implementation. `auto_trigger` chỉ chạy SAU batch edit hoặc final. Không chờ `auto_trigger` cuối mới phát hiện BA/consult/ask_codebase.
+- **Tool lifecycle bắt buộc:** `preflight_trigger` chạy TRƯỚC khi plan/code để phân bổ BA/market research/UI/spec/ask_codebase/consult/alt_implementation. Client hook như Claude `UserPromptSubmit` có thể đã inject `Harness pre-code lifecycle snapshot`; coi snapshot đó là preflight bắt buộc, không bỏ qua chỉ vì chưa tự gọi tool. `auto_trigger` chỉ chạy SAU batch edit hoặc final. Không chờ `auto_trigger` cuối mới phát hiện BA/consult/ask_codebase.
 - `tool_lifecycle` là source map toàn bộ MCP tools theo phase: session_start, cross_session_coordination, orchestration_loop, preflight_before_code, during_implementation, post_edit_batch, background_watch, final_review, release_gate, memory_docs_ops. Khi phân vân tool nào chạy lúc nào, gọi static tool này trước.
 - **Cross-session coordinator tự động:** đầu session/prompt mới gọi hoặc tin vào heartbeat MCP tự động `session_heartbeat`; trước khi sửa file đã biết rõ scope thì gọi `claim_files(files=[...], task="<prompt>")`; trước `auto_trigger`, `panel_review`, `prod_readiness_gate`, commit hoặc báo xong phải để `conflict_check(files=[...], stage="<phase>")` chạy. Nếu trả `blocked_conflict`, dừng, refresh diff hoặc chờ owner; không tự takeover active owner. `takeover_stale_claim` chỉ dùng khi claim stale rõ ràng. Watcher chỉ ghi event + conflict_check, không claim/merge.
 - Trước mọi auto tool, đọc runtime profile global. Chọn mode như sau: `off/light/standard/balanced/review` dùng `mode="safe"`; chỉ `heavy`/`max` hoặc prompt hiện tại yêu cầu rõ full/max/prod/release mới dùng `mode="max"`. Không dùng `mode=max` chỉ vì rule cũ hoặc vì tên profile là `balanced`.
 - Khi bắt đầu coding task không tầm thường: gọi `preflight_trigger(task="<prompt>", changed_files=[... nếu đã biết], mode="<safe|max theo profile>")`. Chạy/áp dụng các item `required=true` không bị profile block trước khi code: BA checklist, `ask_codebase`, `consult`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `bug_repro_guard`.
-- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: chỉ gọi `mcp__agent-harness__goal_autopilot(mode="init", goal="<nguyên prompt user>")` khi profile cho phép goal automation. Làm từng part theo thứ tự; sau mỗi batch edit, gọi `auto_trigger` bằng mode được profile cho phép, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
+- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: chỉ gọi `mcp__agent-harness__goal_autopilot(mode="init", goal="<nguyên prompt user>")` khi profile cho phép goal automation. Nếu hook đã báo `Harness goal lifecycle ... status=initialized_static/existing_active`, dùng active goal đó ngay và không init trùng. Làm từng part theo thứ tự; sau mỗi batch edit, gọi `auto_trigger` bằng mode được profile cho phép, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `mcp__agent-harness__goal_runner(prompt="<nguyên prompt>", mode="<safe|max theo profile>")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate` khi phù hợp.
 - Khi user hỏi "đã nạp chưa", "harness ổn chưa", cài qua agent nào, MCP config có drift không, context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
@@ -390,6 +407,66 @@ def _strip_managed_section(content: str, marker: str) -> tuple[str, bool]:
         removed = True
 
 
+def _strip_legacy_harness_section_from_agents(content: str) -> tuple[str, bool]:
+    """Remove old AGENTS.md harness blocks, including malformed tail blocks.
+
+    Older setup versions wrote a Claude-style `agent-harness-managed` block into
+    AGENTS.md. Some local files lost the closing marker, so normal managed
+    stripping correctly fails. In AGENTS.md this legacy block is known harness
+    generated content; remove it to avoid stale Azure/57-tool rules fighting the
+    current profile policy.
+    """
+    try:
+        return _strip_managed_section(content, CLAUDE_MARKER)
+    except ValueError:
+        start = _find_marker_line(content, CLAUDE_MARKER)
+        if start == -1:
+            raise
+        tail = content[start:]
+        fingerprints = (
+            "Có MCP server `agent-harness`",
+            "Azure AI Foundry",
+            "57 MCP tools",
+            "## Bắt buộc",
+            "## Khi harness lỗi",
+        )
+        if sum(1 for item in fingerprints if item in tail) < 3:
+            return content, False
+        next_heading = re.search(
+            r"(?m)^# (?:Context Persistence|Context7|Research công nghệ|Agent Skills|Tech stack|Token efficiency|Project|Team|Repo)\b",
+            tail[len(CLAUDE_MARKER):],
+        )
+        if next_heading:
+            keep_from = start + len(CLAUDE_MARKER) + next_heading.start()
+            return (content[:start].rstrip() + "\n\n" + content[keep_from:].lstrip()).strip() + "\n", True
+        return content[:start].rstrip() + "\n", True
+
+
+def _strip_unmarked_legacy_harness_section(content: str) -> tuple[str, bool]:
+    pattern = re.compile(
+        r"(?ms)^# Agent Harness — quy trình khi làm coding task\s*.*?"
+        r"(?=^# (?:Context Persistence|Context7|Research công nghệ|Agent Skills|Tech stack|Token efficiency)\b|\Z)"
+    )
+    current = content
+    removed = False
+    while True:
+        match = pattern.search(current)
+        if not match:
+            return ((current.strip() + "\n") if removed else current), removed
+        legacy_block = match.group(0)
+        fingerprints = (
+            "Có MCP server `agent-harness`",
+            "Azure AI Foundry",
+            "57 MCP tools",
+            "## Bắt buộc",
+            "## Khi harness lỗi",
+        )
+        if sum(1 for item in fingerprints if item in legacy_block) < 3:
+            return current, removed
+        current = (current[:match.start()].rstrip() + "\n\n" + current[match.end():].lstrip()).strip() + "\n"
+        removed = True
+
+
 def merge_claude_md(claude_dir: Path) -> int:
     md_path = claude_dir / "CLAUDE.md"
     if md_path.exists():
@@ -398,6 +475,8 @@ def merge_claude_md(claude_dir: Path) -> int:
             return 1
         content, enc = result
         stripped, replaced = _strip_managed_section(content, CLAUDE_MARKER)
+        stripped, unmarked_legacy_replaced = _strip_unmarked_legacy_harness_section(stripped)
+        replaced = replaced or unmarked_legacy_replaced
         new_content = CLAUDE_MD_SECTION.rstrip() + "\n\n" + stripped.lstrip()
         try:
             _atomic_write_text(md_path, new_content, encoding=enc)
@@ -738,6 +817,8 @@ Quy tắc này áp dụng cho Codex và mọi agent đọc `AGENTS.md`. Profile 
 
 {_runtime_profile_policy("harness-toggle.bat status/list/json")}
 
+{COMMON_AUTO_PILOT_RULES}
+
 {COMMON_DISTILLED_INTEGRATIONS}
 <!-- /agent-harness-runtime-profile-policy -->
 """
@@ -755,6 +836,9 @@ def merge_codex_agents(home: Path | None = None) -> int:
                 continue
             content, enc = result
             stripped, replaced = _strip_managed_section(content, CODEX_PROFILE_MARKER)
+            stripped, old_managed_replaced = _strip_legacy_harness_section_from_agents(stripped)
+            stripped, unmarked_legacy_replaced = _strip_unmarked_legacy_harness_section(stripped)
+            replaced = replaced or old_managed_replaced or unmarked_legacy_replaced
             new_content = CODEX_PROFILE_POLICY_SECTION.rstrip() + "\n\n" + stripped.lstrip()
             try:
                 _atomic_write_text(path, new_content, encoding=enc)
@@ -786,12 +870,12 @@ Có MCP server `agent-harness` (12 model trên 9Router Proxy) hỗ trợ coding.
 
 ## Auto-Pilot — theo runtime profile
 
-- **Tool lifecycle bắt buộc:** `preflight_trigger` chạy TRƯỚC khi plan/code để phân bổ BA/market research/UI/spec/ask_codebase/consult/alt_implementation. `auto_trigger` chỉ chạy SAU batch edit hoặc final. Không chờ `auto_trigger` cuối mới phát hiện BA/consult/ask_codebase.
+- **Tool lifecycle bắt buộc:** `preflight_trigger` chạy TRƯỚC khi plan/code để phân bổ BA/market research/UI/spec/ask_codebase/consult/alt_implementation. Client hook như Claude `UserPromptSubmit` có thể đã inject `Harness pre-code lifecycle snapshot`; coi snapshot đó là preflight bắt buộc, không bỏ qua chỉ vì chưa tự gọi tool. `auto_trigger` chỉ chạy SAU batch edit hoặc final. Không chờ `auto_trigger` cuối mới phát hiện BA/consult/ask_codebase.
 - `tool_lifecycle` là source map toàn bộ MCP tools theo phase: session_start, cross_session_coordination, orchestration_loop, preflight_before_code, during_implementation, post_edit_batch, background_watch, final_review, release_gate, memory_docs_ops. Khi phân vân tool nào chạy lúc nào, gọi static tool này trước.
 - **Cross-session coordinator tự động:** đầu session/prompt mới gọi hoặc tin vào heartbeat MCP tự động `session_heartbeat`; trước khi sửa file đã biết rõ scope thì gọi `claim_files(files=[...], task="<prompt>")`; trước `auto_trigger`, `panel_review`, `prod_readiness_gate`, commit hoặc báo xong phải để `conflict_check(files=[...], stage="<phase>")` chạy. Nếu trả `blocked_conflict`, dừng, refresh diff hoặc chờ owner; không tự takeover active owner. `takeover_stale_claim` chỉ dùng khi claim stale rõ ràng. Watcher chỉ ghi event + conflict_check, không claim/merge. Coordinator DB có thể global nhưng scope theo `workspace_id = repo root + git branch`, nên không gộp conflict giữa repo khác nhau.
 - Trước mọi auto tool, đọc runtime profile global. Chọn mode như sau: `off/light/standard/balanced/review` dùng `mode="safe"`; chỉ `heavy`/`max` hoặc prompt hiện tại yêu cầu rõ full/max/prod/release mới dùng `mode="max"`. Không dùng `mode=max` chỉ vì rule cũ hoặc vì tên profile là `balanced`.
 - Khi bắt đầu coding task không tầm thường: gọi `preflight_trigger(task="<prompt>", changed_files=[... nếu đã biết], mode="<safe|max theo profile>")`. Chạy/áp dụng các item `required=true` không bị profile block trước khi code: BA checklist, `ask_codebase`, `consult`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `bug_repro_guard`.
-- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: chỉ gọi `goal_autopilot` với `mode="init"` và `goal="<nguyên prompt user>"` khi profile cho phép goal automation. Làm từng part theo thứ tự; sau mỗi batch edit, gọi `auto_trigger` bằng mode được profile cho phép, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
+- Khi user đưa prompt coding task có nhiều bước hoặc không xong ngay bằng một edit nhỏ: chỉ gọi `goal_autopilot` với `mode="init"` và `goal="<nguyên prompt user>"` khi profile cho phép goal automation. Nếu hook đã báo `Harness goal lifecycle ... status=initialized_static/existing_active`, dùng active goal đó ngay và không init trùng. Làm từng part theo thứ tự; sau mỗi batch edit, gọi `auto_trigger` bằng mode được profile cho phép, rồi gọi `goal_supervisor(last_checks=<auto_trigger result>, changed_files=[...], diff="<nếu có>")` để lấy next_action cứng: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - Khi user muốn nhập prompt trực tiếp cho harness tự lái từ đầu đến cuối, hoặc nói "không phụ thuộc client tự gọi tool": dùng `goal_runner(prompt="<nguyên prompt>", mode="<safe|max theo profile>")`. Tool này tự init goal, gọi agent CLI nếu có, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final qua `prod_readiness_gate` khi phù hợp.
 - Khi user hỏi "đã nạp chưa", "harness ổn chưa", cài qua agent nào, MCP config có drift không, context có đủ/tiết kiệm không, hoặc cần benchmark/resume: dùng ops tools tương ứng `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`.
 - Ưu tiên next_action từ `goal_supervisor`: `continue_part` = code tiếp part hiện tại; `run_check` = gọi lại `auto_trigger`/goal check sau khi sửa; `run_final` = gọi `goal_autopilot(mode="complete", ...)`; `blocked_ask_user` = dừng và hỏi user quyết định; `complete` = được báo hoàn thành.
@@ -905,6 +989,8 @@ def merge_gemini_md(gemini_dir: Path) -> int:
             return 1
         content, enc = result
         stripped, replaced = _strip_managed_section(content, GEMINI_MARKER)
+        stripped, unmarked_legacy_replaced = _strip_unmarked_legacy_harness_section(stripped)
+        replaced = replaced or unmarked_legacy_replaced
         new_content = GEMINI_MD_SECTION.rstrip() + "\n\n" + stripped.lstrip()
         try:
             _atomic_write_text(md_path, new_content, encoding=enc)

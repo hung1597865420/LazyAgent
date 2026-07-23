@@ -301,7 +301,7 @@ Thang profile theo mức sử dụng token: `off` = 0/10 hard-off, `light` = 1/1
 
 Profile `standard` vẫn bật `llm=true`, nghĩa là bạn gọi tool LLM thủ công vẫn được; nó chỉ tắt `auto-pilot-llm`, `auto-watch-llm`, và `static-llm` để tránh tự động gọi LLM nền. Profile `off` thì tắt cả `llm=false`, đúng nghĩa không gọi model.
 
-Agent policy theo profile được inject cho mọi client chính qua `merge_settings.py`: Claude đọc `~/.claude/CLAUDE.md`, Gemini/Antigravity đọc `~/.gemini/GEMINI.md`, Codex đọc `~/.codex/AGENTS.md`, và agent generic/user-level đọc `~/AGENTS.md`. Policy này đứng trên các rule tự động khác: profile thấp không được tự nâng profile, không được bypass `llm.enabled=false`, và nếu profile không cho phép LLM thì agent phải dùng static/local fallback rồi báo ngắn `profile <name> đang chặn LLM`. Claude/Gemini/Codex contract mới: đầu mỗi prompt/session phải refresh profile global, không dùng cache từ repo trước; khi chuẩn bị gọi harness tool phải coi snapshot `%USERPROFILE%\.agent-harness\harness.features.json` là source of truth.
+Agent policy theo profile được inject cho mọi client chính qua `merge_settings.py`: Claude đọc `~/.claude/CLAUDE.md`, Gemini/Antigravity đọc `~/.gemini/GEMINI.md`, Codex đọc `~/.codex/AGENTS.md`, và agent generic/user-level đọc `~/AGENTS.md`. Policy này đứng trên các rule tự động khác: profile thấp không được tự nâng profile, không được bypass `llm.enabled=false`, và nếu profile không cho phép LLM thì agent phải dùng static/local fallback rồi báo ngắn `profile <name> đang chặn LLM`. Claude/Gemini/Codex contract mới: đầu mỗi prompt/session phải refresh profile global, không dùng cache từ repo trước; khi chuẩn bị gọi harness tool phải coi snapshot `%USERPROFILE%\.agent-harness\harness.features.json` là source of truth. Với Claude hook, `UserPromptSubmit` còn inject `Harness pre-code lifecycle snapshot` và tự tạo static `.harness_goal_state.json` cho prompt lớn/multi-step, nên BA/Spec/ask_codebase được đặt trước code thay vì đợi `auto_trigger` cuối batch.
 
 Nếu Claude không có vẻ nhận profile mới, kiểm theo thứ tự này:
 
@@ -311,7 +311,7 @@ python merge_settings.py
 python -c "import asyncio,json; from tools.ops import adapter_parity_doctor; print(json.dumps(asyncio.run(adapter_parity_doctor()), indent=2, ensure_ascii=False))"
 ```
 
-Trong output của `adapter_parity_doctor`, record `claude.hooks` phải có `prompt_profile_hook_ok=true`, `post_edit_hook_ok=true`, `post_edit_profile_reminder_ok=true`, `context_probe_ok=true`, và `active_profile` đúng với `%USERPROFILE%\.agent-harness\harness.features.json`. Nếu các dòng này pass mà Claude vẫn không gọi harness theo profile, restart Claude Code/new session để nó reload `~/.claude/settings.json` và `~/.claude/CLAUDE.md`; session cũ có thể cache hook/rule từ trước khi merge. Với Gemini/Antigravity hiện chưa có hook prompt tương đương trong setup này, nên rule bắt buộc agent tự đọc file profile global hoặc gọi `harness-toggle.bat status/json` ở đầu prompt/session.
+Trong output của `adapter_parity_doctor`, record `claude.hooks` phải có `prompt_profile_hook_ok=true`, `post_edit_hook_ok=true`, `post_edit_profile_reminder_ok=true`, `context_probe_ok=true`, và `active_profile` đúng với `%USERPROFILE%\.agent-harness\harness.features.json`. Với prompt lớn, hook context phải có `Harness pre-code lifecycle snapshot`, `workflow_routes`, và `Harness goal lifecycle`; hook dùng static local router, không gọi 9Router. Nếu các dòng này pass mà Claude vẫn không gọi harness theo profile, restart Claude Code/new session để nó reload `~/.claude/settings.json` và `~/.claude/CLAUDE.md`; session cũ có thể cache hook/rule từ trước khi merge. Với Gemini/Antigravity hiện chưa có hook prompt tương đương trong setup này, nên rule bắt buộc agent tự đọc file profile global hoặc gọi `harness-toggle.bat status/json` ở đầu prompt/session.
 
 Hai lỗi profile hay gây hiểu nhầm:
 
@@ -329,6 +329,18 @@ Không sửa file.
 ```
 
 Với profile `balanced`, câu trả lời đúng phải là `auto_trigger mode=safe`, và sau code edit phải tự chạy `auto_trigger stage=final mode=safe` hoặc `panel_review` một lần cho batch. Nếu sửa docs/typo nhỏ thì `auto_trigger` có thể trả `status=skipped`, `reason=docs-only change`; đó là đúng exception.
+
+Prompt test lifecycle cho Claude:
+
+```text
+Không sửa file. Hãy đọc Harness pre-code lifecycle snapshot đang được inject cho prompt này và trả lời:
+1. workflow_routes có ba_discovery/spec_first không?
+2. goal lifecycle đang initialized_static/existing_active hay idle?
+3. auto_trigger nên chạy trước code hay sau batch edit?
+Prompt giả lập: dev ra tính năng lớn có plan đầy đủ, cần BA discovery và lifecycle trước code.
+```
+
+Câu trả lời đúng: BA/spec nằm trong pre-code lifecycle; goal phải có `initialized_static` hoặc `existing_active`; `auto_trigger` chỉ chạy sau batch edit/final, không được dùng làm bước BA đầu tiên.
 
 ### 2.2.1. Distilled routers đã chưng cất vào Auto-Pilot
 

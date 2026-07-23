@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import os
 import shutil
+import threading
 import time
 import types
 import uuid
@@ -184,6 +185,7 @@ import harness
 import support_tools as st
 import server
 import mcp_server
+from tools.workspace_context import workspace_scope
 check("import tất cả modules", True)
 lazy_support_script = r"""
 import importlib.abc
@@ -381,6 +383,23 @@ check("MCP cancel không chạy nền tool LLM/heavy",
 check("single-flight giữ nguyên path string giống số",
       mcp_server._single_flight_key("auto_trigger", {"changed_files": ["01"]})
       != mcp_server._single_flight_key("auto_trigger", {"changed_files": ["1"]}))
+check("single-flight goal_autopilot check giữ input semantic",
+      mcp_server._single_flight_key("goal_autopilot", {"mode": "check", "changed_files": ["src/a.py"], "diff": "+a"})
+      != mcp_server._single_flight_key("goal_autopilot", {"mode": "check", "changed_files": ["src/b.py"], "diff": "+b"}))
+check("single-flight goal_autopilot complete idempotent theo workspace",
+      mcp_server._single_flight_key("goal_autopilot", {"mode": "complete", "changed_files": ["src/a.py"]})
+      == mcp_server._single_flight_key("goal_autopilot", {"mode": "complete", "changed_files": []}))
+sf_workspace_a = SMOKE_DIR / "single_flight_repo_a"
+sf_workspace_b = SMOKE_DIR / "single_flight_repo_b"
+sf_workspace_a.mkdir(parents=True, exist_ok=True)
+sf_workspace_b.mkdir(parents=True, exist_ok=True)
+with workspace_scope(sf_workspace_a):
+    sf_goal_key_a = mcp_server._single_flight_key("goal_autopilot", {"mode": "complete"})
+with workspace_scope(sf_workspace_b):
+    sf_goal_key_b = mcp_server._single_flight_key("goal_autopilot", {"mode": "complete"})
+check("single-flight goal_autopilot complete tách workspace khác repo",
+      sf_goal_key_a != sf_goal_key_b,
+      f"a={sf_goal_key_a} b={sf_goal_key_b}")
 coord_hb = asyncio.run(mcp_server.call_tool("session_heartbeat", {
     "session_id": "smoke-coord-main",
     "agent_kind": "smoke",
@@ -733,6 +752,29 @@ check("workflow_router routes BA discovery before spec_first",
       and "ui_ux_advisor" in ba_route_names
       and ba_route_json.get("recommended") == "ba_discovery",
       str(ba_route_json))
+vi_ba_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "dev ra tính năng lớn có plan đầy đủ, cần BA discovery và lifecycle trước code",
+    "changed_files": [],
+}))
+vi_ba_route_json = json.loads(vi_ba_route_smoke[0].text)
+vi_ba_route_names = [r.get("name") for r in vi_ba_route_json.get("routes", [])]
+check("workflow_router nhận tính năng lớn tiếng Việt là BA lifecycle",
+      vi_ba_route_json.get("recommended") == "ba_discovery"
+      and "ba_discovery" in vi_ba_route_names
+      and "market_research_advisor" in vi_ba_route_names
+      and "spec_first" in vi_ba_route_names,
+      str(vi_ba_route_json))
+vi_business_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Cần phân tích nghiệp vụ, làm rõ yêu cầu người dùng, luồng thanh toán và tiêu chí nghiệm thu trước khi code",
+    "changed_files": [],
+}))
+vi_business_route_json = json.loads(vi_business_route_smoke[0].text)
+vi_business_route_names = [r.get("name") for r in vi_business_route_json.get("routes", [])]
+check("workflow_router nhận cụm phân tích nghiệp vụ tiếng Việt",
+      vi_business_route_json.get("recommended") == "ba_discovery"
+      and "ba_discovery" in vi_business_route_names
+      and "spec_first" in vi_business_route_names,
+      str(vi_business_route_json))
 ux_research_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
     "task": "redesign dashboard UX and layout",
     "changed_files": ["packages/web/src/app/dashboard/page.tsx", "packages/web/src/app/dashboard/styles.css"],
@@ -797,6 +839,16 @@ check("workflow_router debug repro suppresses BA discovery",
       debug_route_json.get("recommended") == "bug_repro_guard"
       and "ba_discovery" not in debug_route_names,
       str(debug_route_json))
+doc_bug_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
+    "task": "Fix a bug in the README install instructions; no code changes",
+    "changed_files": ["README.md"],
+}))
+doc_bug_route_json = json.loads(doc_bug_route_smoke[0].text)
+doc_bug_route_names = [r.get("name") for r in doc_bug_route_json.get("routes", [])]
+check("workflow_router docs bug prompt không bắt bug_repro_guard",
+      "bug_repro_guard" not in doc_bug_route_names
+      and doc_bug_route_json.get("recommended") != "bug_repro_guard",
+      str(doc_bug_route_json))
 test_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
     "task": "Add a feature flag cleanup test",
     "changed_files": ["tests/test_flags.py"],
@@ -1808,11 +1860,11 @@ check("ask_codebase auto-select lọc wiki/env artifacts",
       and _skip_auto_selected_file(".ENV.LOCAL")
       and _skip_auto_selected_file(".env.example")
       and _skip_auto_selected_file("config/.Env.Prod")
-      and _skip_auto_selected_file(".harness_ast_graph.json"),
+      and _skip_auto_selected_file("REVIEW_REPORT.md"),
       "filter failed")
-safe_files, unsafe_warnings = _sanitize_ask_files(["tools/swarm.py", "../secret.txt", "C:/tmp/x.py", ".ENV", "llmwiki/wiki/x.md"])
+safe_files, unsafe_warnings = _sanitize_ask_files(["tools/swarm.py", "../secret.txt", "C:/tmp/x.py", ".ENV", "llmwiki/wiki/x.md", "REVIEW_REPORT.md"])
 check("ask_codebase sanitize user files",
-      safe_files == ["tools/swarm.py"] and len(unsafe_warnings) == 4,
+      safe_files == ["tools/swarm.py"] and len(unsafe_warnings) == 5,
       f"safe={safe_files}, warnings={unsafe_warnings}")
 bounded_warn = _safe_warn_value("x" * 500)
 check("ask_codebase warning value bounded",
@@ -2484,6 +2536,197 @@ finally:
         os.environ.pop("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE", None)
     else:
         os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = old_features_override
+hook_lifecycle_root = SMOKE_DIR / "hook_lifecycle"
+hook_lifecycle_root.mkdir(parents=True, exist_ok=True)
+(hook_lifecycle_root / ".git").mkdir(exist_ok=True)
+hook_lifecycle_features = hook_lifecycle_root / "harness.features.json"
+hook_lifecycle_features.write_text(json.dumps({
+    "profile": "review",
+    "llm": {"enabled": True, "static": True},
+    "hooks": {"enabled": True},
+    "lessons": {"enabled": False},
+    "finops": {"enabled": False},
+    "auto_pilot": {"enabled": True, "mode": "safe", "llm": True},
+    "auto_watch": {"enabled": False, "mode": "safe", "llm": False},
+    "static_llm": True,
+}), encoding="utf-8")
+old_stdin = sys.stdin
+old_features_file = os.environ.pop("HARNESS_FEATURES_FILE", None)
+old_features_override = os.environ.pop("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE", None)
+old_active_workspace = os.environ.pop("HARNESS_ACTIVE_WORKSPACE", None)
+old_claude_project_dir = os.environ.pop("CLAUDE_PROJECT_DIR", None)
+old_workspace_root = os.environ.pop("WORKSPACE_ROOT", None)
+try:
+    os.environ["HARNESS_FEATURES_FILE"] = str(hook_lifecycle_features)
+    os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = "1"
+    sys.stdin = io.StringIO(json.dumps({
+        "cwd": str(hook_lifecycle_root),
+        "prompt": "dev ra tính năng lớn có plan đầy đủ, cần BA discovery và lifecycle trước code",
+    }))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        hook_lifecycle_rc = harness_hook.main()
+    hook_lifecycle_payload = json.loads(out.getvalue())
+    hook_lifecycle_context = hook_lifecycle_payload["hookSpecificOutput"]["additionalContext"]
+    goal_state_path = hook_lifecycle_root / ".harness_goal_state.json"
+    goal_state_data = json.loads(goal_state_path.read_text(encoding="utf-8")) if goal_state_path.exists() else {}
+    check("harness_hook inject preflight BA lifecycle và static goal",
+          hook_lifecycle_rc == 0
+          and "Harness pre-code lifecycle snapshot" in hook_lifecycle_context
+          and "ba_discovery" in hook_lifecycle_context
+          and "Harness goal lifecycle" in hook_lifecycle_context
+          and goal_state_data.get("status") == "active",
+          hook_lifecycle_context[:2000] + str(goal_state_data))
+    readonly_root = SMOKE_DIR / "hook_lifecycle_readonly"
+    readonly_root.mkdir(parents=True, exist_ok=True)
+    (readonly_root / ".git").mkdir(exist_ok=True)
+    sys.stdin = io.StringIO(json.dumps({
+        "cwd": str(readonly_root),
+        "prompt": "Không sửa file. Chỉ kiểm tra lifecycle có inject không, không tạo goal hay ghi state.",
+    }))
+    readonly_out = io.StringIO()
+    with contextlib.redirect_stdout(readonly_out):
+        readonly_rc = harness_hook.main()
+    readonly_context = json.loads(readonly_out.getvalue())["hookSpecificOutput"]["additionalContext"]
+    check("harness_hook read-only prompt không auto-init static goal",
+          readonly_rc == 0
+          and "prompt requested read-only/no state" in readonly_context
+          and not (readonly_root / ".harness_goal_state.json").exists(),
+          readonly_context[:1200])
+    status_only_root = SMOKE_DIR / "hook_lifecycle_status_only"
+    status_only_root.mkdir(parents=True, exist_ok=True)
+    (status_only_root / ".git").mkdir(exist_ok=True)
+    sys.stdin = io.StringIO(json.dumps({
+        "cwd": str(status_only_root),
+        "prompt": "Status only, no code changes: check a large feature lifecycle plan and BA routing but do not create goal state.",
+    }))
+    status_only_out = io.StringIO()
+    with contextlib.redirect_stdout(status_only_out):
+        status_only_rc = harness_hook.main()
+    status_only_context = json.loads(status_only_out.getvalue())["hookSpecificOutput"]["additionalContext"]
+    check("harness_hook status-only prompt không auto-init static goal",
+          status_only_rc == 0
+          and "prompt requested read-only/no state" in status_only_context
+          and not (status_only_root / ".harness_goal_state.json").exists(),
+          status_only_context[:1200])
+    quote_root = SMOKE_DIR / "hook_lifecycle_quote_edit"
+    quote_root.mkdir(parents=True, exist_ok=True)
+    (quote_root / ".git").mkdir(exist_ok=True)
+    sys.stdin = io.StringIO(json.dumps({
+        "cwd": str(quote_root),
+        "prompt": "Implement a feature lifecycle guard for prompts that quote the phrase \"do not edit\" inside documentation, with BA plan before code.",
+    }))
+    quote_out = io.StringIO()
+    with contextlib.redirect_stdout(quote_out):
+        quote_rc = harness_hook.main()
+    quote_context = json.loads(quote_out.getvalue())["hookSpecificOutput"]["additionalContext"]
+    check("harness_hook quoted do-not-edit không block lifecycle",
+          quote_rc == 0
+          and "Harness goal lifecycle for this prompt" in quote_context
+          and (quote_root / ".harness_goal_state.json").exists(),
+          quote_context[:1200])
+    scoped_root = SMOKE_DIR / "hook_lifecycle_scoped_no_edit"
+    scoped_root.mkdir(parents=True, exist_ok=True)
+    (scoped_root / ".git").mkdir(exist_ok=True)
+    sys.stdin = io.StringIO(json.dumps({
+        "cwd": str(scoped_root),
+        "prompt": "Do not edit README.md or generated files; implement the feature lifecycle fix in src/auth.py with BA plan before code.",
+    }))
+    scoped_out = io.StringIO()
+    with contextlib.redirect_stdout(scoped_out):
+        scoped_rc = harness_hook.main()
+    scoped_context = json.loads(scoped_out.getvalue())["hookSpecificOutput"]["additionalContext"]
+    check("harness_hook path-scoped do-not-edit vẫn cho lifecycle",
+          scoped_rc == 0
+          and "Harness goal lifecycle for this prompt" in scoped_context
+          and (scoped_root / ".harness_goal_state.json").exists(),
+          scoped_context[:1200])
+    deleted_cwd = SMOKE_DIR / "hook_lifecycle_deleted_cwd"
+    deleted_cwd.mkdir(parents=True, exist_ok=True)
+    deleted_cwd.rmdir()
+    fallback_root = SMOKE_DIR / "hook_lifecycle_fallback_root"
+    fallback_root.mkdir(parents=True, exist_ok=True)
+    (fallback_root / ".git").mkdir(exist_ok=True)
+    os.environ["WORKSPACE_ROOT"] = str(fallback_root)
+    sys.stdin = io.StringIO(json.dumps({
+        "cwd": str(deleted_cwd),
+        "prompt": "Implement a lifecycle fallback feature with BA plan before code.",
+    }))
+    fallback_out = io.StringIO()
+    with contextlib.redirect_stdout(fallback_out):
+        fallback_rc = harness_hook.main()
+    fallback_context = json.loads(fallback_out.getvalue())["hookSpecificOutput"]["additionalContext"]
+    check("harness_hook deleted cwd fallback dùng workspace sống",
+          fallback_rc == 0
+          and "Harness goal lifecycle for this prompt" in fallback_context
+          and (fallback_root / ".harness_goal_state.json").exists()
+          and not (deleted_cwd / ".harness_goal_state.json").exists(),
+          fallback_context[:1200])
+    from tools.workspace_context import get_active_workspace_override
+
+    env_root = SMOKE_DIR / "hook_context_scope"
+    env_root.mkdir(parents=True, exist_ok=True)
+    os.environ["WORKSPACE_ROOT"] = str(SMOKE_DIR / "hook_env_unchanged")
+    with harness_hook._workspace_env(env_root):
+        scoped_override = get_active_workspace_override()
+        scoped_env = os.environ.get("WORKSPACE_ROOT")
+    check("harness_hook workspace scope không mutate process env",
+          scoped_override == str(env_root.resolve())
+          and os.environ.get("WORKSPACE_ROOT") == str(SMOKE_DIR / "hook_env_unchanged")
+          and scoped_env == str(SMOKE_DIR / "hook_env_unchanged"),
+          f"override={scoped_override}; env={os.environ.get('WORKSPACE_ROOT')}; scoped_env={scoped_env}")
+    lock_root_a = SMOKE_DIR / "hook_env_lock_a"
+    lock_root_b = SMOKE_DIR / "hook_env_lock_b"
+    lock_root_a.mkdir(parents=True, exist_ok=True)
+    lock_root_b.mkdir(parents=True, exist_ok=True)
+    entered_a = threading.Event()
+    allow_a_exit = threading.Event()
+    b_done = threading.Event()
+    observed = []
+
+    def hold_workspace_a():
+        with harness_hook._workspace_env(lock_root_a):
+            observed.append(("a_enter", get_active_workspace_override()))
+            entered_a.set()
+            allow_a_exit.wait(5)
+            observed.append(("a_before_exit", get_active_workspace_override()))
+
+    def enter_workspace_b():
+        entered_a.wait(5)
+        with harness_hook._workspace_env(lock_root_b):
+            observed.append(("b_enter", get_active_workspace_override()))
+        b_done.set()
+
+    thread_a = threading.Thread(target=hold_workspace_a)
+    thread_b = threading.Thread(target=enter_workspace_b)
+    thread_a.start()
+    thread_b.start()
+    entered_a.wait(5)
+    time.sleep(0.1)
+    observed.append(("main_while_a_holds", get_active_workspace_override()))
+    allow_a_exit.set()
+    thread_a.join(5)
+    thread_b.join(5)
+    check("harness_hook workspace env lock bao toàn lifecycle",
+          b_done.is_set()
+          and observed[0] == ("a_enter", str(lock_root_a.resolve()))
+          and ("a_before_exit", str(lock_root_a.resolve())) in observed
+          and ("b_enter", str(lock_root_b.resolve())) in observed
+          and observed.index(("a_before_exit", str(lock_root_a.resolve()))) < observed.index(("b_enter", str(lock_root_b.resolve()))),
+          str(observed))
+finally:
+    sys.stdin = old_stdin
+    for key, value in (
+        ("HARNESS_FEATURES_FILE", old_features_file),
+        ("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE", old_features_override),
+        ("HARNESS_ACTIVE_WORKSPACE", old_active_workspace),
+        ("CLAUDE_PROJECT_DIR", old_claude_project_dir),
+        ("WORKSPACE_ROOT", old_workspace_root),
+    ):
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 import merge_settings
 managed_sample = "before\n<!-- agent-harness-managed -->\nold\n<!-- /agent-harness-managed -->\nafter"
@@ -2616,12 +2859,141 @@ check("lazy rules merge tạo stamp và rules mới",
       and "mcp_server.py" in codex_cfg)
 codex_rules = (rules_home / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
 check("Codex/Gemini rules nhắc refresh profile mỗi prompt",
-      "refresh profile" in codex_rules and "refresh profile" in gemini_rules,
+      "refresh profile" in codex_rules
+      and "`preflight_trigger` chạy TRƯỚC" in codex_rules
+      and "Harness goal lifecycle" in codex_rules
+      and "goal_supervisor" in codex_rules
+      and "refresh profile" in gemini_rules,
       codex_rules[:500])
 check("shared agent policy render đủ Claude/Codex/Gemini",
       all(merge_settings.SHARED_AGENT_RULE_SOURCE in rules
           for rules in (claude_rules, codex_rules, gemini_rules)),
       "\n---codex---\n".join((claude_rules[:300], codex_rules[:300], gemini_rules[:300])))
+legacy_codex_home = SMOKE_DIR / "legacy_codex_home"
+legacy_agents = legacy_codex_home / ".codex" / "AGENTS.md"
+legacy_agents.parent.mkdir(parents=True, exist_ok=True)
+legacy_agents.write_text(
+    "<!-- agent-harness-runtime-profile-policy -->\nold profile\n<!-- /agent-harness-runtime-profile-policy -->\n"
+    "keep user note\n"
+    "<!-- agent-harness-managed -->\nCó MCP server `agent-harness` (10 model trên Azure AI Foundry, 57 MCP tools)\n<!-- /agent-harness-managed -->\n",
+    encoding="utf-8",
+)
+legacy_merge_ok = merge_settings.merge_codex_agents(legacy_codex_home)
+legacy_codex_rules = legacy_agents.read_text(encoding="utf-8")
+check("Codex AGENTS merge xóa legacy harness-managed block",
+      legacy_merge_ok == 0
+      and "Azure AI Foundry" not in legacy_codex_rules
+      and "57 MCP tools" not in legacy_codex_rules
+      and "keep user note" in legacy_codex_rules
+      and "`preflight_trigger` chạy TRƯỚC" in legacy_codex_rules,
+      legacy_codex_rules[:1200])
+malformed_legacy_home = SMOKE_DIR / "malformed_legacy_codex_home"
+malformed_agents = malformed_legacy_home / "AGENTS.md"
+malformed_agents.parent.mkdir(parents=True, exist_ok=True)
+malformed_agents.write_text(
+    "<!-- agent-harness-runtime-profile-policy -->\nold profile\n<!-- /agent-harness-runtime-profile-policy -->\n"
+    "keep this user note\n"
+    "<!-- agent-harness-managed -->\nCó MCP server `agent-harness` (10 model trên Azure AI Foundry, 57 MCP tools)\n"
+    "stale tail without end marker\n",
+    encoding="utf-8",
+)
+malformed_merge_ok = merge_settings.merge_codex_agents(malformed_legacy_home)
+malformed_rules = malformed_agents.read_text(encoding="utf-8")
+check("Codex AGENTS merge xóa legacy block thiếu end marker",
+      malformed_merge_ok == 0
+      and "Azure AI Foundry" not in malformed_rules
+      and "stale tail without end marker" not in malformed_rules
+      and "keep this user note" in malformed_rules
+      and "Harness goal lifecycle" in malformed_rules,
+      malformed_rules[:1200])
+malformed_keep_home = SMOKE_DIR / "malformed_keep_codex_home"
+malformed_keep_agents = malformed_keep_home / ".codex" / "AGENTS.md"
+malformed_keep_agents.parent.mkdir(parents=True, exist_ok=True)
+malformed_keep_agents.write_text(
+    "<!-- agent-harness-runtime-profile-policy -->\nold profile\n<!-- /agent-harness-runtime-profile-policy -->\n"
+    "<!-- agent-harness-managed -->\nCó MCP server `agent-harness` (10 model trên Azure AI Foundry, 57 MCP tools)\n"
+    "# Project Rules\n"
+    "Important custom deployment instructions\n",
+    encoding="utf-8",
+)
+malformed_keep_ok = merge_settings.merge_codex_agents(malformed_keep_home)
+malformed_keep_rules = malformed_keep_agents.read_text(encoding="utf-8")
+check("Codex AGENTS malformed legacy strip giữ custom heading sau marker",
+      malformed_keep_ok == 0
+      and "Azure AI Foundry" not in malformed_keep_rules
+      and "# Project Rules" in malformed_keep_rules
+      and "Important custom deployment instructions" in malformed_keep_rules,
+      malformed_keep_rules[:1200])
+unmarked_legacy_home = SMOKE_DIR / "unmarked_legacy_codex_home"
+unmarked_agents = unmarked_legacy_home / ".codex" / "AGENTS.md"
+unmarked_agents.parent.mkdir(parents=True, exist_ok=True)
+unmarked_agents.write_text(
+    "<!-- agent-harness-runtime-profile-policy -->\nold profile\n<!-- /agent-harness-runtime-profile-policy -->\n\n"
+    "# Agent Harness — quy trình khi làm coding task\n"
+    "Có MCP server `agent-harness` (10 model trên Azure AI Foundry, 57 MCP tools)\n"
+    "old required panel rules\n\n"
+    "# Context Persistence — ghi lại context theo dự án\n"
+    "keep context rules\n",
+    encoding="utf-8",
+)
+unmarked_merge_ok = merge_settings.merge_codex_agents(unmarked_legacy_home)
+unmarked_rules = unmarked_agents.read_text(encoding="utf-8")
+check("Codex AGENTS merge xóa unmarked legacy Azure block nhưng giữ section sau",
+      unmarked_merge_ok == 0
+      and "Azure AI Foundry" not in unmarked_rules
+      and "old required panel rules" not in unmarked_rules
+      and "# Context Persistence" in unmarked_rules
+      and "keep context rules" in unmarked_rules
+      and "`preflight_trigger` chạy TRƯỚC" in unmarked_rules,
+      unmarked_rules[:1200])
+legacy_markdown_home = SMOKE_DIR / "legacy_markdown_home"
+legacy_claude_dir = legacy_markdown_home / ".claude"
+legacy_gemini_dir = legacy_markdown_home / ".gemini"
+legacy_claude_dir.mkdir(parents=True, exist_ok=True)
+legacy_gemini_dir.mkdir(parents=True, exist_ok=True)
+for legacy_file, marker in (
+    (legacy_claude_dir / "CLAUDE.md", merge_settings.CLAUDE_MARKER),
+    (legacy_gemini_dir / "GEMINI.md", merge_settings.GEMINI_MARKER),
+):
+    legacy_file.write_text(
+        f"{marker}\nold managed\n{merge_settings._end_marker_for(marker)}\n\n"
+        "# Agent Harness — quy trình khi làm coding task\n"
+        "Có MCP server `agent-harness` (10 model trên Azure AI Foundry, 57 MCP tools)\n\n"
+        "# Context Persistence — ghi lại context theo dự án\n"
+        "keep context rules\n",
+        encoding="utf-8",
+    )
+legacy_markdown_ok = merge_settings.merge_claude_md(legacy_claude_dir) == 0 and merge_settings.merge_gemini_md(legacy_gemini_dir) == 0
+legacy_claude_rules = (legacy_claude_dir / "CLAUDE.md").read_text(encoding="utf-8")
+legacy_gemini_rules = (legacy_gemini_dir / "GEMINI.md").read_text(encoding="utf-8")
+check("Claude/Gemini merge xóa unmarked legacy Azure block",
+      legacy_markdown_ok
+      and "Azure AI Foundry" not in legacy_claude_rules
+      and "Azure AI Foundry" not in legacy_gemini_rules
+      and "# Context Persistence" in legacy_claude_rules
+      and "# Context Persistence" in legacy_gemini_rules
+      and "`preflight_trigger` chạy TRƯỚC" in legacy_claude_rules
+      and "`preflight_trigger` chạy TRƯỚC" in legacy_gemini_rules,
+      legacy_claude_rules[:800] + legacy_gemini_rules[:800])
+user_heading_home = SMOKE_DIR / "user_heading_codex_home"
+user_heading_agents = user_heading_home / ".codex" / "AGENTS.md"
+user_heading_agents.parent.mkdir(parents=True, exist_ok=True)
+user_heading_agents.write_text(
+    "<!-- agent-harness-runtime-profile-policy -->\nold profile\n<!-- /agent-harness-runtime-profile-policy -->\n\n"
+    "# Agent Harness — quy trình khi làm coding task\n"
+    "Team-specific runbook: ask release owner before changing billing code.\n\n"
+    "# Context Persistence — ghi lại context theo dự án\n"
+    "keep context rules\n",
+    encoding="utf-8",
+)
+user_heading_ok = merge_settings.merge_codex_agents(user_heading_home)
+user_heading_rules = user_heading_agents.read_text(encoding="utf-8")
+check("Codex AGENTS merge giữ user-authored section cùng heading nếu không giống legacy template",
+      user_heading_ok == 0
+      and "Team-specific runbook" in user_heading_rules
+      and "keep context rules" in user_heading_rules
+      and "`preflight_trigger` chạy TRƯỚC" in user_heading_rules,
+      user_heading_rules[:1200])
 merged_twice = merge_settings.lazy_merge_if_needed(home=rules_home)
 check("lazy rules merge idempotent sau stamp",
       not merged_twice and not merge_settings.needs_update(home=rules_home))
@@ -2801,6 +3173,22 @@ check("chặn path ngoài workspace runtime",
       f"workspace={WORKSPACE_ROOT} warns={warns2}")
 ctx3, warns3, _ = st.read_workspace_files(["khong_ton_tai.py"])
 check("file không tồn tại → warning", ctx3 == "" and any("không tồn tại" in w for w in warns3))
+big_ctx_dir = SMOKE_DIR / "big_context"
+big_ctx_dir.mkdir(parents=True, exist_ok=True)
+big_a = big_ctx_dir / "a.py"
+big_b = big_ctx_dir / "b.py"
+big_c = big_ctx_dir / "c.py"
+big_a.write_text("\n".join(f"A{i} = {i}" for i in range(3000)), encoding="utf-8")
+big_b.write_text("\n".join(f"B{i} = {i}" for i in range(3000)), encoding="utf-8")
+big_c.write_text("\n".join(f"C{i} = {i}" for i in range(3000)), encoding="utf-8")
+big_paths = [p.as_posix() for p in (big_a, big_b, big_c)]
+big_ctx, big_warns, big_loaded = st.read_workspace_files(big_paths, total_cap=12_000)
+check("read_workspace_files excerpt file lớn thay vì skip trắng",
+      big_loaded == 3
+      and all(f"=== FILE: {path} (excerpt" in big_ctx for path in big_paths)
+      and all("excerpted" in w for w in big_warns)
+      and not any("bỏ qua — vượt tổng dung lượng context" in w for w in big_warns),
+      f"loaded={big_loaded} warns={big_warns} ctx={big_ctx[:500]}")
 
 # 7. JSON parsing chịu được markdown fence và text rác
 clean = st._parse_json_findings('{"findings": [{"issue": "x"}]}')

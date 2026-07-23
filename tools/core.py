@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 from agents import Agent, AgentRole, AgentResult
 from config import WORKSPACE_ROOT, get_llm_client
+from .workspace_context import get_active_workspace_override
 from runtime_flags import bool_flag
 
 _log = logging.getLogger("harness.core")
@@ -129,6 +130,7 @@ async def _llm_analyze(prompt: str, context: str = "", role: AgentRole = AgentRo
 MAX_FILE_BYTES        = 200_000     # per file
 MAX_TOTAL_BYTES       = 400_000     # tổng cho review/consult/fix tools
 MAX_TOTAL_BYTES_BIG   = 2_500_000   # ask_codebase — manager có 1M context
+MIN_CONTEXT_EXCERPT_BYTES = 4_000
 
 # ── Git diff helper ───────────────────────────────────────────────────────────
 
@@ -198,7 +200,52 @@ def read_workspace_files(
     root = os.path.realpath(_get_active_workspace())
     root_cmp = os.path.normcase(root)
 
-    for p in paths:
+    def _fit_bytes(text: str, limit: int) -> str:
+        raw = text.encode("utf-8", errors="replace")
+        if len(raw) <= limit:
+            return text
+        return raw[:max(0, limit)].decode("utf-8", errors="replace")
+
+    def _excerpt_numbered_file(path_label: str, data: str, byte_budget: int) -> str:
+        header = f"=== FILE: {path_label} (excerpt; full file omitted for context budget) ===\n"
+        marker = "\n...\n[context excerpt: middle omitted because file/context budget is limited]\n...\n"
+        budget = max(0, byte_budget - len(header.encode("utf-8", errors="replace")) - len(marker.encode("utf-8", errors="replace")))
+        if budget <= 0:
+            return _fit_bytes(header, byte_budget)
+        lines = data.splitlines()
+        if number_lines:
+            numbered = [f"{i + 1}\t{line}" for i, line in enumerate(lines)]
+        else:
+            numbered = lines
+        half = max(1, budget // 2)
+        head: list[str] = []
+        head_bytes = 0
+        for line in numbered:
+            line_bytes = len((line + "\n").encode("utf-8", errors="replace"))
+            if head and head_bytes + line_bytes > half:
+                break
+            if line_bytes > half and not head:
+                head.append(_fit_bytes(line, half))
+                head_bytes = half
+                break
+            head.append(line)
+            head_bytes += line_bytes
+        tail: list[str] = []
+        tail_bytes = 0
+        for line in reversed(numbered):
+            line_bytes = len((line + "\n").encode("utf-8", errors="replace"))
+            if tail and tail_bytes + line_bytes > half:
+                break
+            if line_bytes > half and not tail:
+                tail.append(_fit_bytes(line, half))
+                tail_bytes = half
+                break
+            tail.append(line)
+            tail_bytes += line_bytes
+        tail.reverse()
+        return _fit_bytes(header + "\n".join(head) + marker + "\n".join(tail), byte_budget)
+
+    for idx, p in enumerate(paths):
         if not p or not isinstance(p, str) or not p.strip():
             warnings.append(f"{p!r}: path không hợp lệ — bỏ qua")
             continue
@@ -236,9 +283,27 @@ def read_workspace_files(
         block = f"=== FILE: {p} ===\n{data}"
 
         block_bytes = len(block.encode("utf-8", errors="replace"))
+        remaining_slots = max(1, len(paths) - idx)
+        remaining_total = max(0, total_cap - total)
+        reserved_for_later = MIN_CONTEXT_EXCERPT_BYTES * max(0, remaining_slots - 1)
+        full_file_budget = max(0, remaining_total - reserved_for_later)
+        per_file_budget = remaining_total if block_bytes <= full_file_budget else max(512, full_file_budget or (remaining_total // remaining_slots))
+        if block_bytes > per_file_budget:
+            raw_data = data
+            if number_lines:
+                raw_data = "\n".join(line.split("\t", 1)[1] if "\t" in line else line for line in data.splitlines())
+            block = _excerpt_numbered_file(p, raw_data, per_file_budget)
+            block_bytes = len(block.encode("utf-8", errors="replace"))
+            warnings.append(f"{p}: excerpted — full file/context vượt budget; included {block_bytes} bytes instead of skipping")
         if total + block_bytes > total_cap:
-            warnings.append(f"{p}: bỏ qua — vượt tổng dung lượng context ({total_cap} bytes)")
-            continue
+            remaining = max(0, total_cap - total)
+            if remaining >= 512:
+                block = _fit_bytes(block, remaining)
+                block_bytes = len(block.encode("utf-8", errors="replace"))
+                warnings.append(f"{p}: excerpt further trimmed to remaining context budget ({remaining} bytes)")
+            else:
+                warnings.append(f"{p}: skipped — remaining context budget too small ({remaining} bytes)")
+                continue
         total += block_bytes
         blocks.append(block)
         loaded += 1
@@ -248,15 +313,22 @@ def read_workspace_files(
 
 def _get_active_workspace() -> str:
     """Runtime workspace — không freeze theo project đầu tiên khi MCP reuse process."""
-    workspace = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
-    if not workspace:
-        meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
-        if meta:
-            try:
-                workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
-            except Exception:
-                workspace = None
-    workspace = workspace or (os.getenv("WORKSPACE_ROOT") or "").strip()
+    override = get_active_workspace_override()
+    if override:
+        return os.path.abspath(str(override))
+    meta_workspace = ""
+    meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
+    if meta:
+        try:
+            meta_workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
+        except Exception:
+            meta_workspace = ""
+    workspace = (
+        (os.getenv("HARNESS_ACTIVE_WORKSPACE") or "").strip()
+        or (os.getenv("WORKSPACE_ROOT") or "").strip()
+        or meta_workspace
+        or (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
+    )
     return os.path.abspath(str(workspace or WORKSPACE_ROOT or os.getcwd()))
 
 

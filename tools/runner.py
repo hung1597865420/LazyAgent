@@ -26,6 +26,7 @@ from .goal import goal_autopilot, goal_supervisor, load_goal_state
 from .integrations import agent_guidance_for_task
 from .lifecycle import preflight_trigger
 from .prod import prod_readiness_gate
+from .workspace_context import workspace_scope
 
 BLOCKING_PROD_VERDICTS = {"fix_required", "blocked_needs_user", "rollback_required"}
 RUNNER_LOCK_FILE = ".harness_goal_runner.lock"
@@ -233,18 +234,8 @@ def _current_part() -> str:
 
 @contextmanager
 def _pinned_workspace(root: Path):
-    old = {key: os.environ.get(key) for key in ("WORKSPACE_ROOT", "CLAUDE_PROJECT_DIR", "ANTIGRAVITY_SOURCE_METADATA")}
-    try:
-        os.environ["WORKSPACE_ROOT"] = str(root)
-        os.environ["CLAUDE_PROJECT_DIR"] = str(root)
-        os.environ.pop("ANTIGRAVITY_SOURCE_METADATA", None)
+    with workspace_scope(root):
         yield
-    finally:
-        for key, value in old.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
 
 
 def _normalize_lesson_query(text: str) -> str:
@@ -639,7 +630,8 @@ async def goal_runner(
         return {"status": "blocked_goal_busy", "detail": "Another goal_runner is already active in this workspace."}
     root = _root()
     try:
-        result = await _goal_runner_locked(prompt, max_iterations, mode, agent_command, agent_timeout, dry_run, final_prod_gate, resume, root)
+        with _pinned_workspace(root):
+            result = await _goal_runner_locked(prompt, max_iterations, mode, agent_command, agent_timeout, dry_run, final_prod_gate, resume, root)
         try:
             from .ops import append_run_ledger
 

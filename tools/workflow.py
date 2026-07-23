@@ -17,17 +17,20 @@ DEBUG_WORDS = {
 FEATURE_WORDS = {
     "feature", "build", "implement", "new module", "new api", "schema", "auth",
     "workflow", "dashboard", "payment", "upload", "realtime", "project", "múc",
+    "tính năng", "chức năng", "nghiệp vụ", "luồng", "màn hình", "module mới",
 }
 CREATE_WORDS = {
     "build", "implement", "create", "develop", "scaffold", "new", "add",
-    "múc", "làm", "xây", "xây dựng", "thêm",
+    "múc", "làm", "xây", "xây dựng", "thêm", "dev", "phát triển", "tạo",
 }
 BA_WORDS = {
     "business analyst", "requirement", "requirements", "stakeholder", "persona",
     "actor", "user story", "use case", "acceptance criteria", "business process",
     "business rule", "workflow mới", "feature mới", "project mới", "sản phẩm",
+    "ba", "nghiệp vụ", "phân tích nghiệp vụ", "yêu cầu", "làm rõ yêu cầu",
+    "yêu cầu người dùng", "tiêu chí nghiệm thu", "nghiệm thu", "luồng nghiệp vụ", "quy trình",
 }
-AMBIGUITY_WORDS = {"unclear", "ambiguous", "mơ hồ", "chưa rõ", "làm rõ", "scope", "phạm vi"}
+AMBIGUITY_WORDS = {"unclear", "ambiguous", "mơ hồ", "chưa rõ", "làm rõ", "scope", "phạm vi", "plan", "kế hoạch"}
 REVIEW_WORDS = {"review", "audit", "check", "kiểm", "đánh giá"}
 DOC_WORDS = {"doc", "docs", "documentation", "readme", "agents.md", "policy", "chú thích", "tài liệu"}
 MAINTENANCE_WORDS = {"fix", "update", "cleanup", "refactor", "test", "sửa", "cập nhật", "dọn"}
@@ -102,7 +105,9 @@ def _requests_tests_only(text: str) -> bool:
 
 def _looks_big(files: list[str], diff: str | None, task: str | None) -> bool:
     code_files = [f for f in files if _ext(f) in CODE_EXTS]
-    return len(code_files) >= 3 or len(str(diff or "")) > 12_000 or _has_any(task or "", {"large", "big", "nhiều file", "full", "toàn bộ"})
+    return len(code_files) >= 3 or len(str(diff or "")) > 12_000 or _has_any(task or "", {
+        "large", "big", "nhiều file", "full", "toàn bộ", "lớn", "phức tạp", "nhiều bước", "đầy đủ",
+    })
 
 
 def workflow_router(
@@ -122,14 +127,17 @@ def workflow_router(
     feature_signal = _has_any(text, FEATURE_WORDS)
     create_signal = _has_any(text, CREATE_WORDS)
     ba_done = _has_any(text, BA_DONE_WORDS)
-    explicit_ba_signal = _has_any(text, BA_WORDS | AMBIGUITY_WORDS) and not ba_done
+    review_only_candidate = review_intent and not create_signal
+    explicit_ba_signal = _has_any(text, BA_WORDS | AMBIGUITY_WORDS) and not ba_done and not review_only_candidate
     doc_only = bool(files) and all(_is_doc_file(f) for f in files)
     test_only = bool(files) and all(_is_test_file(f) for f in files)
     doc_maintenance = (doc_only or _requests_doc_only(text)) and _has_any(text, DOC_WORDS | MAINTENANCE_WORDS) and not explicit_ba_signal
     test_maintenance = (test_only or _requests_tests_only(text)) and _has_any(text, MAINTENANCE_WORDS | TDD_WORDS) and not explicit_ba_signal
-    review_only = review_intent and not create_signal and not explicit_ba_signal
+    explicit_repro_signal = _has_any(text, {"repro:", "reproduce", "failing", "fails", "traceback", "stack trace", "exception"})
+    effective_debug_intent = debug_intent and not ((doc_maintenance or test_maintenance) and not explicit_repro_signal)
+    review_only = review_only_candidate and not explicit_ba_signal
     ui_iteration = ux_signal and _has_any(text, UI_ITERATION_WORDS) and not _has_any(text, NEW_FEATURE_WORDS) and not explicit_ba_signal
-    ba_blocked = debug_intent or review_only or doc_maintenance or test_maintenance or ui_iteration
+    ba_blocked = effective_debug_intent or review_only or doc_maintenance or test_maintenance or ui_iteration
     planning_signal = ((feature_signal and create_signal) or big) and not ba_blocked
     ba_signal = (explicit_ba_signal or (planning_signal and not ba_done)) and not ba_blocked
     existing_research_context = _has_any(text, EXISTING_RESEARCH_WORDS) and _has_any(text, UI_ITERATION_WORDS)
@@ -139,7 +147,7 @@ def workflow_router(
         or planning_signal
         or explicit_ba_signal
         or explicit_research_request
-    ) and not (debug_intent or review_only or doc_maintenance or test_maintenance)
+    ) and not (effective_debug_intent or review_only or doc_maintenance or test_maintenance)
     routes: list[dict[str, Any]] = []
 
     def add(name: str, priority: str, reason: str, steps: list[str], artifacts: list[str] | None = None) -> None:
@@ -151,7 +159,7 @@ def workflow_router(
             "artifacts": artifacts or [],
         })
 
-    if debug_intent:
+    if effective_debug_intent:
         add(
             "bug_repro_guard",
             "P0",
