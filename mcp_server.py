@@ -51,17 +51,31 @@ _TOOL_CALL_DEPTH = contextvars.ContextVar("harness_tool_call_depth", default=0)
 _HOT_RELOAD_SIGNATURES: dict[str, tuple[float, int, str]] = {}
 _TOOL_SINGLE_FLIGHT_LOCK = asyncio.Lock()
 _TOOL_SINGLE_FLIGHTS: dict[str, asyncio.Task] = {}
+_TOOL_SINGLE_FLIGHT_RESULTS: dict[str, tuple[float, list[types.TextContent]]] = {}
+_TOOL_SINGLE_FLIGHT_REPLAY_KEYS: set[str] = set()
+_TOOL_SINGLE_FLIGHT_REPLAY_SECONDS = 60.0
 _NO_BACKGROUND_ON_CANCEL_TOOLS = {
+    "alt_implementation",
+    "ask_codebase",
+    "auto_trigger",
     "auto_tester",
     "benchmark_runner",
     "changelog_generator",
+    "consult",
     "dependency_upgrader",
     "doc_sync",
     "goal_autopilot",
     "goal_runner",
+    "panel_review",
     "lesson_curator",
+    "prod_readiness_gate",
+    "quick_task",
     "release_orchestrator",
+    "run_single_agent",
     "security_autofix",
+    "suggest_fix",
+    "swarm_debug",
+    "visual_reviewer",
     "wiki_ingest",
     "wiki_lint",
 }
@@ -85,6 +99,15 @@ _NON_IDENTITY_MUTATION_ARGS = {
     "timeout_ms",
     "max_output_tokens",
 }
+_SET_LIKE_SINGLE_FLIGHT_ARGS = {
+    "changed_files",
+    "exclude",
+    "exclude_tools",
+    "files",
+    "include",
+    "paths",
+    "target_files",
+}
 
 
 def _normalize_tool_name(name: str) -> str:
@@ -96,13 +119,34 @@ def _normalize_tool_name(name: str) -> str:
     return text
 
 
-def _canonicalize_for_single_flight(value):
+def _sort_dedupe_canonical_list(items: list) -> list:
+    seen: set[str] = set()
+    out: list = []
+    for item in items:
+        identity = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        out.append(item)
+    return sorted(out, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, default=str))
+
+
+def _canonicalize_for_single_flight(value, key: str = ""):
     if isinstance(value, dict):
-        return {str(k): _canonicalize_for_single_flight(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))}
+        canonical = {}
+        for k, v in sorted(value.items(), key=lambda item: str(item[0])):
+            key_s = str(k)
+            canonical[key_s] = _canonicalize_for_single_flight(v, key_s)
+        return canonical
     if isinstance(value, list):
-        return [_canonicalize_for_single_flight(item) for item in value]
+        items = [_canonicalize_for_single_flight(item, key) for item in value]
+        if key in _SET_LIKE_SINGLE_FLIGHT_ARGS:
+            return _sort_dedupe_canonical_list(items)
+        return items
     if isinstance(value, str):
         text = value.strip()
+        if key in _SET_LIKE_SINGLE_FLIGHT_ARGS:
+            return text
         lower = text.lower()
         if lower in {"true", "false"}:
             return lower == "true"
@@ -173,10 +217,31 @@ def _allow_background_after_cancel(name: str, arguments: dict) -> bool:
     return not _tool_call_is_mutating(name, arguments)
 
 
+def _prune_single_flight_results(now: float | None = None) -> None:
+    now = time.monotonic() if now is None else now
+    expired = [key for key, (expiry, _result) in _TOOL_SINGLE_FLIGHT_RESULTS.items() if expiry <= now]
+    for key in expired:
+        _TOOL_SINGLE_FLIGHT_RESULTS.pop(key, None)
+
+
 async def _forget_single_flight(key: str, task: asyncio.Task) -> None:
     async with _TOOL_SINGLE_FLIGHT_LOCK:
         if _TOOL_SINGLE_FLIGHTS.get(key) is task:
             _TOOL_SINGLE_FLIGHTS.pop(key, None)
+            replay_requested = key in _TOOL_SINGLE_FLIGHT_REPLAY_KEYS
+            _TOOL_SINGLE_FLIGHT_REPLAY_KEYS.discard(key)
+            if replay_requested and not task.cancelled():
+                try:
+                    result = task.result()
+                except Exception:
+                    result = None
+                if result:
+                    _TOOL_SINGLE_FLIGHT_RESULTS[key] = (
+                        time.monotonic() + _TOOL_SINGLE_FLIGHT_REPLAY_SECONDS,
+                        result,
+                    )
+                    if len(_TOOL_SINGLE_FLIGHT_RESULTS) > 512:
+                        _prune_single_flight_results()
 
 
 def _module_signature(path: str) -> tuple[float, int, str]:
@@ -317,6 +382,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Auto-Pilot: sau Edit/Write hoặc trước khi hoàn thành, tự chọn và chạy các harness checks phù hợp "
                 "(secret/env/config/devops/complexity/dead-code/duplicate/panel_review). "
+                "Đây là post-edit/final verification, KHÔNG thay thế BA/ask_codebase/consult preflight trước khi code. "
                 "mode=max để vắt 9Router mạnh nhất; tránh gửi .env thật vào panel_review."
             ),
             inputSchema={
@@ -327,8 +393,39 @@ async def list_tools() -> list[types.Tool]:
                     "task": {"type": "string", "description": "Task/user request hiện tại để chọn checks"},
                     "stage": {"type": "string", "enum": ["post_edit", "final", "pre_complete"], "description": "Vị trí gọi auto-pilot"},
                     "mode": {"type": "string", "enum": ["max", "safe"], "description": "max=vắt 9Router mạnh nhất; safe=chỉ chạy khi có rủi ro rõ"},
+                    "exclude_tools": {
+                        "description": "Optional tool name(s) to skip for this auto_trigger run",
+                        "oneOf": [
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "string"},
+                        ],
+                    },
                 },
             },
+        ),
+        types.Tool(
+            name="preflight_trigger",
+            description=(
+                "Static pre-code lifecycle router: phân bổ BA discovery, market research, ask_codebase, consult, "
+                "Hallmark/Spec Kit/UI preflight trước khi agent plan/code. Không gọi LLM, không mutate; trả run_now + do_not_run_yet."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "changed_files": _FILES_SCHEMA,
+                    "diff": {"type": "string", "description": "Diff/context nếu đã có, thường để trống trước code"},
+                    "task": {"type": "string", "description": "User request hiện tại để route preflight"},
+                    "mode": {"type": "string", "enum": ["max", "safe"], "description": "Mode dự kiến cho later checks; profile vẫn thắng"},
+                },
+            },
+        ),
+        types.Tool(
+            name="tool_lifecycle",
+            description=(
+                "Static map phân bổ toàn bộ MCP tools theo vòng đời: session/setup, preflight_before_code, "
+                "during_implementation, post_edit_batch, background_watch, final_review, release_gate, memory/docs/ops."
+            ),
+            inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
             name="integration_router",
@@ -1915,24 +2012,33 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     if single_flight_key:
         async with _TOOL_SINGLE_FLIGHT_LOCK:
-            task = _TOOL_SINGLE_FLIGHTS.get(single_flight_key)
-            if task is None or task.done():
-                task = asyncio.create_task(_run(), name=f"tool-{run_id}", context=tool_context)
-                _TOOL_SINGLE_FLIGHTS[single_flight_key] = task
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard, context=tool_context)
-                task.add_done_callback(
-                    lambda done_task, key=single_flight_key: asyncio.create_task(_forget_single_flight(key, done_task)),
-                    context=tool_context,
-                )
-            else:
-                _log.info("rejecting duplicate in-flight mutating tool %s", tool_name)
+            now = time.monotonic()
+            _prune_single_flight_results(now)
+            cached = _TOOL_SINGLE_FLIGHT_RESULTS.get(single_flight_key)
+            if cached and cached[0] > now:
                 task = None
-                duplicate_inflight_res = _json_response({
-                    "error": "in_flight_duplicate",
-                    "detail": "An identical mutating tool call is already running; retry after it finishes.",
-                    "tool": tool_name,
-                })
+                duplicate_inflight_res = cached[1]
+                _log.info("replaying recent completed mutating tool %s", tool_name)
+            else:
+                task = _TOOL_SINGLE_FLIGHTS.get(single_flight_key)
+            if duplicate_inflight_res is None:
+                if task is None or task.done():
+                    task = asyncio.create_task(_run(), name=f"tool-{run_id}", context=tool_context)
+                    _TOOL_SINGLE_FLIGHTS[single_flight_key] = task
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard, context=tool_context)
+                    task.add_done_callback(
+                        lambda done_task, key=single_flight_key: asyncio.create_task(_forget_single_flight(key, done_task)),
+                        context=tool_context,
+                    )
+                else:
+                    _log.info("rejecting duplicate in-flight mutating tool %s", tool_name)
+                    task = None
+                    duplicate_inflight_res = _json_response({
+                        "error": "in_flight_duplicate",
+                        "detail": "An identical mutating tool call is already running; retry after it finishes.",
+                        "tool": tool_name,
+                    })
     else:
         task = asyncio.create_task(_run(), name=f"tool-{run_id}", context=tool_context)
         _background_tasks.add(task)
@@ -1967,14 +2073,16 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             res = _json_response({"error": "cancelled", "detail": "Cancelled by client; tool running in background"})
         else:
             task.cancel()
-            with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=0.5)
-            stopped = task.done()
+            done, _pending = await asyncio.wait({task}, timeout=0.5)
+            stopped = task in done and task.done()
             if stopped:
                 _log.info("tool %s cancelled by client; background execution disabled", tool_name)
                 res = _json_response({"error": "cancelled", "detail": "Cancelled by client; background execution disabled for mutating tools"})
             else:
                 _log.info("tool %s cancellation pending; duplicate retries remain blocked", tool_name)
+                if single_flight_key:
+                    async with _TOOL_SINGLE_FLIGHT_LOCK:
+                        _TOOL_SINGLE_FLIGHT_REPLAY_KEYS.add(single_flight_key)
                 res = _json_response({"error": "cancel_pending", "detail": "Cancellation is pending for a mutating tool; duplicate retries are blocked until the original task exits."})
         _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
@@ -2027,7 +2135,23 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 task=args.get("task"),
                 stage=stage,
                 mode=mode,
+                exclude_tools=args.get("exclude_tools"),
             ))
+
+        if name == "preflight_trigger":
+            mode = args.get("mode")
+            mode = str(mode).strip().lower() if mode is not None else None
+            if mode is not None and mode not in {"max", "safe"}:
+                return _json_response({"error": "invalid_argument", "detail": "mode must be one of: max, safe"})
+            return _json_response(st.preflight_trigger(
+                task=args.get("task"),
+                changed_files=args.get("changed_files"),
+                diff=args.get("diff"),
+                mode=mode,
+            ))
+
+        if name == "tool_lifecycle":
+            return _json_response(st.tool_lifecycle())
 
         if name == "integration_router":
             return _json_response(st.integration_router(

@@ -280,7 +280,18 @@ def _safe_scan_files(files: list[str]) -> list[str]:
 
 def _has_any(text: str, words: set[str]) -> bool:
     lower = text.lower()
-    return any(w in lower for w in words)
+    for word in words:
+        needle = str(word or "").strip().lower()
+        if not needle:
+            continue
+        asciiish = bool(re.fullmatch(r"[a-z0-9_][a-z0-9_ -]*[a-z0-9_]", needle) or re.fullmatch(r"[a-z0-9_]", needle))
+        if asciiish:
+            pattern = r"(?<![a-z0-9])" + re.escape(needle).replace(r"\ ", r"[\s_-]+") + r"(?![a-z0-9])"
+            if re.search(pattern, lower):
+                return True
+        elif needle in lower:
+            return True
+    return False
 
 
 def _migration_files(files: list[str]) -> list[str]:
@@ -737,8 +748,13 @@ async def auto_trigger(
     task_context = "\n\n".join(x for x in [task_with_goal or "", f"Prior lessons:\n{prior_lessons}" if prior_lessons else ""] if x).strip()
     integration_routes = integration_router(task=task_with_goal or task, changed_files=files, diff=diff)
     workflow_routes = workflow_router(task=task_with_goal or task, changed_files=files, diff=diff)
+    docs_security_hint = _has_any(text, {
+        "secret", "password", "token", "api key", "credential", "authorization",
+        "aws_secret_access_key", "database_url", "allow_origins", "cors",
+        "private key", "client_secret",
+    })
 
-    if _docs_only(files) and mode != "max" and not active_goal:
+    if _docs_only(files) and mode != "max" and not active_goal and not docs_security_hint:
         from .orchestrator import orchestrate
         orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode)
         return {
@@ -766,13 +782,13 @@ async def auto_trigger(
     dependency_files = _dependency_files(files)
     ui_files = _ui_files(files)
     test_files = _test_files(files)
-    has_security = _has_any(text, {"auth", "jwt", "session", "token", "secret", "password", "cors", "rls", "crypto"})
+    has_security = docs_security_hint or _has_any(text, {"auth", "jwt", "session", "token", "secret", "password", "cors", "rls", "crypto"})
     has_db = _has_any(text, {"sql", "migration", "alembic", "schema", "transaction", "query", "orm"})
     has_refactor = _has_any(text, {"refactor", "rename", "delete", "remove", "dead code", "duplicate"})
     has_api = _has_any(text, {"route", "endpoint", "api", "request", "response", "pydantic", "openapi"})
     has_release = _has_any(text, {"release", "deploy", "production", "prod-ready", "tag", "changelog"})
     has_trace = _has_any(text, {"trace", "stack trace", "timeout", "rate-limit", "latency", "slow", "500", "exception"})
-    if _docs_only(files) and not active_goal and not has_release:
+    if _docs_only(files) and not active_goal and not has_release and not docs_security_hint:
         from .orchestrator import orchestrate
         orchestrator = orchestrate(stage=stage, files=files, diff=diff, task=task, mode=mode)
         return {

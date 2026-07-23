@@ -245,7 +245,7 @@ check("ROLE_TEMPERATURE đủ 12 role", set(ROLE_TEMPERATURE) == set(AgentRole))
 # 4. MCP server: list_tools trả đủ expected tools, schema hợp lệ
 tools = asyncio.run(mcp_server.list_tools())
 tool_names = {t.name for t in tools}
-expected = {"auto_trigger", "prod_readiness_gate", "release_orchestrator", "provenance_checker",
+expected = {"auto_trigger", "preflight_trigger", "tool_lifecycle", "prod_readiness_gate", "release_orchestrator", "provenance_checker",
             "auth_matrix_auditor", "harness_trace_viewer", "incremental_refactor_guard",
             "hallmark_bridge", "integration_router", "speckit_bridge", "office_bridge", "scope_creep_detector",
             "workflow_router", "bug_repro_guard", "ui_skill_router",
@@ -290,6 +290,70 @@ check("UI criteria cover design spec tokens",
           "floating labels",
           "prefers-reduced-motion",
       ]))
+lifecycle_res = asyncio.run(mcp_server.call_tool("tool_lifecycle", {}))
+lifecycle_json = json.loads(lifecycle_res[0].text)
+lifecycle_tool_phase = lifecycle_json.get("tool_phase", {})
+watcher_policy = lifecycle_json.get("watcher_policy", {})
+check("tool_lifecycle phân bổ đủ mọi MCP tool",
+      set(lifecycle_tool_phase) == tool_names,
+      f"missing={tool_names - set(lifecycle_tool_phase)} extra={set(lifecycle_tool_phase) - tool_names}")
+check("tool_lifecycle watcher chỉ background safe",
+      "background_watch" in lifecycle_json.get("phases", {})
+      and not {"ask_codebase", "consult", "alt_implementation", "panel_review", "goal_runner"} & set(watcher_policy.get("allowed_tools", []))
+      and {"ask_codebase", "consult", "panel_review", "goal_runner"} <= set(watcher_policy.get("blocked_tools", [])),
+      str(watcher_policy))
+check("MCP cancel không chạy nền tool LLM/heavy",
+      all(not mcp_server._allow_background_after_cancel(name, {}) for name in [
+          "ask_codebase", "consult", "alt_implementation", "panel_review",
+          "goal_runner", "auto_trigger", "quick_task", "visual_reviewer",
+      ]))
+check("single-flight giữ nguyên path string giống số",
+      mcp_server._single_flight_key("auto_trigger", {"changed_files": ["01"]})
+      != mcp_server._single_flight_key("auto_trigger", {"changed_files": ["1"]}))
+preflight_res = asyncio.run(mcp_server.call_tool("preflight_trigger", {
+    "task": "thiết kế UI dashboard mới có auth API và nhiều file",
+    "changed_files": ["src/app.tsx", "src/api.ts"],
+    "mode": "safe",
+}))
+preflight_json = json.loads(preflight_res[0].text)
+preflight_tools = {item.get("tool") for item in preflight_json.get("run_now", []) if isinstance(item, dict)}
+check("preflight_trigger chạy trước code và chọn BA/context/UI/consult",
+      preflight_json.get("phase") == "preflight_before_code"
+      and {"workflow_router", "ask_codebase", "ui_skill_router", "hallmark_bridge", "consult"} <= preflight_tools
+      and any(item.get("tool") == "auto_trigger" for item in preflight_json.get("do_not_run_yet", [])),
+      str(preflight_json)[:2000])
+preflight_guideline_res = asyncio.run(mcp_server.call_tool("preflight_trigger", {
+    "task": "fix guideline parser docs",
+    "changed_files": ["docs/guideline-parser.md"],
+    "mode": "safe",
+}))
+preflight_guideline_json = json.loads(preflight_guideline_res[0].text)
+preflight_guideline_tools = {item.get("tool") for item in preflight_guideline_json.get("run_now", []) if isinstance(item, dict)}
+check("preflight_trigger không bắt nhầm guideline thành UI",
+      "ui_skill_router" not in preflight_guideline_tools
+      and "hallmark_bridge" not in preflight_guideline_tools
+      and preflight_guideline_json.get("ui_routes", {}).get("status") == "skipped",
+      str(preflight_guideline_json)[:1000])
+preflight_login_bug_res = asyncio.run(mcp_server.call_tool("preflight_trigger", {
+    "task": "fix login_bug in auth flow",
+    "changed_files": ["auth.py"],
+    "mode": "safe",
+}))
+preflight_login_bug_json = json.loads(preflight_login_bug_res[0].text)
+preflight_login_bug_tools = {item.get("tool") for item in preflight_login_bug_json.get("run_now", []) if isinstance(item, dict)}
+check("preflight_trigger match bug trong snake_case",
+      "bug_repro_guard" in preflight_login_bug_tools,
+      str(preflight_login_bug_json)[:1000])
+preflight_tiny_docs_res = asyncio.run(mcp_server.call_tool("preflight_trigger", {
+    "task": "Update README typo",
+    "changed_files": [],
+    "mode": "safe",
+}))
+preflight_tiny_docs_json = json.loads(preflight_tiny_docs_res[0].text)
+preflight_tiny_docs_tools = {item.get("tool") for item in preflight_tiny_docs_json.get("run_now", []) if isinstance(item, dict)}
+check("preflight_trigger task nhỏ không gọi context LLM/search",
+      not {"graph_minimal_context", "ask_codebase", "semantic_search"} & preflight_tiny_docs_tools,
+      str(preflight_tiny_docs_json)[:1000])
 workflow_route_smoke = asyncio.run(mcp_server.call_tool("workflow_router", {
     "task": "debug crash then refactor architecture",
     "changed_files": ["tools/core.py", "tools/auto.py"],
@@ -477,6 +541,22 @@ async def _single_flight_smoke():
         unknown_action_calls = calls
 
         calls = 0
+        reversed_files_first = asyncio.create_task(mcp_server.call_tool("auto_trigger", {
+            "stage": "post_edit",
+            "mode": "safe",
+            "changed_files": ["src/a.py", "src/b.py"],
+            "exclude_tools": ["panel_review", "release_orchestrator"],
+        }))
+        reversed_files_second = asyncio.create_task(mcp_server.call_tool("auto_trigger", {
+            "mode": "safe",
+            "stage": "post_edit",
+            "changed_files": ["src/b.py", "src/a.py"],
+            "exclude_tools": ["release_orchestrator", "panel_review"],
+        }))
+        reversed_files_first_result, reversed_files_second_result = await asyncio.gather(reversed_files_first, reversed_files_second)
+        reversed_files_calls = calls
+
+        calls = 0
         cancelling = asyncio.create_task(mcp_server.call_tool("wiki_ingest", {}))
         await asyncio.sleep(0.01)
         cancelling.cancel()
@@ -503,6 +583,7 @@ async def _single_flight_smoke():
             dry_run_calls,
             readonly_calls,
             unknown_action_calls,
+            reversed_files_calls,
             calls,
             duplicate_cancel_calls,
             first_result[0].text,
@@ -523,6 +604,8 @@ async def _single_flight_smoke():
             readonly_second_result[0].text,
             unknown_action_first_result[0].text,
             unknown_action_second_result[0].text,
+            reversed_files_first_result[0].text,
+            reversed_files_second_result[0].text,
             cancel_result[0].text,
             retry_result[0].text,
             original_after_duplicate_cancel_result[0].text,
@@ -541,6 +624,7 @@ async def _single_flight_smoke():
     dry_run_distinct_calls,
     readonly_bridge_calls,
     unknown_bridge_action_calls,
+    reversed_files_calls,
     cancel_retry_calls,
     duplicate_cancel_calls,
     first_text,
@@ -561,6 +645,8 @@ async def _single_flight_smoke():
     readonly_second_text,
     unknown_action_first_text,
     unknown_action_second_text,
+    reversed_files_first_text,
+    reversed_files_second_text,
     cancel_text,
     retry_text,
     original_after_duplicate_cancel_text,
@@ -610,6 +696,11 @@ check("call_tool treats unknown bridge actions as mutating",
       and '"calls": 1' in unknown_action_first_text
       and "in_flight_duplicate" in unknown_action_second_text,
       f"calls={unknown_bridge_action_calls} first={unknown_action_first_text} second={unknown_action_second_text}")
+check("call_tool canonicalizes order-insensitive mutating list args",
+      reversed_files_calls == 1
+      and '"calls": 1' in reversed_files_first_text
+      and "in_flight_duplicate" in reversed_files_second_text,
+      f"calls={reversed_files_calls} first={reversed_files_first_text} second={reversed_files_second_text}")
 check("call_tool cancel disables mutating background execution",
       cancel_retry_calls == 1
       and "background execution disabled" in cancel_text
@@ -619,6 +710,56 @@ check("call_tool duplicate cancellation does not cancel original mutating task",
       duplicate_cancel_calls == 1
       and '"calls": 1' in original_after_duplicate_cancel_text,
       f"calls={duplicate_cancel_calls} original={original_after_duplicate_cancel_text}")
+
+async def _mutating_cancel_keeps_single_flight_smoke():
+    original_execute_tool = mcp_server._execute_tool
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def fake_slow_cancel_tool(name, args):
+        nonlocal calls
+        calls += 1
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            while not release.is_set():
+                try:
+                    await asyncio.wait_for(release.wait(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    pass
+                except asyncio.CancelledError:
+                    pass
+            return mcp_server._json_response({"calls": calls, "released": True})
+        return mcp_server._json_response({"calls": calls})
+
+    mcp_server._execute_tool = fake_slow_cancel_tool
+    try:
+        first = asyncio.create_task(mcp_server.call_tool("wiki_ingest", {"source": "slow-cancel"}))
+        await started.wait()
+        first.cancel()
+        first_result = await first
+        retry_result = await mcp_server.call_tool("wiki_ingest", {"source": "slow-cancel"})
+        release.set()
+        await asyncio.sleep(0.1)
+        replay_result = await mcp_server.call_tool("wiki_ingest", {"source": "slow-cancel"})
+        return calls, first_result[0].text, retry_result[0].text, replay_result[0].text
+    finally:
+        release.set()
+        mcp_server._execute_tool = original_execute_tool
+
+
+slow_cancel_calls, slow_cancel_text, slow_retry_text, slow_replay_text = asyncio.run(_mutating_cancel_keeps_single_flight_smoke())
+check("call_tool cancel pending giữ single-flight cho mutating tool",
+      slow_cancel_calls == 1
+      and "cancel_pending" in slow_cancel_text
+      and "in_flight_duplicate" in slow_retry_text,
+      f"calls={slow_cancel_calls} cancel={slow_cancel_text} retry={slow_retry_text}")
+check("call_tool replay kết quả mutating sau cancel pending",
+      slow_cancel_calls == 1
+      and '"released": true' in slow_replay_text.lower(),
+      f"calls={slow_cancel_calls} replay={slow_replay_text}")
 async def _single_flight_cleanup_identity_smoke():
     key = "smoke-cleanup-key"
 
@@ -759,6 +900,19 @@ auto_res = asyncio.run(mcp_server.call_tool("auto_trigger", {
     "mode": "safe",
 }))
 check("auto_trigger docs-only safe skip", json.loads(auto_res[0].text).get("status") == "skipped")
+auto_docs_secret_res = asyncio.run(mcp_server.call_tool("auto_trigger", {
+    "changed_files": ["README.md"],
+    "diff": "+ AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE\n+ allow_origins=['*']",
+    "task": "document config examples",
+    "stage": "post_edit",
+    "mode": "safe",
+    "exclude_tools": ["panel_review", "release_orchestrator"],
+}))
+auto_docs_secret_json = json.loads(auto_docs_secret_res[0].text)
+check("auto_trigger docs-only có secret/config không skip",
+      auto_docs_secret_json.get("status") != "skipped"
+      and "secret_scanner" in auto_docs_secret_json.get("selected_tools", []),
+      str(auto_docs_secret_json)[:1000])
 prod_gate = asyncio.run(mcp_server.call_tool("prod_readiness_gate", {
     "changed_files": ["README.md"],
     "task": "ready for production deploy?",
@@ -1039,6 +1193,14 @@ direct_bad_agent = asyncio.run(__import__("tools.runner").runner.goal_runner(
 check("goal_runner direct reject agent_command sai kiểu",
       "error" in direct_bad_agent,
       str(direct_bad_agent))
+custom_agent_denied = asyncio.run(mcp_server.call_tool("goal_runner", {
+    "prompt": "x",
+    "agent_command": ["python", "-c", "print('should-not-run')"],
+    "dry_run": True,
+}))
+check("goal_runner chặn custom agent_command mặc định",
+      json.loads(custom_agent_denied[0].text).get("error") == "custom_agent_command_disabled",
+      custom_agent_denied[0].text)
 from tools.prod import _hard_flags
 _blockers, _needs_user, _warnings = _hard_flags([{
     "tool": "panel_review",
@@ -3296,11 +3458,14 @@ append_lesson({
     os.environ["CLAUDE_PROJECT_DIR"] = str(lesson_ws)
     import tools.runner as runner_mod
     original_runner_lessons = runner_mod.load_relevant_lessons_context
+    original_runner_guidance = runner_mod.agent_guidance_for_task
     try:
         runner_mod.load_relevant_lessons_context = lambda *_args, **_kwargs: "x" * 20000
+        runner_mod.agent_guidance_for_task = lambda *_args, **_kwargs: "integration\n" + ("z" * 20000)
         capped_agent_prompt = runner_mod._agent_prompt("x" * 6000 + "\x01", {"summary": "y" * 6000})
     finally:
         runner_mod.load_relevant_lessons_context = original_runner_lessons
+        runner_mod.agent_guidance_for_task = original_runner_guidance
     (lesson_ws / "sample.py").write_text("def sample():\n    return 'ask_codebase timeout model_chain'\n", encoding="utf-8")
     auto_lesson = asyncio.run(mcp_server.call_tool("auto_trigger", {
         "changed_files": ["README.md"],
@@ -3506,7 +3671,9 @@ check("goal_runner agent prompt inject local/global lessons",
       and "ask_codebase model chain timeout" not in agent_prompt_global_lessons,
       f"local_prompt={agent_prompt_local_lessons!r} global_prompt={agent_prompt_global_lessons!r} pinned={agent_prompt_pinned_lessons!r}")
 check("goal_runner agent prompt cap prior lessons",
-      len(capped_agent_prompt) < 18000 and "[truncated prior lessons]" in capped_agent_prompt,
+      len(capped_agent_prompt) <= runner_mod.MAX_AGENT_PROMPT_CHARS
+      and "[truncated prior lessons]" in capped_agent_prompt
+      and "[truncated integration guidance]" in capped_agent_prompt,
       f"len={len(capped_agent_prompt)} prompt={capped_agent_prompt[:200]!r}")
 check("procedure lesson memory tự học và inject workflow",
       "Power Automate create approval flow" in procedure_context

@@ -23,6 +23,7 @@ from .auto import auto_trigger
 from .core import _get_active_workspace, _git_diff, _run_cmd_safe, load_relevant_lessons_context, record_procedure_lesson
 from .goal import goal_autopilot, goal_supervisor, load_goal_state
 from .integrations import agent_guidance_for_task
+from .lifecycle import preflight_trigger
 from .prod import prod_readiness_gate
 
 BLOCKING_PROD_VERDICTS = {"fix_required", "blocked_needs_user", "rollback_required"}
@@ -30,6 +31,9 @@ RUNNER_LOCK_FILE = ".harness_goal_runner.lock"
 MAX_AGENT_LESSONS_CHARS = 12_000
 MAX_LESSON_QUERY_CHARS = 4_000
 MAX_AGENT_FIELD_CHARS = 1_500
+MAX_AGENT_INTEGRATION_CHARS = 2_500
+MAX_AGENT_PREFLIGHT_GATES = 6
+MAX_AGENT_PROMPT_CHARS = 18_000
 
 
 def _root() -> Path:
@@ -261,6 +265,22 @@ def _cap_agent_field(text: Any) -> str:
     return clean[:MAX_AGENT_FIELD_CHARS].rstrip() + " [truncated]"
 
 
+def _cap_agent_block(text: Any, max_chars: int, marker: str) -> str:
+    clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", str(text or ""))
+    if len(clean) <= max_chars:
+        return clean
+    return clean[:max_chars].rstrip() + f"\n- [{marker}]"
+
+
+def _cap_agent_prompt(text: str) -> str:
+    if len(text) <= MAX_AGENT_PROMPT_CHARS:
+        return text
+    marker = "\n\n[truncated agent prompt middle to stay within harness budget]\n\n"
+    head_len = MAX_AGENT_PROMPT_CHARS // 2
+    tail_len = MAX_AGENT_PROMPT_CHARS - head_len - len(marker)
+    return text[:head_len].rstrip() + marker + text[-tail_len:].lstrip()
+
+
 def _agent_prompt(prompt: str, supervisor: dict[str, Any], root: Path | None = None) -> str:
     part = _current_part() or str(supervisor.get("goal") or prompt)
     lesson_text = _normalize_lesson_query(" ".join(str(x or "") for x in (prompt, part, supervisor.get("summary"))))
@@ -278,8 +298,34 @@ def _agent_prompt(prompt: str, supervisor: dict[str, Any], root: Path | None = N
         integration_guidance = agent_guidance_for_task(prompt, root=root)
     except Exception:
         integration_guidance = ""
+    integration_guidance = _cap_agent_block(
+        integration_guidance,
+        MAX_AGENT_INTEGRATION_CHARS,
+        "truncated integration guidance",
+    )
     integration_block = f"\n{integration_guidance}\n\n" if integration_guidance else ""
-    return (
+    try:
+        if root is None:
+            preflight = preflight_trigger(task=prompt)
+        else:
+            with _pinned_workspace(root):
+                preflight = preflight_trigger(task=prompt)
+        required = [
+            f"- {_cap_agent_field(item.get('tool'))}: {_cap_agent_field(item.get('reason'))}"
+            for item in preflight.get("run_now", [])
+            if isinstance(item, dict) and item.get("required") and not item.get("blocked_by_profile")
+        ][:MAX_AGENT_PREFLIGHT_GATES]
+    except Exception:
+        required = []
+    preflight_block = ""
+    if required:
+        preflight_block = (
+            "\nPre-code lifecycle gates:\n"
+            "Run/consider these before editing; auto_trigger is only for post-edit verification.\n"
+            + "\n".join(required)
+            + "\n\n"
+        )
+    assembled = (
         "You are the implementation agent for Agent Harness direct goal runner.\n"
         "Implement the current part directly in the workspace. Keep changes scoped. "
         "Run useful local checks if available, then exit without asking follow-up questions unless blocked.\n\n"
@@ -288,11 +334,13 @@ def _agent_prompt(prompt: str, supervisor: dict[str, Any], root: Path | None = N
         "HARNESS_LESSON_JSON: {\"title\":\"...\",\"summary\":\"...\",\"steps\":[\"...\"],\"tags\":[\"...\"]}\n"
         "Only emit the marker for durable, reusable knowledge; do not include secrets.\n\n"
         f"{integration_block}"
+        f"{preflight_block}"
         f"{prior_block}"
         f"Goal:\n{_cap_agent_field(prompt)}\n\n"
         f"Current part:\n{_cap_agent_field(part)}\n\n"
         f"Supervisor summary:\n{_cap_agent_field(supervisor.get('summary') or '')}\n"
     )
+    return _cap_agent_prompt(assembled)
 
 
 def _record_agent_lessons(prompt: str, agent: dict[str, Any]) -> list[dict[str, Any]]:
@@ -479,14 +527,20 @@ def _split_command(command: str) -> list[str]:
     return shlex.split(command, posix=os.name != "nt")
 
 
+def _custom_agent_command_allowed() -> bool:
+    return str(os.getenv("HARNESS_ALLOW_CUSTOM_AGENT_COMMAND") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_agent_command(agent_command: str | list[str] | None, prompt: str) -> tuple[list[str], str]:
+    if agent_command is not None and not _custom_agent_command_allowed():
+        return [], "custom_disabled"
     if isinstance(agent_command, list) and agent_command and all(isinstance(item, str) and item.strip() for item in agent_command):
         return [item.replace("{prompt}", prompt) for item in agent_command], "custom_argv"
     command = (agent_command if isinstance(agent_command, str) else os.getenv("HARNESS_GOAL_AGENT_CMD") or "").strip()
     if command:
         if "{prompt}" in command:
-            return _split_command(command.replace("{prompt}", prompt)), "custom"
-        return _split_command(command) + [prompt], "custom"
+            return _split_command(command.replace("{prompt}", prompt)), "custom" if agent_command is not None else "env"
+        return _split_command(command) + [prompt], "custom" if agent_command is not None else "env"
     candidates = [
         ("claude", ["claude", "-p", prompt]),
         ("gemini", ["gemini", "-p", prompt]),
@@ -498,8 +552,15 @@ def _resolve_agent_command(agent_command: str | list[str] | None, prompt: str) -
     return [], ""
 
 
-async def _run_agent(prompt: str, agent_command: str | None, timeout: float, root: Path | None = None) -> dict[str, Any]:
+async def _run_agent(prompt: str, agent_command: str | list[str] | None, timeout: float, root: Path | None = None) -> dict[str, Any]:
     cmd, source = _resolve_agent_command(agent_command, prompt)
+    if source == "custom_disabled":
+        return {
+            "status": "custom_agent_command_disabled",
+            "returncode": None,
+            "stdout": "",
+            "stderr": "Per-call agent_command is disabled; set HARNESS_GOAL_AGENT_CMD server-side or HARNESS_ALLOW_CUSTOM_AGENT_COMMAND=1 for trusted local debugging.",
+        }
     if not cmd:
         return {
             "status": "missing_agent_command",
@@ -561,6 +622,11 @@ async def goal_runner(
         or (isinstance(agent_command, list) and all(isinstance(item, str) and item.strip() for item in agent_command))
     ):
         return {"error": "invalid_argument", "detail": "agent_command must be a string or list of non-empty strings"}
+    if agent_command is not None and not _custom_agent_command_allowed():
+        return {
+            "error": "custom_agent_command_disabled",
+            "detail": "Per-call agent_command is disabled by default. Use HARNESS_GOAL_AGENT_CMD server-side or set HARNESS_ALLOW_CUSTOM_AGENT_COMMAND=1 only for trusted local debugging.",
+        }
     mode = (mode or "max").strip().lower()
     if mode not in {"safe", "max"}:
         return {"error": "invalid_argument", "detail": "mode must be one of: safe, max"}

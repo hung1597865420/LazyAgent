@@ -37,6 +37,10 @@ from tools.core import (
 from tools.auto import (
     auto_trigger
 )
+from tools.lifecycle import (
+    preflight_trigger,
+    tool_lifecycle,
+)
 from tools.goal import (
     goal_autopilot,
     goal_supervisor

@@ -3,6 +3,7 @@ tools package — Re-exporting all tools.
 """
 from .core import lesson_curator, run_in_sandbox
 from .auto import auto_trigger
+from .lifecycle import preflight_trigger, tool_lifecycle
 from .goal import goal_autopilot, goal_supervisor
 from .integrations import hallmark_bridge, integration_router, speckit_bridge, ui_skill_router
 from .workflow import bug_repro_guard, workflow_router
@@ -71,6 +72,8 @@ __all__ = [
     "run_in_sandbox",
     "lesson_curator",
     "auto_trigger",
+    "preflight_trigger",
+    "tool_lifecycle",
     "goal_autopilot",
     "goal_supervisor",
     "hallmark_bridge",
