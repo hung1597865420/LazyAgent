@@ -211,6 +211,52 @@ def _single_flight_key(name: str, arguments: dict) -> str:
     return f"{name}:{digest}"
 
 
+def _extract_tool_file_args(arguments: dict) -> list[str]:
+    if not isinstance(arguments, dict):
+        return []
+    files: list[str] = []
+    for key in (
+        "files",
+        "changed_files",
+        "target_files",
+        "html_files",
+        "file",
+        "path",
+        "paths",
+        "file_path",
+        "example_file",
+        "env_file",
+        "spec_path",
+        "test_path",
+    ):
+        value = arguments.get(key)
+        if isinstance(value, str):
+            candidates = [value]
+        elif isinstance(value, (list, tuple, set)):
+            candidates = list(value)
+        else:
+            continue
+        for item in candidates:
+            if isinstance(item, str) and item.strip():
+                files.append(item)
+    return files
+
+
+def _workspace_for_tool_call(arguments: dict) -> str:
+    workspace = _active_workspace()
+    files = _extract_tool_file_args(arguments)
+    if not files:
+        return workspace
+    try:
+        from tools.core import resolve_workspace_for_files
+
+        resolved = resolve_workspace_for_files(files)
+        return str(resolved.get("resolved_workspace") or workspace)
+    except Exception as exc:
+        _log.debug("workspace auto-resolve skipped: %s", exc)
+        return workspace
+
+
 def _tool_call_is_mutating(name: str, arguments: dict) -> bool:
     name = _normalize_tool_name(name)
     if name in _NO_BACKGROUND_ON_CANCEL_TOOLS:
@@ -919,6 +965,8 @@ async def list_tools() -> list[types.Tool]:
                     "focus":        {"type": "string", "description": "Trọng tâm review (vd: 'concurrency', 'auth flow')"},
                     "staged":       {"type": "boolean", "description": "True → tự lấy git diff --cached (staged changes). Không cần truyền files."},
                     "since_commit": {"type": "string",  "description": "SHA hoặc ref (vd: 'HEAD~3', 'main') → diff từ commit đó đến HEAD. Không cần truyền files."},
+                    "fast":         {"type": "boolean", "description": "True → cap context nhỏ hơn và bỏ integrity stage để tránh timeout."},
+                    "agent_timeout": {"type": "number", "description": "Timeout mỗi reviewer 9Router. MCP mặc định cap 75s để trả trước client timeout."},
                 },
             },
         ),
@@ -1729,6 +1777,16 @@ def _parse_optional_bool_arg(args: dict, name: str) -> tuple[bool | None, str | 
     return (None, error) if error else (parsed, None)
 
 
+def _mcp_panel_timeout() -> float:
+    try:
+        configured = float(os.getenv("HARNESS_MCP_PANEL_TIMEOUT", "240"))
+    except (TypeError, ValueError):
+        configured = 240.0
+    if not math.isfinite(configured) or configured <= 5:
+        configured = 240.0
+    return min(285.0, max(10.0, configured))
+
+
 def _nonempty_str_list(value) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item.strip() for item in value)
 
@@ -2079,24 +2137,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     import time
     from agents import current_run_id, log_run_to_db
 
-    workspace_cm = workspace_scope(_active_workspace())
-    workspace_cm.__enter__()
+    tool_name = _normalize_tool_name(name)
+    args_for_guard = arguments if isinstance(arguments, dict) else {}
+    resolved_workspace = _workspace_for_tool_call(args_for_guard)
     run_id = f"mcp-{uuid.uuid4().hex[:8]}"
     run_token = current_run_id.set(run_id)
     start_time = time.perf_counter()
-    _ensure_lazy_settings_merge()
-    _kick_project_auto_watch()
-    _kick_auto_wiki_ingest()
     task: asyncio.Task | None = None
-    tool_context = contextvars.copy_context()
-    tool_name = _normalize_tool_name(name)
-    args_for_guard = arguments if isinstance(arguments, dict) else {}
-    try:
-        st.session_heartbeat(task=f"mcp:{tool_name}")
-    except Exception as exc:
-        _log.debug("coordination heartbeat skipped for %s: %s", tool_name, exc)
-    allow_background_after_cancel = _allow_background_after_cancel(tool_name, args_for_guard)
-    single_flight_key = None if allow_background_after_cancel else _single_flight_key(tool_name, args_for_guard)
+    with workspace_scope(resolved_workspace):
+        _ensure_lazy_settings_merge()
+        _kick_project_auto_watch()
+        _kick_auto_wiki_ingest()
+        tool_context = contextvars.copy_context()
+        try:
+            st.session_heartbeat(task=f"mcp:{tool_name}")
+        except Exception as exc:
+            _log.debug("coordination heartbeat skipped for %s: %s", tool_name, exc)
+        allow_background_after_cancel = _allow_background_after_cancel(tool_name, args_for_guard)
+        single_flight_key = None if allow_background_after_cancel else _single_flight_key(tool_name, args_for_guard)
     duplicate_inflight_res: list[types.TextContent] | None = None
 
     async def _run():
@@ -2105,19 +2163,20 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         depth_token = _TOOL_CALL_DEPTH.set(depth + 1)
         top_level = depth == 0
         try:
-            async with _TOOL_SEM:
-                if top_level:
-                    async with _HOT_RELOAD_LOCK:
-                        await _ensure_fresh_tool_modules_locked()
-                        async with _TOOL_INFLIGHT_COND:
-                            _TOOL_INFLIGHT += 1
-                try:
-                    return await _execute_tool(tool_name, arguments)
-                finally:
+            with workspace_scope(resolved_workspace):
+                async with _TOOL_SEM:
                     if top_level:
-                        async with _TOOL_INFLIGHT_COND:
-                            _TOOL_INFLIGHT -= 1
-                            _TOOL_INFLIGHT_COND.notify_all()
+                        async with _HOT_RELOAD_LOCK:
+                            await _ensure_fresh_tool_modules_locked()
+                            async with _TOOL_INFLIGHT_COND:
+                                _TOOL_INFLIGHT += 1
+                    try:
+                        return await _execute_tool(tool_name, arguments)
+                    finally:
+                        if top_level:
+                            async with _TOOL_INFLIGHT_COND:
+                                _TOOL_INFLIGHT -= 1
+                                _TOOL_INFLIGHT_COND.notify_all()
         finally:
             _TOOL_CALL_DEPTH.reset(depth_token)
 
@@ -2162,8 +2221,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             return _json_response({"error": "internal_error", "detail": f"{tool_name} did not create a task."})
         res = await asyncio.shield(task)
         res = res or _json_response({"error": "empty_tool_result", "detail": f"{tool_name} returned no content."})
-        _schedule_mcp_tool_lesson(tool_name, arguments if isinstance(arguments, dict) else {}, res)
-        _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        with workspace_scope(resolved_workspace):
+            _schedule_mcp_tool_lesson(tool_name, arguments if isinstance(arguments, dict) else {}, res)
+            _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
     except asyncio.CancelledError:
         if task is None:
@@ -2195,21 +2255,23 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     async with _TOOL_SINGLE_FLIGHT_LOCK:
                         _TOOL_SINGLE_FLIGHT_REPLAY_KEYS.add(single_flight_key)
                 res = _json_response({"error": "cancel_pending", "detail": "Cancellation is pending for a mutating tool; duplicate retries are blocked until the original task exits."})
-        _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        with workspace_scope(resolved_workspace):
+            _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
     except Exception as exc:
         _log.exception("tool %s failed before MCP response", tool_name)
         res = _json_response({"error": f"{type(exc).__name__}: {exc}", "tool": tool_name})
-        _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
+        with workspace_scope(resolved_workspace):
+            _schedule_mcp_memory_events(tool_name, arguments if isinstance(arguments, dict) else {}, res, start_time)
         return res
     finally:
         current_run_id.reset(run_token)
-        workspace_cm.__exit__(None, None, None)
         if tool_name not in ("list_agents", "finops_stats", "router_quota_status"):
             def _log_task(t: asyncio.Task, _rid=run_id, _n=tool_name, _s=start_time) -> None:
                 try:
-                    suffix = "_cancelled" if t.cancelled() else ("_error" if t.exception() else "")
-                    log_run_to_db(_rid, f"mcp_{_n}{suffix}", int((time.perf_counter() - _s) * 1000))
+                    with workspace_scope(resolved_workspace):
+                        suffix = "_cancelled" if t.cancelled() else ("_error" if t.exception() else "")
+                        log_run_to_db(_rid, f"mcp_{_n}{suffix}", int((time.perf_counter() - _s) * 1000))
                 except Exception as exc:
                     _log.debug("run ledger logging failed for %s: %s", _n, exc)
 
@@ -2683,6 +2745,16 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
             staged, staged_error = _parse_bool_arg(args, "staged")
             if staged_error:
                 return _json_response({"error": "invalid_argument", "detail": staged_error})
+            fast, fast_error = _parse_bool_arg(args, "fast", True)
+            if fast_error:
+                return _json_response({"error": "invalid_argument", "detail": fast_error})
+            try:
+                agent_timeout = float(args.get("agent_timeout", 45.0) or 45.0)
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "agent_timeout must be numeric"})
+            if not math.isfinite(agent_timeout) or agent_timeout <= 0:
+                return _json_response({"error": "invalid_argument", "detail": "agent_timeout must be a positive finite number"})
+            agent_timeout = min(agent_timeout, 45.0)
             if args.get("files"):
                 coordination_gate = st.conflict_check(files=args.get("files"), task=args.get("focus"), stage="panel_review")
                 if coordination_gate.get("status") == "blocked_conflict":
@@ -2693,12 +2765,33 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
                         "findings": [],
                         "coordination": coordination_gate,
                     })
-            return _json_response(await st.panel_review(
-                files=args.get("files"), diff=args.get("diff"),
-                code=args.get("code"), focus=args.get("focus"),
-                staged=staged,
-                since_commit=args.get("since_commit", ""),
-            ))
+            panel_timeout = _mcp_panel_timeout()
+            try:
+                result = await asyncio.wait_for(
+                    st.panel_review(
+                        files=args.get("files"), diff=args.get("diff"),
+                        code=args.get("code"), focus=args.get("focus"),
+                        staged=staged,
+                        since_commit=args.get("since_commit", ""),
+                        fast=fast,
+                        agent_timeout=agent_timeout,
+                    ),
+                    timeout=panel_timeout,
+                )
+            except asyncio.TimeoutError:
+                result = {
+                    "verdict": "degraded",
+                    "summary": f"panel_review exceeded MCP deadline ({panel_timeout:.0f}s); returning controlled timeout instead of letting the MCP client hang.",
+                    "findings": [],
+                    "panel": [],
+                    "warnings": [
+                        f"panel_review exceeded HARNESS_MCP_PANEL_TIMEOUT={panel_timeout:.0f}s",
+                        "Default MCP panel uses fast=True and agent_timeout<=45s; restart the MCP client if its tool schema does not expose fast/agent_timeout.",
+                    ],
+                    "degraded": True,
+                    "timeout": True,
+                }
+            return _json_response(result)
 
         if name == "consult":
             return _json_response(await st.consult(

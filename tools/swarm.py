@@ -3,6 +3,7 @@ tools/swarm.py — Multi-Agent Swarm, ask_codebase, and quick_task.
 Ported from support_tools.py.
 """
 import asyncio
+import contextlib
 import os
 import re
 import time
@@ -15,6 +16,7 @@ from config import get_llm_client
 from agents import Agent, AgentRole, AgentResult
 from .core import (
     read_workspace_files,
+    resolve_workspace_for_files,
     _load_relevant_wiki_context,
     _parse_json_object,
     _result_meta,
@@ -26,6 +28,7 @@ from .core import (
     load_relevant_lessons_context,
     MAX_TOTAL_BYTES_BIG
 )
+from .workspace_context import workspace_scope
 
 
 def _run_reproducer_in_sandbox(reproducer_code: str) -> dict:
@@ -683,6 +686,45 @@ async def ask_codebase(
     if files:
         files, sanitize_warnings = _sanitize_ask_files(files)
         warnings.extend(sanitize_warnings)
+    workspace_stack = contextlib.ExitStack()
+    workspace_resolution = {
+        "active_workspace": _get_active_workspace(),
+        "resolved_workspace": _get_active_workspace(),
+        "source": "active",
+        "requested_files": len(files or []),
+        "matched_files": 0,
+        "candidates_checked": 0,
+        "switched": False,
+        "warnings": [],
+    }
+    if files:
+        workspace_resolution = resolve_workspace_for_files(files)
+        warnings.extend(workspace_resolution.get("warnings") or [])
+        resolved_workspace = str(workspace_resolution.get("resolved_workspace") or "").strip()
+        if resolved_workspace and workspace_resolution.get("switched"):
+            workspace_stack.enter_context(workspace_scope(resolved_workspace))
+    config_meta["workspace"] = {
+        "active_workspace": workspace_resolution.get("active_workspace"),
+        "resolved_workspace": _get_active_workspace(),
+        "source": workspace_resolution.get("source"),
+        "matched_files": workspace_resolution.get("matched_files"),
+        "requested_files": workspace_resolution.get("requested_files"),
+        "switched": workspace_resolution.get("switched"),
+    }
+    empty_pack["requested_files"] = files or []
+    empty_pack["workspace"] = config_meta["workspace"]
+
+    def _finish(payload: dict) -> dict:
+        try:
+            pack = payload.get("context_pack")
+            if isinstance(pack, dict):
+                pack.setdefault("requested_files", files or [])
+                pack.setdefault("workspace", config_meta["workspace"])
+            payload.setdefault("workspace", config_meta["workspace"])
+            return payload
+        finally:
+            workspace_stack.close()
+
     if not files and not index_md:
         seen: dict[str, float] = {}
         direct_hits = _direct_workspace_hits(question, limit=6)
@@ -705,7 +747,7 @@ async def ask_codebase(
             warnings.append(f"CodebaseIndex lookup failed: {e}")
             files = list(seen.keys())[:_ASK_CODEBASE_MAX_FILES]
     if not files and not index_md:
-        return {
+        return _finish({
             "answer": "",
             "error": "Cần cung cấp danh sách file qua `files` hoặc nội dung điều hướng qua `index_md`",
             "fallback": False,
@@ -716,7 +758,7 @@ async def ask_codebase(
             "context_health": {"status": "skipped"},
             "warnings": warnings,
             "config": config_meta,
-        }
+        })
         
     ctx_blocks = []
     loaded_count = 0
@@ -755,7 +797,7 @@ async def ask_codebase(
         
     ctx = "\n\n".join(ctx_blocks)
     if not ctx:
-        return {
+        return _finish({
             "answer": "",
             "error": "Không đọc được dữ liệu ngữ cảnh nào từ files hoặc index_md",
             "fallback": False,
@@ -766,7 +808,7 @@ async def ask_codebase(
             "context_health": {"status": "skipped"},
             "warnings": warnings,
             "config": config_meta,
-        }
+        })
     ctx = _redact_sensitive_text(ctx)
     ctx, prune_warnings = _prune_context_for_question(question, ctx, int(config_meta["context_cap"]))
     warnings.extend(prune_warnings)
@@ -811,6 +853,17 @@ async def ask_codebase(
                 status="error",
                 error=f"ask_codebase model {model} hard timeout after {timeout_s + 5:.0f}s",
             )
+        except Exception as exc:
+            result = AgentResult(
+                agent_id=f"manager-error-{model}",
+                agent_role=AgentRole.MANAGER,
+                model_used=model,
+                task=task,
+                result="",
+                duration_ms=0,
+                status="error",
+                error=f"ask_codebase model {model} error: {type(exc).__name__}: {exc}",
+            )
         attempts.append(_result_meta(result))
         answer_text = _normalize_manager_answer(result.result)
         answer_truncated = _manager_answer_appears_truncated(answer_text, int(config_meta["max_output_tokens"]))
@@ -835,6 +888,8 @@ async def ask_codebase(
             error="no ask_codebase model configured",
         )
     context_pack = _local_context_pack(question, ctx, files)
+    context_pack.setdefault("requested_files", files or [])
+    context_pack.setdefault("workspace", config_meta["workspace"])
     if result.status != "success" or not _manager_answer_usable(answer_text) or answer_truncated:
         reason = result.error or f"empty result with status={result.status}"
         if result.status == "success" and answer_text and answer_truncated:
@@ -843,7 +898,7 @@ async def ask_codebase(
             reason = "manager answer missing usable file:line evidence"
         answer = _extractive_codebase_answer(question, ctx, files, reason)
         warnings.append(f"Manager model không trả answer usable: {reason}; dùng fallback extractive.")
-        return {
+        return _finish({
             "answer": answer,
             "files_loaded": loaded_count,
             "agent": _result_meta(result),
@@ -855,9 +910,9 @@ async def ask_codebase(
             "relevant_files_scored": context_pack["relevant_files"],
             "context_pack": context_pack,
             "config": config_meta,
-        }
+        })
 
-    return {
+    return _finish({
         "answer": answer_text,
         "files_loaded": loaded_count,
         "agent": _result_meta(result),
@@ -869,7 +924,7 @@ async def ask_codebase(
         "relevant_files_scored": context_pack["relevant_files"],
         "context_pack": context_pack,
         "config": config_meta,
-    }
+    })
 
 
 async def quick_task(instruction: str, context: Optional[str] = None) -> dict:

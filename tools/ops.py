@@ -10,11 +10,23 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from contextlib import nullcontext
 
-from .core import LESSON_INDEX_FILE, _assemble_context, _get_active_workspace, _lesson_file_lock, _run_cmd_safe, get_global_lessons_path, read_lessons
+from .core import (
+    LESSON_INDEX_FILE,
+    _assemble_context,
+    _get_active_workspace,
+    _lesson_file_lock,
+    _run_cmd_safe,
+    get_global_lessons_path,
+    read_lessons,
+    read_workspace_files,
+    resolve_workspace_for_files,
+)
 from .orchestrator import ORCH_FILE, orchestrate
 from .goal import load_goal_state
 from .runner import RUNNER_LOCK_FILE, _read_lock
+from .workspace_context import workspace_scope
 
 LEDGER_FILE = ".harness_run_ledger.jsonl"
 INSTALL_MANIFEST_FILE = "harness.install.json"
@@ -327,15 +339,54 @@ async def context_auditor(question: str = "", files: list[str] | None = None, co
 
 async def ask_codebase_health(question: str = "harness codebase health", files: list[str] | None = None, context: str | None = None) -> dict[str, Any]:
     """Dry-run the local ask_codebase context path to catch overlarge/weak context before 9Router."""
-    audit = await context_auditor(question=question, files=files, context=context)
+    workspace = resolve_workspace_for_files(files or []) if files else {
+        "active_workspace": _get_active_workspace(),
+        "resolved_workspace": _get_active_workspace(),
+        "source": "active",
+        "requested_files": 0,
+        "matched_files": 0,
+        "candidates_checked": 0,
+        "switched": False,
+        "warnings": [],
+    }
+    file_context = ""
+    file_warnings: list[str] = []
+    files_loaded = 0
+    scope = (
+        workspace_scope(str(workspace.get("resolved_workspace") or _get_active_workspace()))
+        if workspace.get("switched")
+        else nullcontext()
+    )
+    with scope:
+        if files:
+            file_context, file_warnings, files_loaded = read_workspace_files(files)
+        audit = await context_auditor(question=question, files=files, context=context)
     advice = []
+    warnings = list(workspace.get("warnings") or []) + file_warnings
     if audit["verdict"] == "too_large":
         advice.append("Narrow files or rely on ask_codebase auto-selection before 9Router.")
-    if audit["warnings_count"]:
+    if audit["warnings_count"] or warnings:
         advice.append("Review warnings; skipped files may remove needed evidence.")
+    if files and files_loaded == 0:
+        advice.append("No requested files loaded; check active/resolved workspace before calling 9Router.")
     if not advice:
         advice.append("Context path looks usable; 9Router timeout risk is mostly model/quota, not local context assembly.")
-    return {"status": "completed", "audit": audit, "advice": advice}
+    return {
+        "status": "completed",
+        "workspace": {
+            "active_workspace": workspace.get("active_workspace"),
+            "resolved_workspace": workspace.get("resolved_workspace"),
+            "source": workspace.get("source"),
+            "matched_files": workspace.get("matched_files"),
+            "requested_files": workspace.get("requested_files"),
+            "switched": workspace.get("switched"),
+        },
+        "files_loaded": files_loaded,
+        "warnings": warnings,
+        "audit": audit,
+        "file_context_bytes": len(file_context.encode("utf-8", errors="replace")),
+        "advice": advice,
+    }
 
 
 async def patch_safety_check(patch: str, files: list[str] | None = None) -> dict[str, Any]:

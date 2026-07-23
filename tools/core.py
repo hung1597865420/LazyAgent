@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 from agents import Agent, AgentRole, AgentResult
 from config import WORKSPACE_ROOT, get_llm_client
-from .workspace_context import get_active_workspace_override
+from .workspace_context import get_active_workspace_override, workspace_scope
 from runtime_flags import bool_flag
 
 _log = logging.getLogger("harness.core")
@@ -197,6 +197,17 @@ def read_workspace_files(
     warnings: list[str] = []
     total = 0
     loaded = 0
+    workspace_resolution = resolve_workspace_for_files(list(paths))
+    warnings.extend(workspace_resolution.get("warnings") or [])
+    resolved_workspace = str(workspace_resolution.get("resolved_workspace") or "")
+    if resolved_workspace and workspace_resolution.get("switched"):
+        try:
+            token_cm = workspace_scope(resolved_workspace)
+            token_cm.__enter__()
+        except Exception:
+            token_cm = None
+    else:
+        token_cm = None
     root = os.path.realpath(_get_active_workspace())
     root_cmp = os.path.normcase(root)
 
@@ -245,77 +256,87 @@ def read_workspace_files(
         tail.reverse()
         return _fit_bytes(header + "\n".join(head) + marker + "\n".join(tail), byte_budget)
 
-    for idx, p in enumerate(paths):
-        if not p or not isinstance(p, str) or not p.strip():
-            warnings.append(f"{p!r}: path không hợp lệ — bỏ qua")
-            continue
-        try:
-            full = os.path.realpath(os.path.join(root, p))
-        except (ValueError, OSError) as e:
-            warnings.append(f"{p}: không thể resolve path — {e}")
-            continue
-        try:
-            outside = os.path.commonpath([os.path.normcase(full), root_cmp]) != root_cmp
-        except ValueError:
-            outside = True  # different drives on Windows
-        if outside:
-            warnings.append(f"{p}: nằm ngoài workspace runtime — bỏ qua")
-            continue
-        if not os.path.isfile(full):
-            warnings.append(f"{p}: không tồn tại")
-            continue
-
-        try:
-            with open(full, encoding="utf-8", errors="replace") as f:
-                data = f.read(MAX_FILE_BYTES + 1)
-        except OSError as e:
-            warnings.append(f"{p}: lỗi đọc file — {e}")
-            continue
-
-        if len(data) > MAX_FILE_BYTES:
-            data = data[:MAX_FILE_BYTES]
-            warnings.append(f"{p}: bị cắt ở {MAX_FILE_BYTES} bytes")
-
-        if number_lines:
-            data = "\n".join(
-                f"{i + 1}\t{line}" for i, line in enumerate(data.splitlines())
-            )
-        block = f"=== FILE: {p} ===\n{data}"
-
-        block_bytes = len(block.encode("utf-8", errors="replace"))
-        remaining_slots = max(1, len(paths) - idx)
-        remaining_total = max(0, total_cap - total)
-        reserved_for_later = MIN_CONTEXT_EXCERPT_BYTES * max(0, remaining_slots - 1)
-        full_file_budget = max(0, remaining_total - reserved_for_later)
-        per_file_budget = remaining_total if block_bytes <= full_file_budget else max(512, full_file_budget or (remaining_total // remaining_slots))
-        if block_bytes > per_file_budget:
-            raw_data = data
-            if number_lines:
-                raw_data = "\n".join(line.split("\t", 1)[1] if "\t" in line else line for line in data.splitlines())
-            block = _excerpt_numbered_file(p, raw_data, per_file_budget)
-            block_bytes = len(block.encode("utf-8", errors="replace"))
-            warnings.append(f"{p}: excerpted — full file/context vượt budget; included {block_bytes} bytes instead of skipping")
-        if total + block_bytes > total_cap:
-            remaining = max(0, total_cap - total)
-            if remaining >= 512:
-                block = _fit_bytes(block, remaining)
-                block_bytes = len(block.encode("utf-8", errors="replace"))
-                warnings.append(f"{p}: excerpt further trimmed to remaining context budget ({remaining} bytes)")
-            else:
-                warnings.append(f"{p}: skipped — remaining context budget too small ({remaining} bytes)")
+    try:
+        for idx, p in enumerate(paths):
+            if not p or not isinstance(p, str) or not p.strip():
+                warnings.append(f"{p!r}: path không hợp lệ — bỏ qua")
                 continue
-        total += block_bytes
-        blocks.append(block)
-        loaded += 1
+            try:
+                full = os.path.realpath(os.path.join(root, p))
+            except (ValueError, OSError) as e:
+                warnings.append(f"{p}: không thể resolve path — {e}")
+                continue
+            try:
+                outside = os.path.commonpath([os.path.normcase(full), root_cmp]) != root_cmp
+            except ValueError:
+                outside = True  # different drives on Windows
+            if outside:
+                warnings.append(f"{p}: nằm ngoài workspace runtime {root} — bỏ qua")
+                continue
+            if not os.path.isfile(full):
+                warnings.append(f"{p}: không tồn tại trong workspace {root}")
+                continue
 
-    return "\n\n".join(blocks), warnings, loaded
+            try:
+                with open(full, encoding="utf-8", errors="replace") as f:
+                    data = f.read(MAX_FILE_BYTES + 1)
+            except OSError as e:
+                warnings.append(f"{p}: lỗi đọc file — {e}")
+                continue
+
+            if len(data) > MAX_FILE_BYTES:
+                data = data[:MAX_FILE_BYTES]
+                warnings.append(f"{p}: bị cắt ở {MAX_FILE_BYTES} bytes")
+
+            if number_lines:
+                data = "\n".join(
+                    f"{i + 1}\t{line}" for i, line in enumerate(data.splitlines())
+                )
+            block = f"=== FILE: {p} ===\n{data}"
+
+            block_bytes = len(block.encode("utf-8", errors="replace"))
+            remaining_slots = max(1, len(paths) - idx)
+            remaining_total = max(0, total_cap - total)
+            reserved_for_later = MIN_CONTEXT_EXCERPT_BYTES * max(0, remaining_slots - 1)
+            full_file_budget = max(0, remaining_total - reserved_for_later)
+            per_file_budget = remaining_total if block_bytes <= full_file_budget else max(512, full_file_budget or (remaining_total // remaining_slots))
+            if block_bytes > per_file_budget:
+                raw_data = data
+                if number_lines:
+                    raw_data = "\n".join(line.split("\t", 1)[1] if "\t" in line else line for line in data.splitlines())
+                block = _excerpt_numbered_file(p, raw_data, per_file_budget)
+                block_bytes = len(block.encode("utf-8", errors="replace"))
+                warnings.append(f"{p}: excerpted — full file/context vượt budget; included {block_bytes} bytes instead of skipping")
+            if total + block_bytes > total_cap:
+                remaining = max(0, total_cap - total)
+                if remaining >= 512:
+                    block = _fit_bytes(block, remaining)
+                    block_bytes = len(block.encode("utf-8", errors="replace"))
+                    warnings.append(f"{p}: excerpt further trimmed to remaining context budget ({remaining} bytes)")
+                else:
+                    warnings.append(f"{p}: skipped — remaining context budget too small ({remaining} bytes)")
+                    continue
+            total += block_bytes
+            blocks.append(block)
+            loaded += 1
+
+        return "\n\n".join(blocks), warnings, loaded
+    finally:
+        if token_cm is not None:
+            token_cm.__exit__(None, None, None)
 
 
-def _get_active_workspace() -> str:
-    """Runtime workspace — không freeze theo project đầu tiên khi MCP reuse process."""
+def _get_active_workspace_info() -> tuple[str, str]:
+    """Return runtime workspace and the source that selected it."""
     override = get_active_workspace_override()
     if override:
-        return os.path.abspath(str(override))
+        return os.path.abspath(str(override)), "context_override"
+    env = (os.getenv("HARNESS_ACTIVE_WORKSPACE") or "").strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env)), "harness_active_workspace"
+    env = (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env)), "claude_project_dir"
     meta_workspace = ""
     meta = os.getenv("ANTIGRAVITY_SOURCE_METADATA")
     if meta:
@@ -323,13 +344,155 @@ def _get_active_workspace() -> str:
             meta_workspace = str(json.loads(meta).get("tool", {}).get("workspacePath") or "").strip()
         except Exception:
             meta_workspace = ""
-    workspace = (
-        (os.getenv("HARNESS_ACTIVE_WORKSPACE") or "").strip()
-        or (os.getenv("WORKSPACE_ROOT") or "").strip()
-        or meta_workspace
-        or (os.getenv("CLAUDE_PROJECT_DIR") or "").strip()
-    )
-    return os.path.abspath(str(workspace or WORKSPACE_ROOT or os.getcwd()))
+    if meta_workspace:
+        return os.path.abspath(os.path.expanduser(meta_workspace)), "antigravity_source_metadata"
+    env = (os.getenv("WORKSPACE_ROOT") or "").strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env)), "workspace_root"
+    try:
+        cwd = os.getcwd()
+        if cwd:
+            return os.path.abspath(cwd), "cwd"
+    except OSError:
+        pass
+    return os.path.abspath(WORKSPACE_ROOT), "config"
+
+
+def _get_active_workspace() -> str:
+    """Runtime workspace — không freeze theo project đầu tiên khi MCP reuse process."""
+    return _get_active_workspace_info()[0]
+
+
+def _safe_workspace_file_count(root: Path, files: list[str] | None) -> int:
+    """Count requested relative files that exist under root without following traversal."""
+    if not files:
+        return 0
+    try:
+        root_resolved = root.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return 0
+    if not root_resolved.is_dir():
+        return 0
+    count = 0
+    for rel in files:
+        if not isinstance(rel, str) or not rel.strip():
+            continue
+        rel_path = Path(rel.replace("\\", "/").strip())
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            continue
+        try:
+            candidate = (root_resolved / rel_path).resolve()
+            if os.path.commonpath([str(candidate), str(root_resolved)]) != str(root_resolved):
+                continue
+            if candidate.is_file():
+                count += 1
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return count
+
+
+def resolve_workspace_for_files(files: list[str] | None) -> dict:
+    """Resolve the best runtime workspace for explicit relative files.
+
+    MCP clients sometimes start the long-lived harness server from the install
+    repo while the agent is editing another repo. If a caller provides concrete
+    file paths, prefer a registered watched repo that actually contains them.
+    """
+    valid_files: list[str] = []
+    for rel in files or []:
+        if not isinstance(rel, str) or not rel.strip():
+            continue
+        rel_path = Path(rel.replace("\\", "/").strip())
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            continue
+        valid_files.append(rel_path.as_posix())
+    active_s, active_source = _get_active_workspace_info()
+    active = Path(active_s)
+    total_files = len(valid_files)
+    active_count = _safe_workspace_file_count(active, valid_files)
+    diag = {
+        "active_workspace": active_s,
+        "active_source": active_source,
+        "resolved_workspace": active_s,
+        "source": "active",
+        "requested_files": total_files,
+        "matched_files": active_count,
+        "candidates_checked": 0,
+        "switched": False,
+        "warnings": [],
+    }
+    if not valid_files or active_count == total_files:
+        return diag
+    authorized_registry_fallback = (os.getenv("HARNESS_ALLOW_REGISTRY_WORKSPACE_FALLBACK") or "").strip().lower() in {"1", "true", "yes", "on"}
+    diag["authorized_registry_fallback"] = authorized_registry_fallback
+    if active_source not in {"cwd", "config"} and not authorized_registry_fallback:
+        diag["warnings"].append(
+            f"workspace unresolved: active workspace source={active_source} is authoritative; "
+            f"not switching repos based only on file args ({active_count}/{total_files} match)"
+        )
+        return diag
+
+    candidates: list[Path] = []
+    try:
+        from .watch_registry import list_repos
+
+        repos = sorted(
+            list_repos(),
+            key=lambda repo: float(repo.get("last_seen") or 0),
+            reverse=True,
+        )
+        candidates.extend(Path(str(repo.get("path") or "")) for repo in repos)
+    except Exception as exc:
+        diag["warnings"].append(f"workspace registry lookup skipped: {exc}")
+
+    best_path: Path | None = None
+    best_count = active_count
+    seen = {os.path.normcase(active_s)}
+    for candidate in candidates:
+        try:
+            candidate_s = os.path.abspath(str(candidate.expanduser().resolve()))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if os.path.normcase(candidate_s) in seen:
+            continue
+        seen.add(os.path.normcase(candidate_s))
+        diag["candidates_checked"] += 1
+        count = _safe_workspace_file_count(Path(candidate_s), valid_files)
+        if count > best_count:
+            best_path = Path(candidate_s)
+            best_count = count
+        if total_files and count == total_files:
+            break
+
+    if best_path and best_count > active_count:
+        resolved = os.path.abspath(str(best_path))
+        diag.update({
+            "resolved_workspace": resolved,
+            "source": "watch_registry_file_match",
+            "matched_files": best_count,
+            "switched": True,
+        })
+        diag["warnings"].append(
+            f"workspace auto-resolved từ {active_s} sang {resolved} vì explicit files match {best_count}/{total_files}"
+        )
+    elif total_files and active_count < total_files:
+        diag["warnings"].append(
+            f"workspace unresolved: active {active_s} chỉ match {active_count}/{total_files} requested file(s)"
+        )
+    return diag
+
+
+@contextmanager
+def _workspace_scope_if_valid(root: str | None):
+    if root:
+        try:
+            if Path(root).expanduser().resolve().is_dir():
+                with workspace_scope(root):
+                    yield
+                return
+        except (OSError, RuntimeError, ValueError):
+            pass
+    yield
 
 
 def get_runtime_path(name: str, subdir: str = "") -> str:
@@ -1924,6 +2087,11 @@ def _assemble_context(
 ) -> tuple[str, list[str]]:
     parts: list[str] = []
     warnings: list[str] = []
+    resolved_workspace = ""
+    if files:
+        workspace_resolution = resolve_workspace_for_files(files)
+        resolved_workspace = str(workspace_resolution.get("resolved_workspace") or "")
+        warnings.extend(workspace_resolution.get("warnings") or [])
     try:
         from .goal import goal_progress_summary
         goal_summary = goal_progress_summary()
@@ -1942,38 +2110,41 @@ def _assemble_context(
         target_text_parts.append(context)
     if files:
         target_text_parts.extend(files)
-        root = os.path.realpath(_get_active_workspace())
-        for fpath in files[:3]:
-            try:
-                full_path = os.path.realpath(os.path.join(root, fpath))
-                if os.path.commonpath([full_path, root]) != root:
-                    warnings.append(f"{fpath}: wiki pre-read outside workspace — skipped")
-                    continue
-                path_obj = Path(full_path)
+        with _workspace_scope_if_valid(resolved_workspace):
+            root = os.path.realpath(_get_active_workspace())
+            for fpath in files[:3]:
                 try:
-                    stat_before = path_obj.stat()
-                    if path_obj.is_symlink() or not path_obj.is_file():
-                        warnings.append(f"{fpath}: wiki pre-read non-regular file — skipped")
+                    full_path = os.path.realpath(os.path.join(root, fpath))
+                    if os.path.commonpath([full_path, root]) != root:
+                        warnings.append(f"{fpath}: wiki pre-read outside workspace — skipped")
                         continue
-                    with path_obj.open("r", encoding="utf-8", errors="replace") as f:
-                        target_text_parts.append(f.read(min(1000, stat_before.st_size)))
-                except OSError as e:
-                    warnings.append(f"{fpath}: wiki pre-read skipped — {e}")
-            except ValueError as e:
-                warnings.append(f"{fpath}: wiki pre-read invalid path — {e}")
+                    path_obj = Path(full_path)
+                    try:
+                        stat_before = path_obj.stat()
+                        if path_obj.is_symlink() or not path_obj.is_file():
+                            warnings.append(f"{fpath}: wiki pre-read non-regular file — skipped")
+                            continue
+                        with path_obj.open("r", encoding="utf-8", errors="replace") as f:
+                            target_text_parts.append(f.read(min(1000, stat_before.st_size)))
+                    except OSError as e:
+                        warnings.append(f"{fpath}: wiki pre-read skipped — {e}")
+                except ValueError as e:
+                    warnings.append(f"{fpath}: wiki pre-read invalid path — {e}")
     target_text = "\n".join(target_text_parts)
     
     # Auto-inject Wiki Context selectively
-    wiki_ctx = _load_relevant_wiki_context(target_text)
-    if wiki_ctx:
-        parts.append(f"=== PROJECT WIKI CONTEXT (SELECTIVE) ===\n{wiki_ctx}")
+    with _workspace_scope_if_valid(resolved_workspace):
+        wiki_ctx = _load_relevant_wiki_context(target_text)
+        if wiki_ctx:
+            parts.append(f"=== PROJECT WIKI CONTEXT (SELECTIVE) ===\n{wiki_ctx}")
 
-    lessons_ctx = load_relevant_lessons_context(target_text)
-    if lessons_ctx:
-        parts.append(f"=== PRIOR LESSONS (AUTO-INJECTED) ===\n{lessons_ctx}")
+        lessons_ctx = load_relevant_lessons_context(target_text)
+        if lessons_ctx:
+            parts.append(f"=== PRIOR LESSONS (AUTO-INJECTED) ===\n{lessons_ctx}")
         
     if files:
-        file_block, file_warns, _ = read_workspace_files(files, total_cap)
+        with _workspace_scope_if_valid(resolved_workspace):
+            file_block, file_warns, _ = read_workspace_files(files, total_cap)
         warnings.extend(file_warns)
         if file_block:
             parts.append(file_block)

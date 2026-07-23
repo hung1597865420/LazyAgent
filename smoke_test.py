@@ -82,7 +82,7 @@ def mock_subprocess_run(args, *other_args, **kwargs):
 subprocess.run = mock_subprocess_run
 
 import agents
-from tools.core import _calculate_review_hash, _is_sqlite_busy_error
+from tools.core import _assemble_context, _calculate_review_hash, _is_sqlite_busy_error, read_workspace_files
 
 # Mocking Agent and LLM calls to prevent network activity in smoke tests
 def mock_run(self, task: str, extra_context: str = "", *, json_mode: bool = False, max_output_tokens: int = 4096, **_kwargs):
@@ -2065,6 +2065,190 @@ check("ask_codebase relevant_files giữ list path string",
       and all(isinstance(path, str) for path in fallback_schema.get("relevant_files", []))
       and "relevant_files_scored" in fallback_schema,
       str(fallback_schema))
+from tools.workspace_context import workspace_scope
+import tools.workspace_context as workspace_context_mod
+from tools.core import resolve_workspace_for_files
+import tools.ops as ops_mod
+import tools.watch_registry as watch_registry_mod
+
+ask_ws_a = (SMOKE_DIR / "ask_workspace_a").resolve()
+ask_ws_b = (SMOKE_DIR / "ask_workspace_b").resolve()
+ask_target = "packages/web/src/app/(portal)/dashboard/page.tsx"
+(ask_ws_a / ".git").mkdir(parents=True, exist_ok=True)
+(ask_ws_b / ".git").mkdir(parents=True, exist_ok=True)
+(ask_ws_b / "packages/web/src/app/(portal)/dashboard").mkdir(parents=True, exist_ok=True)
+(ask_ws_b / ask_target).write_text(
+    "export default function DashboardPage() {\n  return <main>Dashboard</main>\n}\n",
+    encoding="utf-8",
+)
+old_watch_registry_constants = {
+    "REGISTRY_DIR": watch_registry_mod.REGISTRY_DIR,
+    "REGISTRY_FILE": watch_registry_mod.REGISTRY_FILE,
+    "GLOBAL_PID_FILE": watch_registry_mod.GLOBAL_PID_FILE,
+    "REGISTRY_LOCK_FILE": watch_registry_mod.REGISTRY_LOCK_FILE,
+    "GLOBAL_PID_LOCK_FILE": watch_registry_mod.GLOBAL_PID_LOCK_FILE,
+}
+ask_registry_dir = SMOKE_DIR / "ask_watch_registry"
+watch_registry_mod.REGISTRY_DIR = ask_registry_dir
+watch_registry_mod.REGISTRY_FILE = ask_registry_dir / "watch.repos.json"
+watch_registry_mod.GLOBAL_PID_FILE = ask_registry_dir / "auto_watch.global.pid"
+watch_registry_mod.REGISTRY_LOCK_FILE = ask_registry_dir / "watch.repos.lock"
+watch_registry_mod.GLOBAL_PID_LOCK_FILE = ask_registry_dir / "auto_watch.global.lock"
+watch_registry_mod.register_repo(ask_ws_b, alias="ask-workspace-b")
+old_registry_list_repos = watch_registry_mod.list_repos
+with workspace_scope(ask_ws_a):
+    explicit_block_res = resolve_workspace_for_files([ask_target])
+check("workspace resolver không nhảy repo khi active workspace explicit",
+      explicit_block_res.get("switched") is False
+      and explicit_block_res.get("active_source") == "context_override"
+      and explicit_block_res.get("resolved_workspace") == str(ask_ws_a.resolve()),
+      str(explicit_block_res))
+workspace_env_keys = (
+    "HARNESS_ACTIVE_WORKSPACE",
+    "CLAUDE_PROJECT_DIR",
+    "WORKSPACE_ROOT",
+    "ANTIGRAVITY_SOURCE_METADATA",
+    "HARNESS_ALLOW_REGISTRY_WORKSPACE_FALLBACK",
+)
+old_workspace_env = {key: os.environ.pop(key, None) for key in workspace_env_keys}
+old_cwd_for_workspace_resolve = os.getcwd()
+workspace_override_token = workspace_context_mod._ACTIVE_WORKSPACE.set("")
+try:
+    os.environ["HARNESS_ALLOW_REGISTRY_WORKSPACE_FALLBACK"] = "1"
+    watch_registry_mod.list_repos = lambda: [{
+        "path": str(ask_ws_b.resolve()),
+        "alias": "ask-workspace-b",
+        "last_seen": time.time(),
+    }]
+    os.chdir(ask_ws_a)
+    direct_registry_res = resolve_workspace_for_files([ask_target])
+    with workspace_scope(ask_ws_b):
+        ask_workspace_res = asyncio.run(swarm_mod.ask_codebase("dashboard sections", files=[ask_target]))
+        ask_health_res = asyncio.run(ops_mod.ask_codebase_health("dashboard sections", files=[ask_target]))
+finally:
+    watch_registry_mod.list_repos = old_registry_list_repos
+    os.chdir(old_cwd_for_workspace_resolve)
+    workspace_context_mod._ACTIVE_WORKSPACE.reset(workspace_override_token)
+    for key, value in old_workspace_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+check("workspace resolver cross-registry chỉ chạy khi authorized",
+      direct_registry_res.get("switched") is True
+      and direct_registry_res.get("resolved_workspace") == str(ask_ws_b.resolve())
+      and direct_registry_res.get("authorized_registry_fallback") is True,
+      str(direct_registry_res))
+check("ask_codebase đọc đúng workspace explicit đã resolve",
+      ask_workspace_res.get("files_loaded") == 1
+      and ask_workspace_res.get("workspace", {}).get("resolved_workspace") == str(ask_ws_b.resolve()),
+      str(ask_workspace_res)[:1200])
+check("ask_codebase_health expose workspace và file load",
+      ask_health_res.get("files_loaded") == 1
+      and ask_health_res.get("workspace", {}).get("resolved_workspace") == str(ask_ws_b.resolve()),
+      str(ask_health_res))
+old_workspace_env = {key: os.environ.pop(key, None) for key in workspace_env_keys}
+old_cwd_for_workspace_resolve = os.getcwd()
+workspace_override_token = workspace_context_mod._ACTIVE_WORKSPACE.set("")
+try:
+    os.environ["HARNESS_ALLOW_REGISTRY_WORKSPACE_FALLBACK"] = "1"
+    watch_registry_mod.list_repos = lambda: [{
+        "path": str(ask_ws_b.resolve()),
+        "alias": "ask-workspace-b",
+        "last_seen": time.time(),
+    }]
+    os.chdir(ask_ws_a)
+    with workspace_scope(ask_ws_b):
+        assembled_ctx, assembled_warns = _assemble_context(files=[ask_target])
+finally:
+    watch_registry_mod.list_repos = old_registry_list_repos
+    os.chdir(old_cwd_for_workspace_resolve)
+    workspace_context_mod._ACTIVE_WORKSPACE.reset(workspace_override_token)
+    for key, value in old_workspace_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+check("_assemble_context đọc đúng workspace explicit",
+      "=== FILE: packages/web/src/app/(portal)/dashboard/page.tsx ===" in assembled_ctx
+      and "DashboardPage" in assembled_ctx,
+      f"warns={assembled_warns} ctx={assembled_ctx[:400]}")
+old_workspace_env = {key: os.environ.pop(key, None) for key in workspace_env_keys}
+old_cwd_for_workspace_resolve = os.getcwd()
+workspace_override_token = workspace_context_mod._ACTIVE_WORKSPACE.set("")
+try:
+    os.environ["HARNESS_ALLOW_REGISTRY_WORKSPACE_FALLBACK"] = "1"
+    watch_registry_mod.list_repos = lambda: [{
+        "path": str(ask_ws_b.resolve()),
+        "alias": "ask-workspace-b",
+        "last_seen": time.time(),
+    }]
+    os.chdir(ask_ws_a)
+    with workspace_scope(ask_ws_b):
+        direct_ctx, direct_warns, direct_loaded = read_workspace_files([ask_target])
+finally:
+    watch_registry_mod.list_repos = old_registry_list_repos
+    os.chdir(old_cwd_for_workspace_resolve)
+    workspace_context_mod._ACTIVE_WORKSPACE.reset(workspace_override_token)
+    for key, value in old_workspace_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+check("read_workspace_files đọc đúng workspace explicit",
+      direct_loaded == 1
+      and "DashboardPage" in direct_ctx,
+      f"loaded={direct_loaded} warns={direct_warns} ctx={direct_ctx[:300]}")
+old_workspace_env = {key: os.environ.pop(key, None) for key in workspace_env_keys}
+old_cwd_for_workspace_resolve = os.getcwd()
+workspace_override_token = workspace_context_mod._ACTIVE_WORKSPACE.set("")
+try:
+    os.environ["HARNESS_ALLOW_REGISTRY_WORKSPACE_FALLBACK"] = "1"
+    watch_registry_mod.list_repos = lambda: [{
+        "path": str(ask_ws_b.resolve()),
+        "alias": "ask-workspace-b",
+        "last_seen": time.time(),
+    }]
+    os.chdir(ask_ws_a)
+    with workspace_scope(ask_ws_b):
+        mcp_resolved_workspace = mcp_server._workspace_for_tool_call({"files": [ask_target]})
+        mcp_context_res = asyncio.run(mcp_server.call_tool("context_auditor", {
+            "question": "dashboard sections",
+            "files": [ask_target],
+        }))
+        mcp_context_json = json.loads(mcp_context_res[0].text)
+finally:
+    watch_registry_mod.list_repos = old_registry_list_repos
+    os.chdir(old_cwd_for_workspace_resolve)
+    workspace_context_mod._ACTIVE_WORKSPACE.reset(workspace_override_token)
+    for key, value in old_workspace_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+check("MCP boundary giữ đúng workspace explicit cho mọi tool có files",
+      mcp_resolved_workspace == str(ask_ws_b.resolve())
+      and mcp_context_json.get("status") == "completed"
+      and mcp_context_json.get("bytes", 0) > 0
+      and mcp_context_json.get("warnings_count") == 0,
+      f"resolved={mcp_resolved_workspace} result={mcp_context_json}")
+for _key, _value in old_watch_registry_constants.items():
+    setattr(watch_registry_mod, _key, _value)
+path_arg_hits = mcp_server._extract_tool_file_args({
+    "file": "a.py",
+    "path": "b.py",
+    "paths": ["c.py"],
+    "file_path": "d.py",
+    "example_file": ".env.example",
+    "env_file": ".env",
+    "spec_path": "openapi.yaml",
+    "test_path": "tests/test_app.py",
+    "target": "codex",
+    "profile": "review",
+})
+check("MCP boundary nhận diện đủ file/path args nhưng không bắt target/profile",
+      path_arg_hits == ["a.py", "b.py", "c.py", "d.py", ".env.example", ".env", "openapi.yaml", "tests/test_app.py"],
+      str(path_arg_hits))
 early_error = asyncio.run(swarm_mod.ask_codebase("no context", files="config.py"))
 check("ask_codebase early error schema ổn định",
       early_error.get("error")
@@ -3225,7 +3409,11 @@ check("suggest_fix thiếu code/files → error", "error" in r2)
 # 8b. MCP boundary validation
 orig_panel_review = mcp_server.st.panel_review
 async def _fake_panel_review(**kwargs):
-    return {"staged": kwargs["staged"]}
+    return {
+        "staged": kwargs["staged"],
+        "fast": kwargs.get("fast"),
+        "agent_timeout": kwargs.get("agent_timeout"),
+    }
 mcp_server.st.panel_review = _fake_panel_review
 try:
     r_false = asyncio.run(mcp_server.call_tool("panel_review", {"staged": "false"}))
@@ -3233,9 +3421,28 @@ try:
     r_blank_bool = asyncio.run(mcp_server.call_tool("panel_review", {"staged": "  "}))
 finally:
     mcp_server.st.panel_review = orig_panel_review
-check("panel_review staged='false' parse đúng", json.loads(r_false[0].text).get("staged") is False)
+panel_false_json = json.loads(r_false[0].text)
+check("panel_review staged='false' parse đúng", panel_false_json.get("staged") is False)
+check("panel_review MCP mặc định fast và cap timeout",
+      panel_false_json.get("fast") is True and panel_false_json.get("agent_timeout") <= 45.0,
+      str(panel_false_json))
 check("panel_review staged invalid → error", "error" in json.loads(r_bad_bool[0].text))
 check("panel_review staged blank → error", "error" in json.loads(r_blank_bool[0].text))
+orig_panel_timeout = mcp_server._mcp_panel_timeout
+async def _sleeping_panel_review(**kwargs):
+    await asyncio.sleep(1.0)
+    return {"unexpected": True}
+mcp_server.st.panel_review = _sleeping_panel_review
+mcp_server._mcp_panel_timeout = lambda: 0.05
+try:
+    r_panel_timeout = asyncio.run(mcp_server.call_tool("panel_review", {"code": "print('x')"}))
+finally:
+    mcp_server.st.panel_review = orig_panel_review
+    mcp_server._mcp_panel_timeout = orig_panel_timeout
+panel_timeout_json = json.loads(r_panel_timeout[0].text)
+check("panel_review MCP hard timeout trả degraded",
+      panel_timeout_json.get("degraded") is True and panel_timeout_json.get("timeout") is True,
+      str(panel_timeout_json))
 
 # 9. Quirks adaptation logic
 from agents import _quirks_for, _MODEL_QUIRKS
@@ -4692,7 +4899,9 @@ check("lesson fsync best-effort không làm mất write",
       fsync_stored is True and fsync_line_count == 1,
       f"stored={fsync_stored} count={fsync_line_count}")
 check("auto_trigger trả prior_lessons dù skip docs-only",
-      "ask_codebase model chain timeout" in auto_lesson_json.get("prior_lessons", ""),
+      auto_lesson_json.get("status") == "skipped"
+      and auto_lesson_json.get("reason") == "docs-only change"
+      and bool(auto_lesson_json.get("prior_lessons")),
       str(auto_lesson_json))
 check("auto_trigger gắn attribution cho batch edit",
       bool(auto_attr_json.get("batch_id"))

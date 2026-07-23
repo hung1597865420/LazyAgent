@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from typing import Optional
 from agents import Agent, AgentRole, AgentResult
 from config import get_llm_client
@@ -25,6 +26,16 @@ from .core import (
 
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 _FAST_CTX_BYTES = 80_000   # context cap cho fast mode
+
+
+def _panel_overall_timeout() -> float:
+    try:
+        configured = float(os.getenv("HARNESS_PANEL_OVERALL_TIMEOUT", "260"))
+    except (TypeError, ValueError):
+        configured = 260.0
+    if configured <= 30:
+        configured = 260.0
+    return min(295.0, max(30.0, configured))
 
 
 def _panel_integrity_timeout(default_timeout: float) -> float:
@@ -175,6 +186,26 @@ async def panel_review(
 ) -> dict:
     """Reviewer + Tester + Security soi code parallel → Synthesizer dedupe/merge."""
     warnings: list[str] = []
+    started_at = time.monotonic()
+    deadline = started_at + _panel_overall_timeout()
+
+    def _remaining_budget() -> float:
+        return max(0.0, deadline - time.monotonic())
+
+    def _deadline_degraded(stage: str, findings: list[dict] | None = None, panel_meta: list[dict] | None = None) -> dict:
+        deduped = _dedup_findings_local(findings or [])
+        has_blocker = any(str(f.get("severity", "")).lower() in ("critical", "high") for f in deduped)
+        warnings.append(f"panel_review overall deadline reached before {stage}; returning degraded local result")
+        return {
+            "verdict": "fix_first" if has_blocker else "approve",
+            "summary": f"{len(deduped)} findings (degraded — panel overall deadline reached before {stage}).",
+            "findings": deduped,
+            "panel": panel_meta or [],
+            "warnings": warnings,
+            "degraded": True,
+            "timeout": True,
+        }
+
     if agent_timeout <= 0:
         return {"error": "agent_timeout phải là số dương lớn hơn 0", "warnings": warnings}
     ctx_cap = _FAST_CTX_BYTES if fast else MAX_TOTAL_BYTES
@@ -266,6 +297,8 @@ async def panel_review(
     if not fast and ctx_bytes > _PREPASS_THRESHOLD:
         try:
             from config import ROLE_TIMEOUTS
+            if _remaining_budget() < 10:
+                return _deadline_degraded("prepass")
             prepass_system_prompt = (
                 "Bạn là Code Review Pre-processor. Tóm tắt diff/code lớn cho review panel.\n"
                 "GIỮ LẠI:\n"
@@ -279,7 +312,7 @@ async def panel_review(
             prepass_prompt = (
                 f"Target: ~100KB (hiện {ctx_bytes//1024}KB). Trả về text tóm tắt thuần.\n"
             )
-            prepass_t = min(ROLE_TIMEOUTS.get(AgentRole.SYNTHESIZER.value, 180.0), agent_timeout)
+            prepass_t = min(ROLE_TIMEOUTS.get(AgentRole.SYNTHESIZER.value, 180.0), agent_timeout, max(1.0, _remaining_budget() - 5))
             prepass_result = await asyncio.wait_for(
                 Agent(AgentRole.SYNTHESIZER, client, system_prompt=prepass_system_prompt).run_async(
                     prepass_prompt, ctx, timeout=prepass_t, timeout_retries=0, use_spares=False
@@ -305,6 +338,7 @@ async def panel_review(
         role_t = ROLE_TIMEOUTS.get(role.value, agent_timeout)
         if agent_timeout != _DEFAULT_TIMEOUT:
             role_t = min(role_t, agent_timeout)
+        role_t = min(role_t, max(1.0, _remaining_budget() - 8))
         try:
             return await asyncio.wait_for(
                 Agent(role, client).run_async(
@@ -324,7 +358,21 @@ async def panel_review(
                 status="error",
                 error=f"Timeout sau {role_t:.0f}s",
             )
+        except Exception as exc:
+            warnings.append(f"{role.value}: error {type(exc).__name__}: {exc} — bỏ qua")
+            return AgentResult(
+                agent_id=f"error-{role.value}",
+                agent_role=role,
+                model_used="error",
+                task=task[:100],
+                result="",
+                duration_ms=0,
+                status="error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
+    if _remaining_budget() < 10:
+        return _deadline_degraded("parallel reviewers")
     results = await asyncio.gather(*[_run_with_timeout(role) for role in panel])
 
     raw_findings: list[dict] = []
@@ -368,11 +416,14 @@ async def panel_review(
     else:
         try:
             from config import ROLE_TIMEOUTS
+            if _remaining_budget() < 10:
+                warnings.append("Integrity skipped: panel overall deadline nearly exhausted")
+                raise asyncio.TimeoutError("panel overall deadline nearly exhausted before integrity")
             _DEFAULT_TIMEOUT = 90.0
             integrity_t = ROLE_TIMEOUTS.get(AgentRole.INTEGRITY.value, agent_timeout)
             if agent_timeout != _DEFAULT_TIMEOUT:
                 integrity_t = min(integrity_t, agent_timeout)
-            integrity_t = _panel_integrity_timeout(integrity_t)
+            integrity_t = min(_panel_integrity_timeout(integrity_t), max(1.0, _remaining_budget() - 5))
             integrity_input = json.dumps(
                 {"code_context": ctx[:8000], "panel_findings": raw_findings},
                 ensure_ascii=False,

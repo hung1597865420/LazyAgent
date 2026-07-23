@@ -377,6 +377,18 @@ def _record_project_seen(root: Path) -> None:
         pass
 
 
+def _register_project(root: Path) -> None:
+    """Best-effort repo registration so MCP calls can recover the real workspace."""
+    if os.environ.get("SMOKE_TEST_SUBRUN") == "1":
+        return
+    try:
+        from tools.watch_registry import register_repo
+
+        register_repo(root)
+    except Exception:
+        pass
+
+
 def _prior_lessons_context(root: Path, prompt: str) -> str:
     if not prompt:
         return ""
@@ -420,6 +432,7 @@ def main() -> int:
     payload = _payload()
     root = _project_dir(payload)
     prompt = _prompt_text(payload)
+    _register_project(root)
     if prompt:
         with _workspace_env(root):
             parts = [_runtime_profile_context(root)]
