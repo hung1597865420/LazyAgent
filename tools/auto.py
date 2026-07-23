@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+from contextvars import ContextVar
 import hashlib
 import inspect
 import json
@@ -42,14 +43,23 @@ DEFAULT_TOTAL_TIMEOUT_SECONDS = 240.0
 MAX_TOTAL_TIMEOUT_SECONDS = 270.0
 DEFAULT_MAX_TOOLS = 10
 DEFAULT_SAFE_TOOLS = 6
+_AUTO_WORKSPACE_OVERRIDE: ContextVar[str | None] = ContextVar("AUTO_WORKSPACE_OVERRIDE", default=None)
+_AUTO_LLM_OVERRIDE: ContextVar[bool | None] = ContextVar("AUTO_LLM_OVERRIDE", default=None)
+
+
+def _auto_workspace() -> str:
+    return _AUTO_WORKSPACE_OVERRIDE.get() or _get_active_workspace()
 
 
 def _auto_enabled() -> bool:
-    return bool_flag("HARNESS_AUTO_PILOT", True, root=_get_active_workspace())
+    return bool_flag("HARNESS_AUTO_PILOT", True, root=_auto_workspace())
 
 
 def _auto_llm_enabled() -> bool:
-    return bool_flag("HARNESS_AUTO_LLM", False, root=_get_active_workspace())
+    override = _AUTO_LLM_OVERRIDE.get()
+    if override is not None:
+        return bool(override)
+    return bool_flag("HARNESS_AUTO_LLM", False, root=_auto_workspace())
 
 
 def _auto_tool_timeout_seconds() -> float:
@@ -189,7 +199,7 @@ def _norm_files(files: list[str] | tuple[str, ...] | set[str] | str | None) -> l
         items = files
     else:
         items = []
-    root_path = Path(_get_active_workspace()).resolve()
+    root_path = Path(_auto_workspace()).resolve()
     for item in items:
         if not isinstance(item, str):
             continue
@@ -244,7 +254,7 @@ def _safe_panel_files(files: list[str]) -> list[str]:
 
 
 def _safe_secret_scan_files(files: list[str] | None) -> list[str]:
-    root = _get_active_workspace()
+    root = _auto_workspace()
     out: list[str] = []
     seen: set[str] = set()
     for item in files or []:
@@ -339,7 +349,7 @@ def _extract_urls(text: str) -> list[str]:
 def _discover_api_endpoints(files: list[str]) -> list[dict[str, str]]:
     try:
         from .core import _get_active_workspace
-        root = os.path.realpath(_get_active_workspace())
+        root = os.path.realpath(_auto_workspace())
     except Exception:
         return []
     endpoints: list[dict[str, str]] = []
@@ -628,7 +638,7 @@ async def _run_subprocess_job(name: str, module: str, function: str, kwargs: dic
     )
     env = os.environ.copy()
     repo_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
-    active_workspace = os.path.realpath(_get_active_workspace())
+    active_workspace = os.path.realpath(_auto_workspace())
     env["PYTHONPATH"] = repo_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["PYTHONIOENCODING"] = "utf-8"
     env["WORKSPACE_ROOT"] = active_workspace
@@ -703,6 +713,8 @@ async def auto_trigger(
     stage: str = "post_edit",
     mode: str | None = None,
     exclude_tools: list[str] | tuple[str, ...] | set[str] | str | None = None,
+    root: str | os.PathLike[str] | None = None,
+    auto_llm: bool | None = None,
 ) -> dict:
     """Run contextual checks automatically after edits.
 
@@ -710,6 +722,25 @@ async def auto_trigger(
     - max: run aggressive default checks for code changes.
     - safe: skip panel/devops unless clear risk keywords are present.
     """
+    workspace_token = _AUTO_WORKSPACE_OVERRIDE.set(str(Path(root).expanduser().resolve())) if root is not None else None
+    llm_token = _AUTO_LLM_OVERRIDE.set(auto_llm) if auto_llm is not None else None
+    try:
+        return await _auto_trigger_inner(changed_files, diff, task, stage, mode, exclude_tools)
+    finally:
+        if llm_token is not None:
+            _AUTO_LLM_OVERRIDE.reset(llm_token)
+        if workspace_token is not None:
+            _AUTO_WORKSPACE_OVERRIDE.reset(workspace_token)
+
+
+async def _auto_trigger_inner(
+    changed_files: list[str] | tuple[str, ...] | set[str] | str | None = None,
+    diff: str | None = None,
+    task: str | None = None,
+    stage: str = "post_edit",
+    mode: str | None = None,
+    exclude_tools: list[str] | tuple[str, ...] | set[str] | str | None = None,
+) -> dict:
     if not _auto_enabled():
         return {"status": "skipped", "reason": "HARNESS_AUTO_PILOT=0"}
 
@@ -718,6 +749,7 @@ async def auto_trigger(
     raw_files = _norm_files(changed_files)
     files = [f for f in raw_files if not _is_runtime_artifact(f)]
     ignored_runtime_files = [f for f in raw_files if _is_runtime_artifact(f)]
+    coordination_gate: dict[str, Any] = {"status": "skipped"}
     if raw_files and not files:
         return {
             "status": "skipped",
@@ -730,13 +762,27 @@ async def auto_trigger(
         "HARNESS_AUTO_MODE",
         "safe",
         {"safe", "max"},
-        root=_get_active_workspace(),
+        root=_auto_workspace(),
     )).strip().lower()
     if mode not in {"safe", "max"}:
         return {"error": "invalid_argument", "detail": "mode must be one of: safe, max"}
     stage = str(stage or "post_edit").strip().lower()
     if stage not in {"post_edit", "final", "pre_complete"}:
         return {"error": "invalid_argument", "detail": "stage must be one of: post_edit, final, pre_complete"}
+    if files:
+        try:
+            from .coordination import conflict_check
+            coordination_gate = conflict_check(files=files, task=task, stage=f"auto_trigger:{stage}")
+            if coordination_gate.get("status") == "blocked_conflict":
+                return {
+                    "status": "blocked_conflict",
+                    "reason": "cross-session conflict gate blocked auto_trigger",
+                    "files": files,
+                    "ignored_runtime_files": ignored_runtime_files,
+                    "coordination": coordination_gate,
+                }
+        except Exception as e:
+            coordination_gate = {"status": "degraded", "error": f"{type(e).__name__}: {e}"}
     batch_seed = json.dumps({"stage": stage, "files": files, "diff_hash": diff_hash, "task": task or ""}, ensure_ascii=False, sort_keys=True)
     batch_id = hashlib.sha256(batch_seed.encode("utf-8", errors="replace")).hexdigest()[:12]
     active_goal = get_active_goal()
@@ -765,6 +811,7 @@ async def auto_trigger(
             "integration_routes": integration_routes,
             "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
+            "coordination": coordination_gate,
         }
 
     code_files = [f for f in files if _ext(f) in CODE_EXTS]
@@ -799,6 +846,7 @@ async def auto_trigger(
             "integration_routes": integration_routes,
             "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
+            "coordination": coordination_gate,
         }
     has_ui = bool(ui_files) or _has_any(text, {
         "ui", "ux", "frontend", "front-end", "design", "redesign", "layout", "screen",
@@ -924,6 +972,7 @@ async def auto_trigger(
             "integration_routes": integration_routes,
             "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
+            "coordination": coordination_gate,
         }
 
     warnings = []
@@ -945,6 +994,7 @@ async def auto_trigger(
             "integration_routes": integration_routes,
             "workflow_routes": workflow_routes,
             "orchestrator": orchestrator,
+            "coordination": coordination_gate,
             "warnings": warnings,
         }
 
@@ -958,9 +1008,16 @@ async def auto_trigger(
 
     subprocess_sem = asyncio.Semaphore(_auto_subprocess_concurrency())
 
+    async def _run_job(name: str, module: str, function: str, kwargs: dict[str, Any]) -> dict:
+        if name == "goal_alignment":
+            from .goal import check_goal
+
+            return await _run_named(name, lambda: check_goal(**kwargs))
+        return await _run_subprocess_job(name, module, function, kwargs)
+
     async def _run_limited_subprocess_job(name: str, module: str, function: str, kwargs: dict[str, Any]) -> dict:
         async with subprocess_sem:
-            return await _run_subprocess_job(name, module, function, kwargs)
+            return await _run_job(name, module, function, kwargs)
 
     runner_tasks = {
         asyncio.create_task(_run_limited_subprocess_job(name, module, function, kwargs)): name
@@ -996,6 +1053,8 @@ async def auto_trigger(
         warnings.append("auto_trigger hit total timeout budget before all selected checks completed")
     if prior_lessons:
         warnings.append("prior lessons were auto-injected into matching checks; inspect prior_lessons for trace")
+    if coordination_gate.get("status") == "warning":
+        warnings.append("coordination conflict_check returned warnings; inspect coordination field")
     lessons_recorded = _record_auto_trigger_lesson(
         batch_id=batch_id,
         diff_hash=diff_hash,
@@ -1078,6 +1137,7 @@ async def auto_trigger(
         "diff_hash": diff_hash,
         "files": files,
         "ignored_runtime_files": ignored_runtime_files,
+        "coordination": _compact_auto_payload(coordination_gate, max_string=700, max_list=8),
         "goal_active": bool(active_goal),
         "goal": goal_text or None,
         "selected_tools": selected,

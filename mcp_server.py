@@ -428,6 +428,86 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
+            name="session_heartbeat",
+            description="Static cross-session coordinator heartbeat. Registers this agent/session/workspace without LLM.",
+            inputSchema={"type": "object", "properties": {
+                "session_id": {"type": "string"},
+                "agent_kind": {"type": "string"},
+                "task": {"type": "string"},
+                "status": {"type": "string"},
+            }},
+        ),
+        types.Tool(
+            name="coordination_status",
+            description="Static cross-session status: active sessions, file leases, conflicts, and recent coordination events.",
+            inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}}},
+        ),
+        types.Tool(
+            name="active_sessions",
+            description="List active/stale harness sessions for this workspace from the coordinator DB.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="claim_files",
+            description="Claim file/symbol lease before editing. Static SQLite guard for multi-session/multi-agent coordination.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "session_id": {"type": "string"},
+                "agent_kind": {"type": "string"},
+                "task": {"type": "string"},
+                "symbols": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}]},
+                "lease_mode": {"type": "string"},
+                "ttl_seconds": {"type": "number"},
+                "allow_shared": {"type": "boolean"},
+            }},
+        ),
+        types.Tool(
+            name="release_files",
+            description="Release file leases for current/session after task or when switching scope.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "session_id": {"type": "string"},
+            }},
+        ),
+        types.Tool(
+            name="conflict_check",
+            description="Check unresolved cross-session file/hash/lease conflicts before auto_trigger, panel, final, or commit.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "session_id": {"type": "string"},
+                "task": {"type": "string"},
+                "stage": {"type": "string"},
+                "require_lease": {"type": "boolean", "description": "Force missing-lease warnings. Defaults to strict for final/commit/release stages and quiet for auto_trigger/watch."},
+            }},
+        ),
+        types.Tool(
+            name="takeover_stale_claim",
+            description="Take over stale file leases only. Active owners remain blocked unless user decides.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "session_id": {"type": "string"},
+            }},
+        ),
+        types.Tool(
+            name="coordination_policy",
+            description="Return static profile-aware coordination policy: warning/block/exclusive/advisor rules.",
+            inputSchema={"type": "object", "properties": {"profile": {"type": "string"}}},
+        ),
+        types.Tool(
+            name="coordination_events",
+            description="Read recent static cross-session coordination events/conflicts.",
+            inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}}},
+        ),
+        types.Tool(
+            name="coordination_advisor",
+            description="Optional profile-gated conflict advisor. Static-first; does not call LLM unless a future explicit policy allows it.",
+            inputSchema={"type": "object", "properties": {
+                "files": _FILES_SCHEMA,
+                "session_id": {"type": "string"},
+                "task": {"type": "string"},
+            }},
+        ),
+        types.Tool(
             name="integration_router",
             description=(
                 "Static router for distilled Hallmark UI flow, UI Skills routing, and Spec Kit spec-first flow. "
@@ -1627,6 +1707,13 @@ def _parse_bool_arg(args: dict, name: str, default: bool = False) -> tuple[bool,
     return default, f"Argument '{name}' must be boolean, got {value!r}"
 
 
+def _parse_optional_bool_arg(args: dict, name: str) -> tuple[bool | None, str | None]:
+    if name not in args or args.get(name) is None:
+        return None, None
+    parsed, error = _parse_bool_arg(args, name, default=False)
+    return (None, error) if error else (parsed, None)
+
+
 def _nonempty_str_list(value) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item.strip() for item in value)
 
@@ -1984,6 +2071,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     tool_context = contextvars.copy_context()
     tool_name = _normalize_tool_name(name)
     args_for_guard = arguments if isinstance(arguments, dict) else {}
+    try:
+        st.session_heartbeat(task=f"mcp:{tool_name}")
+    except Exception as exc:
+        _log.debug("coordination heartbeat skipped for %s: %s", tool_name, exc)
     allow_background_after_cancel = _allow_background_after_cancel(tool_name, args_for_guard)
     single_flight_key = None if allow_background_after_cancel else _single_flight_key(tool_name, args_for_guard)
     duplicate_inflight_res: list[types.TextContent] | None = None
@@ -2152,6 +2243,84 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
         if name == "tool_lifecycle":
             return _json_response(st.tool_lifecycle())
+
+        if name == "session_heartbeat":
+            return _json_response(st.session_heartbeat(
+                session_id=args.get("session_id"),
+                agent_kind=args.get("agent_kind"),
+                task=args.get("task"),
+                status=args.get("status", "active"),
+            ))
+
+        if name == "coordination_status":
+            try:
+                limit = int(args.get("limit", 50) or 50)
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "limit must be an integer"})
+            return _json_response(st.coordination_status(limit=limit))
+
+        if name == "active_sessions":
+            return _json_response(st.active_sessions())
+
+        if name == "claim_files":
+            allow_shared, shared_error = _parse_bool_arg(args, "allow_shared")
+            if shared_error:
+                return _json_response({"error": "invalid_argument", "detail": shared_error})
+            try:
+                ttl_seconds = float(args.get("ttl_seconds", 900) or 900)
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "ttl_seconds must be a number"})
+            return _json_response(st.claim_files(
+                files=args.get("files"),
+                session_id=args.get("session_id"),
+                agent_kind=args.get("agent_kind"),
+                task=args.get("task"),
+                symbols=args.get("symbols"),
+                lease_mode=args.get("lease_mode", "auto"),
+                ttl_seconds=ttl_seconds,
+                allow_shared=allow_shared,
+            ))
+
+        if name == "release_files":
+            return _json_response(st.release_files(
+                files=args.get("files"),
+                session_id=args.get("session_id"),
+            ))
+
+        if name == "conflict_check":
+            require_lease, lease_error = _parse_optional_bool_arg(args, "require_lease")
+            if lease_error:
+                return _json_response({"error": "invalid_argument", "detail": lease_error})
+            return _json_response(st.conflict_check(
+                files=args.get("files"),
+                session_id=args.get("session_id"),
+                task=args.get("task"),
+                stage=args.get("stage", "manual"),
+                require_lease=require_lease,
+            ))
+
+        if name == "takeover_stale_claim":
+            return _json_response(st.takeover_stale_claim(
+                files=args.get("files"),
+                session_id=args.get("session_id"),
+            ))
+
+        if name == "coordination_policy":
+            return _json_response(st.coordination_policy(profile=args.get("profile")))
+
+        if name == "coordination_events":
+            try:
+                limit = int(args.get("limit", 100) or 100)
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid_argument", "detail": "limit must be an integer"})
+            return _json_response(st.coordination_events(limit=limit))
+
+        if name == "coordination_advisor":
+            return _json_response(st.coordination_advisor(
+                files=args.get("files"),
+                session_id=args.get("session_id"),
+                task=args.get("task"),
+            ))
 
         if name == "integration_router":
             return _json_response(st.integration_router(
@@ -2493,6 +2662,16 @@ async def _execute_tool(name: str, arguments: dict) -> list[types.TextContent]:
             staged, staged_error = _parse_bool_arg(args, "staged")
             if staged_error:
                 return _json_response({"error": "invalid_argument", "detail": staged_error})
+            if args.get("files"):
+                coordination_gate = st.conflict_check(files=args.get("files"), task=args.get("focus"), stage="panel_review")
+                if coordination_gate.get("status") == "blocked_conflict":
+                    return _json_response({
+                        "status": "blocked_conflict",
+                        "verdict": "blocked_conflict",
+                        "summary": "panel_review blocked by unresolved cross-session conflict",
+                        "findings": [],
+                        "coordination": coordination_gate,
+                    })
             return _json_response(await st.panel_review(
                 files=args.get("files"), diff=args.get("diff"),
                 code=args.get("code"), focus=args.get("focus"),

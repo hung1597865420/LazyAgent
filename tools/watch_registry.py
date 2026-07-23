@@ -86,6 +86,12 @@ def _claim_lock(lock_file: Path, timeout: float = 5.0) -> int | None:
             _LOCK_TOKENS[fd] = token
             return fd
         except OSError:
+            if _lock_reclaimable(lock_file):
+                try:
+                    lock_file.unlink()
+                    continue
+                except OSError:
+                    pass
             time.sleep(0.05)
     return None
 
@@ -234,10 +240,20 @@ def claim_global_pid(token: str) -> bool:
             if global_pid_active(data):
                 return False
         _write_global_pid_payload(token)
-        return True
+        written = read_global_pid()
+        return bool(
+            written
+            and int(written.get("pid", 0)) == os.getpid()
+            and written.get("token") == token
+        )
     except (TypeError, ValueError):
         _write_global_pid_payload(token)
-        return True
+        written = read_global_pid()
+        return bool(
+            written
+            and int(written.get("pid", 0)) == os.getpid()
+            and written.get("token") == token
+        )
     finally:
         _release_lock(GLOBAL_PID_LOCK_FILE, fd)
 

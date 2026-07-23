@@ -68,7 +68,7 @@ Fill `.env` with your OpenAI-compatible 9Router endpoint/key before using LLM-ba
 
 ## 1. Tổng Quan Kiến Trúc & Phân Vai Agent
 
-LazyAgent/Agent Harness được xây dựng để làm "hội đồng cố vấn" hỗ trợ cho AI coder chính (**Claude Code**, **Gemini** trên Antigravity IDE). Runtime hiện đăng ký **95 MCP tools**: lifecycle/preflight routing, core LLM tools, goal autopilot, lesson memory, CRG-lite graph review, ECC-inspired ops doctors, Hallmark/Spec Kit/UI/workflow bridges, OfficeCLI bridge, scope-creep guard, một compatibility shim cho quota cũ, và static/static-first analyzers; Auto-Pilot có thể tự gọi scanner/reviewer phù hợp sau edit.
+LazyAgent/Agent Harness được xây dựng để làm "hội đồng cố vấn" hỗ trợ cho AI coder chính (**Claude Code**, **Gemini** trên Antigravity IDE). Runtime hiện đăng ký **105 MCP tools**: lifecycle/preflight routing, cross-session coordination, core LLM tools, goal autopilot, lesson memory, CRG-lite graph review, ECC-inspired ops doctors, Hallmark/Spec Kit/UI/workflow bridges, OfficeCLI bridge, scope-creep guard, một compatibility shim cho quota cũ, và static/static-first analyzers; Auto-Pilot có thể tự gọi scanner/reviewer phù hợp sau edit.
 
 ```
         Claude Code / Gemini (AI coder chính)
@@ -152,7 +152,7 @@ Mặc định harness đọc `.env` cạnh `mcp_server.py`; nếu cần env file
 
 ```env
 # Chat Completions / model inference endpoint
-ROUTER_BASE_URL=http://localhost:0931289317
+ROUTER_BASE_URL=http://localhost:20128/v1
 ROUTER_API_KEY=dummy
 # Một số 9Router pool chặn User-Agent mặc định của OpenAI Python SDK.
 ROUTER_USER_AGENT=python-httpx/0.28.1
@@ -291,9 +291,9 @@ harness-full-setup.bat --no-watch --no-smoke
 harness-full-setup.bat --start-dashboard
 ```
 
-`harness-full-setup.bat` tự cài Python deps, Playwright, sync `merge_settings.py` cho Claude/Gemini/Codex, đăng ký Claude MCP nếu có CLI `claude`, install git pre-commit hook nếu repo có `.git`, copy `llmwiki/` sang `~/.claude/llmwiki`, và cài Windows Scheduled Task `AgentHarnessAutoWatch` để gọi `auto_watch.py` lúc user đăng nhập. Mặc định script ghi profile global `off` vào `%USERPROFILE%\.agent-harness\harness.features.json`: cài đủ năng lực nhưng không bật LLM, FinOps writes, lesson capture, hooks runtime, Auto-Pilot hay Auto-Watch. Scheduled Task vẫn an toàn vì `auto_watch.py` đọc profile global `off` rồi thoát ngay; muốn bật full thật thì chạy rõ `harness-full-setup.bat --profile max`; khi đó batch bật toàn bộ feature flag trong file global và start Auto-Watch. Nếu thiếu `.env`, script copy `.env.example` thành `.env`, skip smoke test và nhắc user điền 9Router credentials.
+`harness-full-setup.bat` tự cài Python deps, Playwright, sync `merge_settings.py` cho Claude/Gemini/Codex, đăng ký Claude MCP nếu có CLI `claude`, install git pre-commit hook nếu repo có `.git`, copy `llmwiki/` sang `~/.claude/llmwiki`, và cài Windows Scheduled Task `AgentHarnessAutoWatch` để gọi `auto_watch.py` lúc user đăng nhập. Mặc định script ghi profile global `off` vào `%USERPROFILE%\.agent-harness\harness.features.json`: cài đủ năng lực nhưng không bật LLM, FinOps writes, lesson capture, hooks runtime, Auto-Pilot, Auto-Watch, hay coordinator DB writes. Scheduled Task vẫn an toàn vì `auto_watch.py` đọc profile global `off` rồi thoát ngay; muốn bật full thật thì chạy rõ `harness-full-setup.bat --profile max`; khi đó batch bật toàn bộ feature flag trong file global và start Auto-Watch. Nếu thiếu `.env`, script copy `.env.example` thành `.env`, skip smoke test và nhắc user điền 9Router credentials.
 
-Double-click `harness-toggle.bat` sẽ mở menu tương tác và không tự đóng ngay. Batch toggle được từng feature riêng: `llm`, `finops`, `hooks`, `lessons`, `auto-pilot`, `auto-pilot-llm`, `auto-watch`, `auto-watch-llm`, `static-llm`, `wiki`, `code-index`, `dashboard`; mọi thay đổi ghi vào profile global `%USERPROFILE%\.agent-harness\harness.features.json`, nên áp dụng cho mọi repo đang dùng LazyAgent. Các flag đã được code đọc trực tiếp gồm LLM hard kill-switch, FinOps logging, hook bridge, lesson memory, Auto-Pilot, Auto-Watch, và static LLM enrichment. `hooks=off` vẫn cho phép hook prompt inject một snapshot profile read-only ở client hỗ trợ hooks; Gemini/Antigravity không có hook prompt tương đương trong config hiện tại nên `GEMINI.md` bắt buộc refresh profile bằng cách đọc file global hoặc `harness-toggle.bat status/json` ở đầu mỗi prompt/session. `wiki`, `code-index`, `dashboard` là on-demand/manual preference; batch có action riêng cho dashboard/watch/hook install. Để tránh agent tự đổi runtime profile, mọi lệnh CLI có ghi `harness.features.json` phải set `HARNESS_ALLOW_PROFILE_WRITE=1`; menu tương tác được xem là user-approved.
+Double-click `harness-toggle.bat` sẽ mở menu tương tác và không tự đóng ngay. Batch toggle được từng feature riêng: `llm`, `finops`, `hooks`, `lessons`, `auto-pilot`, `auto-pilot-llm`, `auto-watch`, `auto-watch-llm`, `static-llm`, `wiki`, `code-index`, `coordination`, `dashboard`; mọi thay đổi ghi vào profile global `%USERPROFILE%\.agent-harness\harness.features.json`, nên áp dụng cho mọi repo đang dùng LazyAgent. Các flag đã được code đọc trực tiếp gồm LLM hard kill-switch, FinOps logging, hook bridge, lesson memory, Auto-Pilot, Auto-Watch, static LLM enrichment, và cross-session coordinator. `hooks=off` vẫn cho phép hook prompt inject một snapshot profile read-only ở client hỗ trợ hooks; Gemini/Antigravity không có hook prompt tương đương trong config hiện tại nên `GEMINI.md` bắt buộc refresh profile bằng cách đọc file global hoặc `harness-toggle.bat status/json` ở đầu mỗi prompt/session. `wiki`, `code-index`, `dashboard` là on-demand/manual preference; `coordination` là static safety guard không gọi LLM nhưng vẫn có thể ghi SQLite heartbeat/lease khi bật. Batch có action riêng cho dashboard/watch/hook install. Để tránh agent tự đổi runtime profile, mọi lệnh CLI có ghi `harness.features.json` phải set `HARNESS_ALLOW_PROFILE_WRITE=1`; menu tương tác được xem là user-approved.
 
 Maintenance rule: khi thêm/xóa runtime feature hoặc đổi ý nghĩa profile, update cả `harness-toggle.bat`, `harness-full-setup.bat`, `merge_settings.py` profile policy và README trong cùng batch.
 
@@ -448,11 +448,12 @@ Nếu dùng `uv`, `conda`, hoặc venv riêng, thay `python` trong lệnh `claud
 | Hook nhắc review | `python merge_settings.py` | Sửa code xong Claude được nhắc gọi `panel_review` |
 | Goal Autopilot | `python merge_settings.py` + MCP connected | Prompt một lần; `goal_autopilot(init)` chia parts, `auto_trigger(mode=safe)` check static-first từng part, `goal_supervisor` trả next action cứng |
 | Direct goal runner | `python goal_runner.py "<prompt>"` hoặc MCP `goal_runner` | Harness nhận prompt trực tiếp, tự init goal, gọi agent CLI, check/supervise/final |
-| Runtime feature file | `%USERPROFILE%\.agent-harness\harness.features.json`; `HARNESS_FEATURES_FILE` chỉ override khi có `HARNESS_ALLOW_FEATURE_FILE_OVERRIDE=1` | Bật/tắt nhanh `auto_pilot`, `auto_watch`, `static_llm` cho mọi repo mà không đụng secret/env |
+| Runtime feature file | `%USERPROFILE%\.agent-harness\harness.features.json`; `HARNESS_FEATURES_FILE` chỉ override khi có `HARNESS_ALLOW_FEATURE_FILE_OVERRIDE=1` | Bật/tắt nhanh `auto_pilot`, `auto_watch`, `static_llm`, `coordination` cho mọi repo mà không đụng secret/env |
 | Install manifest doctor | `harness.install.json` + MCP `install_manifest` | Dry-run setup profiles/targets, biết target nào cần file gì trước khi cài hoặc debug máy user khác |
 | Auto-Pilot | Global `harness.features.json`: `auto_pilot.enabled=true`, `mode=safe` | Gọi `auto_trigger(changed_files=[...], stage="post_edit")`; muốn auto gọi 9Router phải bật thêm `auto_pilot.llm=true` |
 | Production readiness gate | MCP connected; dùng `mode=max` trước deploy thật | Gọi `prod_readiness_gate(changed_files=[...], task="release/prod check", mode="max")`; chỉ deploy/claim prod-ready khi verdict cho phép |
 | Auto-Watch daemon | Mặc định tắt để chống phát sinh 9Router ẩn; bật bằng global `harness.features.json`: `auto_watch.enabled=true`. Khi bật, một watcher global đọc `%USERPROFILE%\.agent-harness\watch.repos.json`, mặc định `mode=safe` và `llm=false` | Xem `.harness_auto_watch.log` trong repo và `%USERPROFILE%\.agent-harness\auto_watch.global.pid`; watcher dùng lock + heartbeat để tránh PID stale/spawn trùng. Snapshot bỏ qua mọi runtime dir/file `.harness/`, `.harness_*`, `.claude/audit`, `REVIEW_REPORT.md`, `llmwiki/raw/.bootstrapped`; `auto_trigger` cũng lọc lại lần hai để không tự review log/cache/smoke/test artifact rồi đốt token. |
+| Cross-session coordinator | Global `harness.features.json`: `manual_features.coordination.enabled=true` từ `light` trở lên | `coordination_status`, `active_sessions`, `claim_files`, `conflict_check`; DB mặc định ở `%USERPROFILE%\.agent-harness\coordination.db`, không gọi 9Router |
 | Local/global llmwiki | Local wiki tự bootstrap `llmwiki/raw` + `wiki/*` lần đầu; copy seed vào `~/.claude/llmwiki` nếu muốn share global knowledge | `wiki_query("jwt")`, `wiki_lint` |
 | Lesson Memory local/global | Tự bật qua MCP hooks + `auto_trigger` + `goal_runner`; local ghi trong project, global ghi vào `~/.claude` khi lesson reusable qua curator | Xem `.harness_lessons.jsonl`, `~/.claude/.harness_global_lessons.jsonl`, hoặc gọi `run_ledger` |
 | Code index polyglot | `tree-sitter-languages` + `index_codebase` | `semantic_search("panel_review")` |
@@ -463,11 +464,12 @@ Nếu dùng `uv`, `conda`, hoặc venv riêng, thay `python` trong lệnh `claud
 | FinOps | SQLite file `.harness_finops.db` tự tạo | `finops_stats`; thống kê token/cost local, không chặn request. Quota thật xem trong 9Router dashboard/API pool. |
 | Web dashboard tùy chọn | `python server.py` | Mở `http://localhost:8000` |
 
-### 2.6. Danh mục đủ 95 MCP tools và cần chuẩn bị gì
+### 2.6. Danh mục đủ 105 MCP tools và cần chuẩn bị gì
 
 | Nhóm | Tools | Phụ thuộc chính | Khi dùng |
 |---|---|---|---|
 | Orchestration | `goal_autopilot`, `goal_supervisor`, `goal_runner`, `auto_trigger`, `prod_readiness_gate`, `release_orchestrator`, `run_single_agent`, `list_agents` | MCP connected, `.env` nếu gọi agent LLM, optional agent CLI | Prompt-only goal flow, direct prompt runner, hard next-action loop, Auto-Pilot, production/release gate, gọi thẳng agent, xem model mapping |
+| Cross-session coordination | `session_heartbeat`, `active_sessions`, `claim_files`, `release_files`, `conflict_check`, `takeover_stale_claim`, `coordination_status`, `coordination_policy`, `coordination_events`, `coordination_advisor` | SQLite stdlib; global feature `coordination=true` | Nhiều Claude/Gemini/Codex/opencode session cùng làm một repo: heartbeat, file lease, snapshot hash, conflict gate trước final/review/commit |
 | Harness ops | `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check`, `integration_router`, `workflow_router`, `bug_repro_guard`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `scope_creep_detector`, `office_bridge` | Git, optional agent CLI, optional `specify` CLI, optional `officecli` | Self-check, dry-run install manifest, cross-agent parity, MCP config inventory, context/token overhead audit, ask_codebase preflight, runner resume/status, audit ledger, profiles, adapters, benchmark dry-run, isolated patch check, Hallmark preflight, BA discovery/UI/workflow routing, debug repro guard, Spec Kit status/init/scaffold, scope drift, Office doc inspect/validate |
 | Deep reasoning/review | `consult`, `alt_implementation`, `panel_review`, `suggest_fix`, `quick_task`, `ask_codebase`, `swarm_debug` | 9Router models, `SPARE_MODELS`, workspace files | Design, alternative implementation, review cuối, debug bí, việc vặt, hỏi codebase |
 | Security fix loop | `security_autofix`, `auto_tester`, `run_in_sandbox` | Git worktree, pytest, 9Router debugger/tester | Auto-fix Critical/High security finding, sinh test, chạy reproducer cô lập |
@@ -510,7 +512,7 @@ python test_goal.py
 python smoke_test.py
 ```
 
-Kết quả: tất cả pass. `smoke_test.py` xác nhận MCP registry có 90 tools, `goal_autopilot status`, `goal_supervisor`, `goal_runner` dry-run, ops tools, distilled integration/workflow/UI bridges, OfficeCLI/scope guard bridges, quota compatibility shim, 5 gap tools mới, và các nhánh `prod_readiness_gate`:
+Kết quả: tất cả pass. `smoke_test.py` xác nhận MCP registry có 105 tools, `goal_autopilot status`, `goal_supervisor`, `goal_runner` dry-run, cross-session coordinator, ops tools, distilled integration/workflow/UI bridges, OfficeCLI/scope guard bridges, quota compatibility shim, 5 gap tools mới, và các nhánh `prod_readiness_gate`:
 
 - docs-only safe path trả verdict hợp lệ, không cần 9Router.
 - invalid `mode` trả error.
@@ -553,6 +555,7 @@ Các capability chính hiện có:
 
 - **Prompt-only goal loop:** `goal_autopilot(init)` tạo goal, chia parts và lưu `.harness_goal_state.json`.
 - **Direct prompt runner:** `goal_runner` / `python goal_runner.py "<prompt>"` nhận prompt trực tiếp, tự init goal, gọi agent CLI, chạy `auto_trigger`, hỏi `goal_supervisor`, rồi final bằng `prod_readiness_gate`.
+- **Goal check guard:** `auto_trigger` chạy `goal_alignment` trong process hiện tại để đọc đúng `.harness_goal_state.json`; nếu goal đổi/đóng giữa lúc check, stale result bị drop và response có warning thay vì cho agent tưởng goal đã pass.
 - **Harness ops layer:** `harness_doctor`, `install_manifest`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `context_auditor`, `ask_codebase_health`, `goal_runner_control`, `run_ledger`, `policy_profile`, `agent_adapters`, `benchmark_runner`, `patch_safety_check` cover readiness, dry-run install planning, cross-agent parity, MCP config drift, context/token overhead, resume/status, audit trail, profiles, adapters, benchmark, and isolated patch safety. `goal_runner` tự ghi doctor event + ledger; `ask_codebase` tự đính `context_health` vào response sau khi narrow/prune/redact.
 - **Hard supervisor:** `goal_supervisor` đọc goal state + last checks và trả đúng một `next_action`: `continue_part`, `run_check`, `run_final`, `blocked_ask_user`, hoặc `complete`.
 - **Goal summary injector:** context của `consult`, `panel_review`, `ask_codebase`, `auto_trigger`/goal checks tự có dòng ngắn: `Goal: X | Part N/M | Last verdict: ... | Blockers: ... | Next: ...`.
@@ -749,7 +752,7 @@ Agent Harness có 3 lớp tách biệt:
 
 | Lớp | Mục đích | File/cấu hình |
 |---|---|---|
-| MCP server | Cho agent chính gọi được 90 tools | `mcp_server.py` qua MCP config |
+| MCP server | Cho agent chính gọi được 105 tools | `mcp_server.py` qua MCP config |
 | Memory/rules | Dạy agent chính khi nào phải gọi tool | `CLAUDE.md`, `GEMINI.md`, `AGENTS.md`, `.cursor/rules`, ... |
 | Knowledge wiki | Kiến thức domain dùng chung khi tool chạy | `~/.claude/llmwiki/` + `<project>/llmwiki/` |
 
@@ -791,11 +794,11 @@ command = "python"
 args = [ "C:/path/to/harness/mcp_server.py" ]
 ```
 
-Cursor/Windsurf/generic MCP clients dùng cùng server command/path ở trên. Nếu một agent chính không hỗ trợ MCP thì không gọi trực tiếp được 90 tools; cần wrapper/bridge riêng.
+Cursor/Windsurf/generic MCP clients dùng cùng server command/path ở trên. Nếu một agent chính không hỗ trợ MCP thì không gọi trực tiếp được 105 tools; cần wrapper/bridge riêng.
 
 #### Memory/rules tối thiểu cho agent khác
 
-Không cần copy schema của 90 tools vào rules file. Tool schema nằm trong `mcp_server.py -> list_tools()`. Rules chỉ cần policy gọi tool:
+Không cần copy schema của 105 tools vào rules file. Tool schema nằm trong `mcp_server.py -> list_tools()`. Rules chỉ cần policy gọi tool:
 
 ```md
 # Agent Harness Usage
@@ -874,7 +877,7 @@ Rules file chỉ có tác dụng nếu agent chính thật sự nạp nó vào c
 
 #### Agent không hỗ trợ MCP thì dùng bridge/wrapper
 
-Nếu agent chính không support MCP, nó không thể gọi trực tiếp 90 tools. Có 3 hướng:
+Nếu agent chính không support MCP, nó không thể gọi trực tiếp 105 tools. Có 3 hướng:
 
 | Hướng | Khi dùng | Cách làm |
 |---|---|---|
@@ -2219,13 +2222,13 @@ Các tool được khai báo trong Claude/Codex/Gemini thông qua `merge_setting
 
 ---
 
-### Kỹ thuật 22: Phân Vai 12 Model — 95 MCP Tools, Lifecycle + Auto-Pilot + Auto-Watch
+### Kỹ thuật 22: Phân Vai 12 Model — 105 MCP Tools, Lifecycle + Auto-Pilot + Auto-Watch + Coordination
 
-* **Tệp mã nguồn:** [agents.py](agents.py) — `AgentRole`, `ROLE_TIMEOUTS`; [mcp_server.py](mcp_server.py) — `list_tools()`, `AGENT_INFO`; [tools/lifecycle.py](tools/lifecycle.py) — `tool_lifecycle` + `preflight_trigger`; [tools/auto.py](tools/auto.py) — `auto_trigger`; [auto_watch.py](auto_watch.py) — watcher tự chạy.
+* **Tệp mã nguồn:** [agents.py](agents.py) — `AgentRole`, `ROLE_TIMEOUTS`; [mcp_server.py](mcp_server.py) — `list_tools()`, `AGENT_INFO`; [tools/lifecycle.py](tools/lifecycle.py) — `tool_lifecycle` + `preflight_trigger`; [tools/coordination.py](tools/coordination.py) — cross-session heartbeat/lease/conflict; [tools/auto.py](tools/auto.py) — `auto_trigger`; [auto_watch.py](auto_watch.py) — watcher tự chạy.
 
 #### Tổng quan phân vai
 
-Hệ thống có **95 MCP tools**: lifecycle routing (`tool_lifecycle`, `preflight_trigger`), goal autopilot, goal supervisor, direct `goal_runner`, ops/self-check layer, CRG-lite `graph_minimal_context`/`review_context_graph`/`graph_health`, ECC-inspired `install_manifest`/`adapter_parity_doctor`/`mcp_inventory`/`context_budget`, deprecated `router_quota_status` compatibility shim, `prod_readiness_gate`, lesson curator, distilled `integration_router`, `workflow_router`, `bug_repro_guard`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `scope_creep_detector`, optional `office_bridge`, 7 tool gọi LLM, static/static-first analyzers, và `auto_trigger` để fan-out hậu kiểm sau edit. Mặc định Auto-Pilot chạy static-first với `HARNESS_STATIC_LLM=0` và `HARNESS_AUTO_LLM=0`; scanner vẫn trả kết quả tĩnh, còn 9Router enrichment là opt-in.
+Hệ thống có **105 MCP tools**: lifecycle routing (`tool_lifecycle`, `preflight_trigger`), 10 tool cross-session coordination (`session_heartbeat`, `claim_files`, `conflict_check`, v.v.), goal autopilot, goal supervisor, direct `goal_runner`, ops/self-check layer, CRG-lite `graph_minimal_context`/`review_context_graph`/`graph_health`, ECC-inspired `install_manifest`/`adapter_parity_doctor`/`mcp_inventory`/`context_budget`, deprecated `router_quota_status` compatibility shim, `prod_readiness_gate`, lesson curator, distilled `integration_router`, `workflow_router`, `bug_repro_guard`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `scope_creep_detector`, optional `office_bridge`, 7 tool gọi LLM, static/static-first analyzers, và `auto_trigger` để fan-out hậu kiểm sau edit. Mặc định Auto-Pilot chạy static-first với `HARNESS_STATIC_LLM=0` và `HARNESS_AUTO_LLM=0`; scanner vẫn trả kết quả tĩnh, còn 9Router enrichment là opt-in.
 
 #### Tool Lifecycle
 
@@ -2234,6 +2237,7 @@ Hệ thống có **95 MCP tools**: lifecycle routing (`tool_lifecycle`, `preflig
 | Phase | Khi nào chạy | Tool chính |
 |---|---|---|
 | `session_start` | Đầu prompt/session hoặc khi nghi drift config | `policy_profile`, `harness_doctor`, `adapter_parity_doctor`, `mcp_inventory`, `context_budget`, `agent_adapters`, `install_manifest`, `list_agents` |
+| `cross_session_coordination` | Đầu session, trước edit/final/review/commit, hoặc khi có nhiều agent cùng repo | `session_heartbeat`, `active_sessions`, `claim_files`, `release_files`, `conflict_check`, `takeover_stale_claim`, `coordination_status`, `coordination_policy`, `coordination_events`, `coordination_advisor` |
 | `preflight_before_code` | Trước plan/code/read nhiều file | `preflight_trigger`, `workflow_router`, `integration_router`, `ui_skill_router`, `hallmark_bridge`, `speckit_bridge`, `bug_repro_guard`, `graph_minimal_context`, `ask_codebase`, `consult`, `alt_implementation` |
 | `during_implementation` | Khi đang debug/code, chưa chốt batch | `suggest_fix`, `telemetry_debugger`, `swarm_debug`, `quick_task`, `run_single_agent`, `run_in_sandbox`, `patch_safety_check`, `profiler`, `benchmarker`, `wiki_query`, `office_bridge`, `git_archaeologist` |
 | `post_edit_batch` | Sau batch edit có changed files | `auto_trigger`, `scope_creep_detector`, `review_context_graph`, secret/env/config/devops/complexity/API/DB/UI/static analyzers |
@@ -2243,6 +2247,19 @@ Hệ thống có **95 MCP tools**: lifecycle routing (`tool_lifecycle`, `preflig
 | `memory_docs_ops` | Bảo trì memory/docs/ops | `wiki_ingest`, `wiki_lint`, `doc_sync`, `lesson_curator`, `finops_stats`, `context_auditor`, `graph_health`, `index_codebase` |
 
 `preflight_trigger` là router trước code: nó không gọi LLM và không sửa file; nó trả `run_now` gồm BA/spec/UI/context/consult actions cần làm trước khi implement. `auto_trigger` là hậu kiểm sau edit/final, nên không dùng nó làm bước đầu để phát hiện BA/ask_codebase/consult.
+
+#### Cross-Session Coordinator
+
+Coordinator dùng SQLite WAL và **không gọi 9Router**. DB mặc định là global `%USERPROFILE%\.agent-harness\coordination.db`, nhưng mọi session/lease/conflict đều scope theo `workspace_id = repo root + git branch`, nên nhiều repo không bị gộp thành một. Repo A claim `same.py` không block repo B cũng có `same.py`; smoke test có case riêng để giữ behavior này. Nếu muốn mỗi repo có DB riêng vật lý, set `HARNESS_COORDINATION_DB_MODE=repo` để dùng `.harness/coordination.db`.
+
+Luồng tự động:
+
+- MCP call đầu tiên trong session tự ghi `session_heartbeat` nếu profile bật `coordination`.
+- Trước khi agent biết chắc sẽ sửa file nào, rule generated yêu cầu gọi `claim_files(files=[...])`.
+- Trước `auto_trigger`, `panel_review`, `prod_readiness_gate`, commit hoặc báo xong, harness chạy `conflict_check`.
+- `blocked_conflict` nghĩa là đang có owner active cùng file/rủi ro cao; agent phải dừng, refresh diff/chờ owner, hoặc chỉ dùng `takeover_stale_claim` khi claim đã stale.
+- Git pre-commit fail-closed nếu coordinator bật nhưng `conflict_check` lỗi/degraded; không có env bypass để agent/session tự lách gate.
+- Auto-Watch chỉ `record_file_event` + `conflict_check`; nó không tự claim, không tự merge, không gọi pre-code advisor.
 
 | Tool (gọi LLM) | AgentRole | Model 9Router | Mục đích |
 |---|---|---|---|
@@ -2268,7 +2285,7 @@ HARNESS_STATIC_LLM=0
 HARNESS_AUTO_LLM=0
 ```
 
-`auto_watch.py` là daemon polling riêng để đạt mức tự động cao hơn, nhưng nó chỉ thuộc phase `background_watch`: hậu kiểm sau khi file đã đổi. Watcher **không** chạy BA discovery, market research, `ask_codebase`, `consult`, `alt_implementation`, `panel_review`, `goal_runner`, hoặc bất kỳ pre-code advisor nào; những tool này phải do agent gọi qua `preflight_trigger` trước khi code. Khi bật `HARNESS_AUTO_WATCH=1`, MCP server đăng ký project hiện tại vào `%USERPROFILE%\.agent-harness\watch.repos.json` rồi chỉ spawn **một watcher global** bằng `pythonw`/no-window nếu chưa có watcher sống. Watcher global reconcile danh sách repo, gọi `tools.auto.auto_trigger(mode="safe")` mặc định cho repo có thay đổi, và bỏ qua runtime artifacts (`.harness_*`, `.claude/audit`, `REVIEW_REPORT.md`, `llmwiki/raw/.bootstrapped`) để không tạo vòng lặp tự ghi log rồi tự review log. Log/lock vẫn nằm trong từng project (`.harness_auto_watch.log`, `.harness_auto_watch.lock`), còn PID supervisor global nằm ở `%USERPROFILE%\.agent-harness\auto_watch.global.pid`.
+`auto_watch.py` là daemon polling riêng để đạt mức tự động cao hơn, nhưng nó chỉ thuộc phase `background_watch`: hậu kiểm sau khi file đã đổi. Watcher **không** chạy BA discovery, market research, `ask_codebase`, `consult`, `alt_implementation`, `panel_review`, `goal_runner`, hoặc bất kỳ pre-code advisor nào; những tool này phải do agent gọi qua `preflight_trigger` trước khi code. Khi bật `HARNESS_AUTO_WATCH=1`, MCP server đăng ký project hiện tại vào `%USERPROFILE%\.agent-harness\watch.repos.json` rồi chỉ spawn **một watcher global** bằng `pythonw`/no-window nếu chưa có watcher sống. Watcher global reconcile danh sách repo, gọi `tools.auto.auto_trigger(mode="safe", root=<repo>, auto_llm=<watch flag>)` mặc định cho repo có thay đổi, ghi coordination event theo từng repo, và bỏ qua runtime artifacts (`.harness_*`, `.claude/audit`, `REVIEW_REPORT.md`, `llmwiki/raw/.bootstrapped`) để không tạo vòng lặp tự ghi log rồi tự review log. Watcher không mutate `WORKSPACE_ROOT`/`CLAUDE_PROJECT_DIR` process-wide khi await auto-trigger, nên nhiều repo không giẫm workspace env của nhau. Log/lock vẫn nằm trong từng project (`.harness_auto_watch.log`, `.harness_auto_watch.lock`), còn PID supervisor global nằm ở `%USERPROFILE%\.agent-harness\auto_watch.global.pid`.
 
 Config nhanh:
 
@@ -2487,7 +2504,7 @@ Nếu thiếu, tool vẫn fallback static analysis nhưng warning sẽ chỉ rõ
 
 #### Smoke test hiện tại
 
-`smoke_test.py` kiểm 95 MCP tools, resources/templates handshake, lifecycle/preflight routing, lazy rules auto-merge stamp/idempotency, MCP hot-reload module theo mtime/content hash, sandbox Windows + `returncode`, runtime workspace cho `_run_cmd_safe`, panel cache/FinOps path isolation, lesson memory auto-inject, lesson curator + Cangjie-style quality gate, global procedure lesson cross-project, CRG-lite graph review tools, edit batch attribution (`batch_id`, `diff_hash`, `failed_tools`), internal orchestrator tự chạy trong `auto_trigger` và `prod_readiness_gate`, auto_trigger max tự bound check để tránh MCP timeout, benchmark subprocess, Unicode-safe fix/debug output, Auto-Pilot trigger, Direct goal runner dry-run, ops tools, quota compatibility shim, distilled integration/workflow/UI router bridges, OfficeCLI bridge, scope-creep guard, Production readiness gate (`mode`, `since_commit`, `ask_user`, `fix_required`), 5 gap tools mới ở `mode=safe`, Auto-Watch global registry detect/ignore/lock/log-redaction, ask_codebase JSON unwrap + fallback citation/context_pack/model_attempts, 5 unsafe tools chạy trong workspace cô lập (`wiki_ingest`, `doc_sync`, `auto_tester`, `security_autofix`, `mutation_tester`), `api_contract_tester` static fallback không trả code rỗng khi LLM timeout, timeout/fallback rõ cho `dependency_upgrader`, quality parser, goal supervisor enum, devops/security scanners, swarm state machine, và các tool quality. Scratch file chạy trong `.harness_smoke/` và tự cleanup; `doc_sync` chạy trên workspace tạm nên không append README thật.
+`smoke_test.py` kiểm 105 MCP tools, resources/templates handshake, lifecycle/preflight routing, cross-session coordinator heartbeat/claim/conflict/final strictness và repo A/B isolation, lazy rules auto-merge stamp/idempotency, MCP hot-reload module theo mtime/content hash, sandbox Windows + `returncode`, runtime workspace cho `_run_cmd_safe`, panel cache/FinOps path isolation, lesson memory auto-inject, lesson curator + Cangjie-style quality gate, global procedure lesson cross-project, CRG-lite graph review tools, edit batch attribution (`batch_id`, `diff_hash`, `failed_tools`), internal orchestrator tự chạy trong `auto_trigger` và `prod_readiness_gate`, auto_trigger max tự bound check để tránh MCP timeout, benchmark subprocess, Unicode-safe fix/debug output, Auto-Pilot trigger, Direct goal runner dry-run, ops tools, quota compatibility shim, distilled integration/workflow/UI router bridges, OfficeCLI bridge, scope-creep guard, Production readiness gate (`mode`, `since_commit`, `ask_user`, `fix_required`), 5 gap tools mới ở `mode=safe`, Auto-Watch global registry detect/ignore/lock/log-redaction, ask_codebase JSON unwrap + fallback citation/context_pack/model_attempts, 5 unsafe tools chạy trong workspace cô lập (`wiki_ingest`, `doc_sync`, `auto_tester`, `security_autofix`, `mutation_tester`), `api_contract_tester` static fallback không trả code rỗng khi LLM timeout, timeout/fallback rõ cho `dependency_upgrader`, quality parser, goal supervisor enum, devops/security scanners, swarm state machine, và các tool quality. Scratch file chạy trong `.harness_smoke/` và tự cleanup; `doc_sync` chạy trên workspace tạm nên không append README thật.
 
 Kết quả mong muốn:
 

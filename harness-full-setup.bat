@@ -39,7 +39,8 @@ Purpose:
   + Codex, install memory/background integration, and write a global runtime profile.
   Also verifies the current MCP-only bridges are present: Hallmark/Spec Kit,
   UI/workflow routers, bug repro guard, OfficeCLI bridge, scope-creep guard,
-  graph review, install manifest, adapter parity, MCP inventory, and context budget/status doctor.
+  graph review, cross-session coordinator, install manifest, adapter parity,
+  MCP inventory, and context budget/status doctor.
   Default profile is off. Use --profile max to enable every runtime feature
   and start background helpers.
 
@@ -54,8 +55,8 @@ Options:
   --profile <off|max|heavy|review|balanced|standard|light>
       Global runtime profile to write. Default: off.
       Default off still installs configs/hooks/rules, but prevents background
-      tools, LLM calls, global watcher, lessons, and FinOps writes until user enables
-      a higher profile explicitly.
+      tools, LLM calls, global watcher, lessons, coordinator DB writes, and
+      FinOps writes until user enables a higher profile explicitly.
   --no-smoke
       Skip smoke_test.py.
       Full smoke is skipped automatically when profile is off.
@@ -275,7 +276,17 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 }
 
 Write-Step '5/9 Write runtime feature profile'
-Invoke-Toggle @('profile', $Profile)
+$PreviousAllowProfileWrite = $env:HARNESS_ALLOW_PROFILE_WRITE
+$env:HARNESS_ALLOW_PROFILE_WRITE = '1'
+try {
+    Invoke-Toggle @('profile', $Profile)
+} finally {
+    if ($null -eq $PreviousAllowProfileWrite) {
+        Remove-Item Env:\HARNESS_ALLOW_PROFILE_WRITE -ErrorAction SilentlyContinue
+    } else {
+        $env:HARNESS_ALLOW_PROFILE_WRITE = $PreviousAllowProfileWrite
+    }
+}
 if ($Profile -eq 'max') {
     Write-Host '[ok] Max profile written atomically by harness-toggle.bat.'
 } elseif ($Profile -eq 'off') {
@@ -342,6 +353,16 @@ if ($RunSmoke) {
 
 Write-Host ''
 Write-Host '=== FULL SETUP DONE ===' -ForegroundColor Green
+Write-Host "Profile written: $Profile"
+Write-Host "Smoke test ran: $RunSmoke"
+Write-Host "Startup task installed/requested: $InstallStartupTask"
+Write-Host "Auto-Watch start requested now: $StartWatch"
+if ($Profile -eq 'off') {
+    Write-Host 'Current runtime is intentionally safe/off: no LLM, Auto-Pilot, Auto-Watch, lessons, FinOps writes, or coordinator DB writes will run until you choose a higher profile.' -ForegroundColor Yellow
+    Write-Host 'Enable later with: harness-toggle.bat review    or    harness-toggle.bat max'
+} else {
+    Write-Host "Inspect/tune active features with: harness-toggle.bat status"
+}
 Write-Host 'Restart Claude/Gemini/Codex/IDE sessions so they reload MCP config and memory rules.'
-Write-Host 'MCP-only tools installed: install_manifest, adapter_parity_doctor, mcp_inventory, context_budget, graph_minimal_context, review_context_graph, graph_health, integration_router, workflow_router (BA/market research/UI-UX advisor), bug_repro_guard, ui_skill_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector.'
+Write-Host 'MCP-only/static tools installed: install_manifest, adapter_parity_doctor, mcp_inventory, context_budget, graph_minimal_context, review_context_graph, graph_health, session_heartbeat/claim_files/conflict_check coordination, integration_router, workflow_router (BA/market research/UI-UX advisor), bug_repro_guard, ui_skill_router, hallmark_bridge, speckit_bridge, office_bridge, scope_creep_detector.'
 Write-Host 'Future maintenance: when a runtime feature changes, update harness-toggle.bat and harness-full-setup.bat together.'

@@ -19,6 +19,7 @@ from pathlib import Path
 from config import WORKSPACE_ROOT
 from runtime_flags import bool_env_string, bool_flag, choice_flag, float_flag
 from tools.auto import auto_trigger
+from tools.coordination import record_file_event
 from tools.watch_registry import (
     claim_global_pid,
     clear_global_pid,
@@ -59,7 +60,7 @@ IGNORE_ROOT_FILES = {
     ".harness_goal_state.json",
     ".harness_schema_baseline.json",
 }
-IGNORE_ROOT_FILE_RE = re.compile(r"^\.harness_[A-Za-z0-9_.-]+\.(?:db|jsonl|pid|lock|log)(?:\.\d+)?$")
+IGNORE_ROOT_FILE_RE = re.compile(r"^\.harness_[A-Za-z0-9_.-]+\.(?:db|jsonl|pid|lock|log)(?:\.\d+)?$", re.I)
 LOCK_FILE = ".harness_auto_watch.lock"
 PID_FILE = ".harness_auto_watch.pid"
 LOG_FILE = ".harness_auto_watch.log"
@@ -72,54 +73,33 @@ _PID_TOKEN = uuid.uuid4().hex
 _ENV_TRIGGER_LOCK = asyncio.Lock()
 
 
-def _enabled() -> bool:
-    return bool_flag("HARNESS_AUTO_WATCH", False, root=_root())
+def _enabled(root: Path | None = None) -> bool:
+    return bool_flag("HARNESS_AUTO_WATCH", False, root=root or _root())
 
 
-def _watch_mode() -> str:
-    return choice_flag("HARNESS_AUTO_WATCH_MODE", "safe", {"safe", "max"}, root=_root())
+def _watch_mode(root: Path | None = None) -> str:
+    return choice_flag("HARNESS_AUTO_WATCH_MODE", "safe", {"safe", "max"}, root=root or _root())
 
 
-def _watch_auto_llm() -> str | None:
-    return bool_env_string("HARNESS_AUTO_WATCH_LLM", False, root=_root())
+def _watch_auto_llm(root: Path | None = None) -> str | None:
+    return bool_env_string("HARNESS_AUTO_WATCH_LLM", False, root=root or _root())
 
 
 async def _auto_trigger_from_watch(*, changed_files: list[str], task: str, stage: str, root: Path | None = None) -> dict:
-    async with _ENV_TRIGGER_LOCK:
-        previous_auto_llm = os.getenv("HARNESS_AUTO_LLM")
-        previous_watch_root = os.getenv("HARNESS_WATCH_ROOT")
-        previous_workspace = os.getenv("WORKSPACE_ROOT")
-        previous_claude_dir = os.getenv("CLAUDE_PROJECT_DIR")
-        watch_auto_llm = _watch_auto_llm()
-        if watch_auto_llm is not None:
-            os.environ["HARNESS_AUTO_LLM"] = watch_auto_llm
-        if root is not None:
-            root_s = str(root.resolve())
-            os.environ["HARNESS_WATCH_ROOT"] = root_s
-            os.environ["WORKSPACE_ROOT"] = root_s
-            os.environ["CLAUDE_PROJECT_DIR"] = root_s
-        try:
-            return await auto_trigger(
-                changed_files=changed_files,
-                task=task,
-                stage=stage,
-                mode=_watch_mode(),
-            )
-        finally:
-            for name, old in (
-                ("HARNESS_WATCH_ROOT", previous_watch_root),
-                ("WORKSPACE_ROOT", previous_workspace),
-                ("CLAUDE_PROJECT_DIR", previous_claude_dir),
-            ):
-                if old is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = old
-            if watch_auto_llm is not None:
-                if previous_auto_llm is None:
-                    os.environ.pop("HARNESS_AUTO_LLM", None)
-                else:
-                    os.environ["HARNESS_AUTO_LLM"] = previous_auto_llm
+    watch_root = root.resolve() if root is not None else _root()
+    watch_auto_llm = _watch_auto_llm(watch_root)
+    try:
+        record_file_event(changed_files, event_type="auto_watch_file_changed", root=watch_root)
+    except Exception:
+        pass
+    return await auto_trigger(
+        changed_files=changed_files,
+        task=task,
+        stage=stage,
+        mode=_watch_mode(watch_root),
+        root=watch_root,
+        auto_llm=(watch_auto_llm == "1"),
+    )
 
 
 def _safe_float_env(name: str, default: float, min_value: float, max_value: float | None = None) -> float:
@@ -135,34 +115,37 @@ def _ignored(path: Path, root: Path) -> bool:
         rel = path.relative_to(root)
     except ValueError:
         return True
-    parts = set(rel.parts)
+    rel_parts = tuple(rel.parts)
+    rel_parts_lower = tuple(part.casefold() for part in rel_parts)
+    parts = set(rel_parts_lower)
     if parts & IGNORE_DIRS:
         return True
-    rel_parts = tuple(rel.parts)
-    if any(part.startswith(IGNORE_DIR_PREFIXES) for part in rel_parts):
+    if any(part.startswith(IGNORE_DIR_PREFIXES) for part in rel_parts_lower):
         return True
-    if rel_parts in IGNORE_PATHS:
+    if rel_parts_lower in IGNORE_PATHS:
         return True
-    if len(rel_parts) >= 2 and rel_parts[0] == ".claude" and rel_parts[1] == "audit":
+    if len(rel_parts_lower) >= 2 and rel_parts_lower[0] == ".claude" and rel_parts_lower[1] == "audit":
         return True
     name = path.name
+    name_lower = name.casefold()
     root_runtime_file = len(rel_parts) == 1 and (
-        name in IGNORE_ROOT_FILES or bool(IGNORE_ROOT_FILE_RE.match(name))
+        name_lower in IGNORE_ROOT_FILES or bool(IGNORE_ROOT_FILE_RE.match(name))
     )
     dependency_lock_file = name.lower() in DEPENDENCY_LOCK_FILES
     return (
         name.startswith(".#")
         or name.endswith("~")
-        or name in IGNORE_FILES
+        or name_lower in {item.casefold() for item in IGNORE_FILES}
         or root_runtime_file
         or (path.suffix.lower() in IGNORE_SUFFIXES and not dependency_lock_file)
         or bool(ROTATED_LOG_RE.match(name))
-        or name in {LOCK_FILE, PID_FILE, LOG_FILE}
+        or name_lower in {LOCK_FILE.casefold(), PID_FILE.casefold(), LOG_FILE.casefold()}
     )
 
 
 def snapshot(root: Path) -> dict[str, tuple[int, int]]:
     """Return relpath -> (mtime_ns, size) for watchable files."""
+    root = root.resolve()
     state: dict[str, tuple[int, int]] = {}
     if not root.exists():
         return state
@@ -178,9 +161,9 @@ def snapshot(root: Path) -> dict[str, tuple[int, int]]:
             continue
         dirnames[:] = [
             name for name in dirnames
-            if name not in IGNORE_DIRS
-            and not name.startswith(IGNORE_DIR_PREFIXES)
-            and not (not rel_parts and name.startswith(".harness_"))
+            if name.casefold() not in IGNORE_DIRS
+            and not name.casefold().startswith(IGNORE_DIR_PREFIXES)
+            and not (not rel_parts and name.casefold().startswith(".harness_"))
         ]
         for filename in filenames:
             path = base / filename
@@ -243,37 +226,92 @@ def _lock_owner_alive(lock: Path) -> bool:
         return False
 
 
-def _lock_stale_and_owner_dead(lock: Path, ttl: float = 900.0) -> bool:
+def _lock_stale_candidate(lock: Path, ttl: float = 900.0) -> dict | None:
     data = _read_lock(lock)
     if data is None:
-        return True
+        return {"unreadable": True}
     try:
         pid = int(data.get("pid", 0))
         ts = float(data.get("ts", 0))
     except (ValueError, TypeError):
-        return True
+        return {"unreadable": True}
     expired = ts <= 0 or (time.time() - ts) > ttl
-    return expired and not _pid_alive(pid)
+    if expired and not _pid_alive(pid):
+        return data
+    return None
+
+
+def _same_lock_owner(left: dict | None, right: dict | None) -> bool:
+    if not left or not right:
+        return False
+    if left.get("unreadable") or right.get("unreadable"):
+        return bool(left.get("unreadable") and right.get("unreadable"))
+    keys = ("pid", "token", "ts", "root")
+    return all(str(left.get(key, "")) == str(right.get(key, "")) for key in keys)
 
 
 def _acquire_lock(lock: Path, ttl: float = 900.0) -> str | None:
-    if lock.exists() and _lock_stale_and_owner_dead(lock, ttl):
-        try:
-            lock.unlink()
-        except OSError:
-            pass
+    token = uuid.uuid4().hex
+    root = lock.parent.resolve()
+    payload = json.dumps({"pid": os.getpid(), "ts": time.time(), "root": str(root), "token": token})
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     try:
         fd = os.open(str(lock), flags)
     except OSError:
+        fd = None
+    if fd is not None:
+        try:
+            os.write(fd, payload.encode("utf-8", errors="ignore"))
+        finally:
+            os.close(fd)
+        data = _read_lock(lock)
+        return token if data and data.get("token") == token and int(data.get("pid", 0)) == os.getpid() else None
+
+    stale_candidate = _lock_stale_candidate(lock, ttl)
+    if stale_candidate is None:
         return None
-    token = uuid.uuid4().hex
-    payload = json.dumps({"pid": os.getpid(), "ts": time.time(), "token": token})
+
+    recovery = lock.with_name(lock.name + ".recover")
+    recovery_token = uuid.uuid4().hex
     try:
-        os.write(fd, payload.encode("utf-8", errors="ignore"))
+        recovery_fd = os.open(str(recovery), flags)
+    except OSError:
+        return None
+    try:
+        os.write(recovery_fd, json.dumps({"pid": os.getpid(), "ts": time.time(), "token": recovery_token}).encode("utf-8", errors="ignore"))
+        os.close(recovery_fd)
+        recovery_fd = -1
+        current_candidate = _lock_stale_candidate(lock, ttl)
+        if current_candidate is None or not _same_lock_owner(stale_candidate, current_candidate):
+            return None
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+        try:
+            fd = os.open(str(lock), flags)
+        except OSError:
+            return None
+        try:
+            os.write(fd, payload.encode("utf-8", errors="ignore"))
+        finally:
+            os.close(fd)
+        data = _read_lock(lock)
+        if data and data.get("token") == token and int(data.get("pid", 0)) == os.getpid():
+            return token
+        return None
     finally:
-        os.close(fd)
-    return token
+        if 'recovery_fd' in locals() and recovery_fd not in {-1, None}:
+            try:
+                os.close(recovery_fd)
+            except OSError:
+                pass
+        data = _read_lock(recovery)
+        if data and data.get("token") == recovery_token:
+            try:
+                recovery.unlink()
+            except OSError:
+                pass
 
 
 def _release_lock(lock: Path, token: str) -> None:
@@ -291,7 +329,7 @@ def _release_lock(lock: Path, token: str) -> None:
             pass
 
 
-def _pid_file_fresh(pid_file: Path, ttl: float = 60.0) -> bool:
+def _pid_file_fresh(pid_file: Path, root: Path | None = None, ttl: float = 60.0) -> bool:
     data = _read_lock(pid_file)
     if not data:
         return False
@@ -300,13 +338,21 @@ def _pid_file_fresh(pid_file: Path, ttl: float = 60.0) -> bool:
         ts = float(data.get("ts", 0))
     except (ValueError, TypeError):
         return False
+    recorded_root = str(data.get("root") or "").strip()
+    if root is not None and recorded_root:
+        try:
+            if Path(recorded_root).expanduser().resolve() != root.resolve():
+                return False
+        except OSError:
+            return False
     if pid == os.getpid() or ts <= 0 or (time.time() - ts) > ttl:
         return False
     return _pid_alive(pid)
 
 
 def _claim_pid_file(pid_file: Path) -> int | None:
-    if pid_file.exists() and not _pid_file_fresh(pid_file):
+    root = pid_file.parent.resolve()
+    if pid_file.exists() and not _pid_file_fresh(pid_file, root):
         try:
             pid_file.unlink()
         except OSError:
@@ -316,20 +362,26 @@ def _claim_pid_file(pid_file: Path) -> int | None:
         fd = os.open(str(pid_file), flags)
     except OSError:
         return None
-    _write_pid_fd(fd)
+    _write_pid_fd(fd, root)
     return fd
 
 
-def _write_pid_fd(fd: int) -> None:
-    payload = json.dumps({"pid": os.getpid(), "ts": time.time(), "script": __file__, "token": _PID_TOKEN})
+def _write_pid_fd(fd: int, root: Path) -> None:
+    payload = json.dumps({
+        "pid": os.getpid(),
+        "ts": time.time(),
+        "script": str(Path(__file__).resolve()),
+        "root": str(root.resolve()),
+        "token": _PID_TOKEN,
+    })
     os.ftruncate(fd, 0)
     os.lseek(fd, 0, os.SEEK_SET)
     os.write(fd, payload.encode("utf-8", errors="ignore"))
 
 
-def _heartbeat_pid_fd(fd: int) -> None:
+def _heartbeat_pid_fd(fd: int, root: Path) -> None:
     try:
-        _write_pid_fd(fd)
+        _write_pid_fd(fd, root)
     except OSError:
         pass
 
@@ -458,6 +510,9 @@ async def watch_global_forever() -> None:
                 if not root.exists():
                     snapshots.pop(str(root), None)
                     continue
+                if not _enabled(root):
+                    snapshots.pop(str(root), None)
+                    continue
                 before = snapshots.get(str(root))
                 current = snapshot(root)
                 if before is None:
@@ -534,7 +589,7 @@ async def watch_forever() -> None:
                     return
                 continue
             missing_root_count = 0
-            _heartbeat_pid_fd(pid_fd)
+            _heartbeat_pid_fd(pid_fd, root)
             if not _owns_pid_file(pid_file):
                 print(f"[auto_watch] pid ownership changed, exiting: {root}")
                 return

@@ -25,12 +25,34 @@ SMOKE_DIR = Path(".harness_smoke") / f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
 SMOKE_FILE = SMOKE_DIR / "test_panel.py"
 SMOKE_FILE_REL = SMOKE_FILE.as_posix()
 SMOKE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["HARNESS_COORDINATION_DB"] = str((SMOKE_DIR / "coordination.db").resolve())
 atexit.register(lambda: shutil.rmtree(SMOKE_DIR, ignore_errors=True))
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+
+@contextlib.contextmanager
+def temporary_no_goal_state():
+    from tools.goal import _state_path
+
+    path = _state_path()
+    backup = None
+    existed = path.exists()
+    if existed:
+        backup = path.read_bytes()
+        path.unlink()
+    try:
+        yield
+    finally:
+        if existed and backup is not None:
+            path.write_bytes(backup)
+        else:
+            with contextlib.suppress(OSError):
+                path.unlink()
+
 
 import subprocess
 original_run = subprocess.run
@@ -163,6 +185,53 @@ import support_tools as st
 import server
 import mcp_server
 check("import tất cả modules", True)
+lazy_support_script = r"""
+import importlib.abc
+import sys
+
+class BlockOfficeBridge(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "tools.office_bridge":
+            raise ImportError("smoke missing optional office bridge")
+        return None
+
+sys.meta_path.insert(0, BlockOfficeBridge())
+from support_tools import panel_review
+print(callable(panel_review))
+"""
+lazy_support = original_run(
+    [sys.executable, "-c", lazy_support_script],
+    cwd=str(Path.cwd()),
+    capture_output=True,
+    text=True,
+    timeout=20,
+)
+check("support_tools lazy import không kéo optional tools",
+      lazy_support.returncode == 0 and "True" in lazy_support.stdout,
+      (lazy_support.stdout or "") + (lazy_support.stderr or ""))
+harness_full_setup_text = Path("harness-full-setup.bat").read_text(encoding="utf-8")
+setup_toggle_pos = harness_full_setup_text.find("function Invoke-Toggle")
+setup_profile_pos = harness_full_setup_text.find("Write-Step '5/9 Write runtime feature profile'")
+setup_task_pos = harness_full_setup_text.find("function Install-WatchStartupTask")
+check("full setup wraps profile writes with consent restore",
+      setup_toggle_pos >= 0
+      and "HARNESS_ALLOW_PROFILE_WRITE = '1'" in harness_full_setup_text[setup_toggle_pos:setup_profile_pos]
+      and "finally" in harness_full_setup_text[setup_toggle_pos:setup_profile_pos]
+      and "throw \"harness-toggle.bat failed" in harness_full_setup_text[setup_toggle_pos:setup_profile_pos],
+      harness_full_setup_text[setup_toggle_pos:setup_profile_pos])
+check("full setup scheduled task pins working directory",
+      setup_task_pos >= 0
+      and "-WorkingDirectory $Root" in harness_full_setup_text[setup_task_pos:setup_task_pos + 1800],
+      harness_full_setup_text[setup_task_pos:setup_task_pos + 1800])
+harness_toggle_text = Path("harness-toggle.bat").read_text(encoding="utf-8")
+toggle_transaction_pos = harness_toggle_text.find("function Update-Features")
+toggle_set_pos = harness_toggle_text.find("function Set-Feature")
+check("harness-toggle locks full feature transaction",
+      toggle_transaction_pos >= 0
+      and "Invoke-FeatureFileLock" in harness_toggle_text[toggle_transaction_pos:toggle_set_pos]
+      and "Load-Features $true" in harness_toggle_text[toggle_transaction_pos:toggle_set_pos]
+      and "Save-FeaturesUnlocked" in harness_toggle_text[toggle_transaction_pos:toggle_set_pos],
+      harness_toggle_text[toggle_transaction_pos:toggle_set_pos])
 
 # Monkeypatch st.run_in_sandbox to mock pytest execution if pytest is not installed
 original_run_in_sandbox = st.run_in_sandbox
@@ -246,6 +315,8 @@ check("ROLE_TEMPERATURE đủ 12 role", set(ROLE_TEMPERATURE) == set(AgentRole))
 tools = asyncio.run(mcp_server.list_tools())
 tool_names = {t.name for t in tools}
 expected = {"auto_trigger", "preflight_trigger", "tool_lifecycle", "prod_readiness_gate", "release_orchestrator", "provenance_checker",
+            "session_heartbeat", "coordination_status", "active_sessions", "claim_files", "release_files",
+            "conflict_check", "takeover_stale_claim", "coordination_policy", "coordination_events", "coordination_advisor",
             "auth_matrix_auditor", "harness_trace_viewer", "incremental_refactor_guard",
             "hallmark_bridge", "integration_router", "speckit_bridge", "office_bridge", "scope_creep_detector",
             "workflow_router", "bug_repro_guard", "ui_skill_router",
@@ -310,6 +381,288 @@ check("MCP cancel không chạy nền tool LLM/heavy",
 check("single-flight giữ nguyên path string giống số",
       mcp_server._single_flight_key("auto_trigger", {"changed_files": ["01"]})
       != mcp_server._single_flight_key("auto_trigger", {"changed_files": ["1"]}))
+coord_hb = asyncio.run(mcp_server.call_tool("session_heartbeat", {
+    "session_id": "smoke-coord-main",
+    "agent_kind": "smoke",
+    "task": "coordination smoke",
+}))
+coord_hb_json = json.loads(coord_hb[0].text)
+coord_policy = asyncio.run(mcp_server.call_tool("coordination_policy", {"profile": "review"}))
+coord_policy_json = json.loads(coord_policy[0].text)
+coord_claim_a = asyncio.run(mcp_server.call_tool("claim_files", {
+    "session_id": "smoke-coord-a",
+    "agent_kind": "smoke",
+    "files": ["mcp_server.py"],
+    "task": "edit mcp dispatch",
+    "symbols": ["call_tool"],
+}))
+coord_claim_b = asyncio.run(mcp_server.call_tool("claim_files", {
+    "session_id": "smoke-coord-b",
+    "agent_kind": "smoke",
+    "files": ["mcp_server.py"],
+    "task": "edit mcp dispatch too",
+    "symbols": ["call_tool"],
+}))
+coord_claim_a_json = json.loads(coord_claim_a[0].text)
+coord_claim_b_json = json.loads(coord_claim_b[0].text)
+coord_auto_block = asyncio.run(mcp_server.call_tool("auto_trigger", {
+    "changed_files": ["mcp_server.py"],
+    "task": "coordination blocked conflict smoke",
+    "stage": "post_edit",
+    "mode": "safe",
+}))
+coord_auto_block_json = json.loads(coord_auto_block[0].text)
+coord_auto_quiet = asyncio.run(mcp_server.call_tool("conflict_check", {
+    "session_id": "smoke-coord-quiet",
+    "files": ["README.md"],
+    "stage": "auto_trigger:post_edit",
+}))
+coord_auto_quiet_json = json.loads(coord_auto_quiet[0].text)
+coord_final_strict = asyncio.run(mcp_server.call_tool("conflict_check", {
+    "session_id": "smoke-coord-strict",
+    "files": ["README.md"],
+    "stage": "final_review",
+}))
+coord_final_strict_json = json.loads(coord_final_strict[0].text)
+asyncio.run(mcp_server.call_tool("release_files", {"session_id": "smoke-coord-a", "files": ["mcp_server.py"]}))
+asyncio.run(mcp_server.call_tool("release_files", {"session_id": "smoke-coord-b", "files": ["mcp_server.py"]}))
+coord_status = asyncio.run(mcp_server.call_tool("coordination_status", {"limit": 5}))
+coord_status_json = json.loads(coord_status[0].text)
+check("coordination heartbeat/policy/status chạy được",
+      coord_hb_json.get("status") == "completed"
+      and coord_policy_json.get("rules", {}).get("watcher")
+      and coord_status_json.get("status") == "completed",
+      f"hb={coord_hb_json} policy={coord_policy_json} status={coord_status_json}")
+check("coordination claim conflict và auto_trigger gate hoạt động",
+      coord_claim_a_json.get("status") == "completed"
+      and coord_claim_b_json.get("status") == "blocked_conflict"
+      and coord_auto_block_json.get("status") == "blocked_conflict",
+      f"a={coord_claim_a_json} b={coord_claim_b_json} auto={coord_auto_block_json}")
+check("coordination quiet auto_trigger nhưng strict final gate",
+      coord_auto_quiet_json.get("status") == "completed"
+      and not coord_auto_quiet_json.get("warnings")
+      and coord_final_strict_json.get("status") == "warning"
+      and coord_final_strict_json.get("warnings"),
+      f"auto={coord_auto_quiet_json} final={coord_final_strict_json}")
+from tools.coordination import (
+    claim_files as coord_claim_files,
+    conflict_check as coord_conflict_check,
+    coordination_advisor as coord_advisor,
+    coordination_db_path as coord_db_path,
+    coordination_policy as coord_policy_fn,
+    coordination_status as coord_status_fn,
+    record_file_event as coord_record_file_event,
+    release_files as coord_release_files,
+    takeover_stale_claim as coord_takeover_stale_claim,
+)
+coord_repo_a = SMOKE_DIR / "coord_repo_a"
+coord_repo_b = SMOKE_DIR / "coord_repo_b"
+coord_repo_a.mkdir(parents=True, exist_ok=True)
+coord_repo_b.mkdir(parents=True, exist_ok=True)
+(coord_repo_a / "same.py").write_text("A = 1\n", encoding="utf-8")
+(coord_repo_b / "same.py").write_text("B = 1\n", encoding="utf-8")
+coord_repo_a_claim = coord_claim_files(["same.py"], session_id="smoke-repo-a", agent_kind="smoke", task="repo A edit", root=coord_repo_a)
+coord_repo_b_claim = coord_claim_files(["same.py"], session_id="smoke-repo-b", agent_kind="smoke", task="repo B edit", root=coord_repo_b)
+coord_repo_b_check = coord_conflict_check(["same.py"], session_id="smoke-repo-b", stage="final_review", root=coord_repo_b)
+coord_release_files(["same.py"], session_id="smoke-repo-a", root=coord_repo_a)
+coord_release_files(["same.py"], session_id="smoke-repo-b", root=coord_repo_b)
+check("coordination tách riêng repo khác nhau dù cùng file name",
+      coord_repo_a_claim.get("status") == "completed"
+      and coord_repo_b_claim.get("status") == "completed"
+      and coord_repo_a_claim.get("claimed") == ["same.py"]
+      and coord_repo_b_claim.get("claimed") == ["same.py"]
+      and coord_repo_b_check.get("status") == "completed",
+      f"a={coord_repo_a_claim} b={coord_repo_b_claim} check={coord_repo_b_check}")
+coord_soft_a = coord_claim_files(["notes.md"], session_id="smoke-soft-a", agent_kind="smoke", task="docs section A", symbols=["section_a"])
+coord_soft_b = coord_claim_files(["notes.md"], session_id="smoke-soft-b", agent_kind="smoke", task="docs section B", symbols=["section_b"])
+coord_same_symbol = coord_claim_files(["notes.md"], session_id="smoke-soft-c", agent_kind="smoke", task="docs same section", symbols=["section_a"])
+coord_release_files(["notes.md"], session_id="smoke-soft-a")
+coord_release_files(["notes.md"], session_id="smoke-soft-b")
+coord_release_files(["notes.md"], session_id="smoke-soft-c")
+check("coordination khác symbol soft warning, cùng symbol block",
+      coord_soft_a.get("status") == "completed"
+      and coord_soft_b.get("status") == "completed"
+      and coord_soft_b.get("conflicts")
+      and coord_same_symbol.get("status") == "blocked_conflict",
+      f"a={coord_soft_a} b={coord_soft_b} same={coord_same_symbol}")
+coord_binary_a = coord_claim_files(["image.png"], session_id="smoke-bin-a", agent_kind="smoke", task="binary A")
+coord_binary_b = coord_claim_files(["image.png"], session_id="smoke-bin-b", agent_kind="smoke", task="binary B")
+coord_release_files(["image.png"], session_id="smoke-bin-a")
+coord_release_files(["image.png"], session_id="smoke-bin-b")
+check("coordination binary/image dùng exclusive lock",
+      coord_binary_a.get("status") == "completed"
+      and coord_binary_b.get("status") == "blocked_conflict"
+      and any(c.get("severity") == "exclusive" for c in coord_binary_b.get("conflicts", [])),
+      f"a={coord_binary_a} b={coord_binary_b}")
+coord_active_a = coord_claim_files(["active.py"], session_id="smoke-active-a", agent_kind="smoke", task="active owner")
+coord_active_takeover = coord_takeover_stale_claim(["active.py"], session_id="smoke-active-b")
+coord_release_files(["active.py"], session_id="smoke-active-a")
+check("coordination takeover active owner bị chặn",
+      coord_active_a.get("status") == "completed"
+      and coord_active_takeover.get("status") == "blocked_active_owner",
+      f"claim={coord_active_a} takeover={coord_active_takeover}")
+coord_stale_claim = coord_claim_files(["stale.py"], session_id="smoke-stale-a", agent_kind="smoke", task="stale owner")
+with sqlite3.connect(str(coord_db_path())) as conn:
+    conn.execute("UPDATE file_leases SET expires_at=? WHERE session_id=?", (time.time() - 10, "smoke-stale-a"))
+    conn.commit()
+coord_stale_takeover = coord_takeover_stale_claim(["stale.py"], session_id="smoke-stale-b")
+coord_release_files(["stale.py"], session_id="smoke-stale-b")
+check("coordination takeover stale claim được phép",
+      coord_stale_claim.get("status") == "completed"
+      and coord_stale_takeover.get("status") == "completed",
+      f"claim={coord_stale_claim} takeover={coord_stale_takeover}")
+coord_hash_root = SMOKE_DIR / "coord_hash"
+coord_hash_root.mkdir(parents=True, exist_ok=True)
+(coord_hash_root / "hard.py").write_text("x = 1\n", encoding="utf-8")
+coord_hash_claim = coord_claim_files(["hard.py"], session_id="smoke-hash", agent_kind="smoke", task="hash guard", root=coord_hash_root)
+(coord_hash_root / "hard.py").write_text("x = 2\n", encoding="utf-8")
+coord_hash_check = coord_conflict_check(["hard.py"], session_id="smoke-hash", stage="final_review", root=coord_hash_root)
+coord_external_check = coord_conflict_check(["hard.py"], session_id="smoke-external", stage="final_review", root=coord_hash_root)
+coord_release_files(["hard.py"], session_id="smoke-hash", root=coord_hash_root)
+check("coordination hash/external edit final gate catches drift",
+      coord_hash_claim.get("status") == "completed"
+      and coord_hash_check.get("status") == "warning"
+      and coord_external_check.get("status") in {"warning", "blocked_conflict"},
+      f"claim={coord_hash_claim} own={coord_hash_check} external={coord_external_check}")
+coord_event = coord_record_file_event([{"status": "R100", "old_path": "old_name.py", "new_path": "new_name.py"}], event_type="rename", session_id="smoke-watch")
+check("coordination rename/delete event giữ old_path/new_path metadata",
+      coord_event.get("status") == "completed"
+      and coord_event.get("records", [{}])[0].get("old_path") == "old_name.py"
+      and coord_event.get("records", [{}])[0].get("new_path") == "new_name.py",
+      str(coord_event))
+import install_hooks as install_hooks_mod
+coord_precommit_a = coord_claim_files(["mcp_server.py"], session_id="smoke-precommit-a", agent_kind="smoke", task="precommit owner")
+coord_precommit_gate = install_hooks_mod._precommit_coordination_gate([{"status": "M", "path": "mcp_server.py"}])
+coord_release_files(["mcp_server.py"], session_id="smoke-precommit-a")
+check("pre-commit coordination gate block unresolved hard conflict",
+      coord_precommit_a.get("status") == "completed"
+      and coord_precommit_gate.get("status") == "blocked_conflict",
+      f"claim={coord_precommit_a} gate={coord_precommit_gate}")
+hook_quote_root = SMOKE_DIR / "hook quote repo"
+(hook_quote_root / ".git" / "hooks").mkdir(parents=True, exist_ok=True)
+fake_hook_script = hook_quote_root / "install_hooks.py"
+fake_hook_script.write_text("# fake\n", encoding="utf-8")
+old_hook_file = install_hooks_mod.__file__
+old_hook_executable = install_hooks_mod.sys.executable
+try:
+    install_hooks_mod.__file__ = str(fake_hook_script)
+    install_hooks_mod.sys.executable = '/tmp/python "quoted"'
+    install_hooks_mod.install_hook()
+    hook_text = (hook_quote_root / ".git" / "hooks" / "pre-commit").read_text(encoding="utf-8")
+    check("pre-commit generated hook POSIX-quotes paths",
+          'PYTHON_EXE=\'/tmp/python "quoted"\'' in hook_text
+          and 'PYTHON_EXE="/tmp/python "quoted""' not in hook_text,
+          hook_text)
+finally:
+    install_hooks_mod.__file__ = old_hook_file
+    install_hooks_mod.sys.executable = old_hook_executable
+old_staged_review_inputs = install_hooks_mod._staged_review_inputs
+old_staged_coordination_records = install_hooks_mod._staged_coordination_records
+old_precommit_coordination_gate = install_hooks_mod._precommit_coordination_gate
+try:
+    install_hooks_mod._staged_review_inputs = lambda: (["mcp_server.py"], "", "")
+    install_hooks_mod._staged_coordination_records = lambda: [{"status": "M", "path": "mcp_server.py"}]
+    install_hooks_mod._precommit_coordination_gate = lambda _records: {"status": "degraded", "error": "smoke locked db"}
+    try:
+        install_hooks_mod.run_hook()
+        coord_degraded_exit = 0
+    except SystemExit as exc:
+        coord_degraded_exit = int(exc.code or 0)
+    check("pre-commit coordination degraded fail-closed",
+          coord_degraded_exit == 1,
+          f"exit={coord_degraded_exit}")
+finally:
+    install_hooks_mod._staged_review_inputs = old_staged_review_inputs
+    install_hooks_mod._staged_coordination_records = old_staged_coordination_records
+    install_hooks_mod._precommit_coordination_gate = old_precommit_coordination_gate
+old_st_panel_review = st.panel_review
+try:
+    install_hooks_mod._staged_review_inputs = lambda: (["mcp_server.py"], "", "")
+    install_hooks_mod._staged_coordination_records = lambda: [{"status": "M", "path": "mcp_server.py"}]
+    install_hooks_mod._precommit_coordination_gate = lambda _records: {"status": "completed"}
+
+    async def _boom_panel_review(*_args, **_kwargs):
+        raise RuntimeError("smoke panel down")
+
+    st.panel_review = _boom_panel_review
+    try:
+        install_hooks_mod.run_hook()
+        panel_down_exit = 0
+    except SystemExit as exc:
+        panel_down_exit = int(exc.code or 0)
+    check("pre-commit panel infrastructure error fail-closed",
+          panel_down_exit == 1,
+          f"exit={panel_down_exit}")
+finally:
+    st.panel_review = old_st_panel_review
+    install_hooks_mod._staged_review_inputs = old_staged_review_inputs
+    install_hooks_mod._staged_coordination_records = old_staged_coordination_records
+    install_hooks_mod._precommit_coordination_gate = old_precommit_coordination_gate
+try:
+    install_hooks_mod._staged_review_inputs = lambda: (["mcp_server.py"], "", "")
+    install_hooks_mod._staged_coordination_records = lambda: [{"status": "M", "path": "mcp_server.py"}]
+    install_hooks_mod._precommit_coordination_gate = lambda _records: {"status": "completed"}
+
+    async def _error_panel_review(*_args, **_kwargs):
+        return {"error": "smoke router down"}
+
+    st.panel_review = _error_panel_review
+    try:
+        install_hooks_mod.run_hook()
+        panel_error_exit = 0
+    except SystemExit as exc:
+        panel_error_exit = int(exc.code or 0)
+    check("pre-commit panel error result fail-closed",
+          panel_error_exit == 1,
+          f"exit={panel_error_exit}")
+finally:
+    st.panel_review = old_st_panel_review
+    install_hooks_mod._staged_review_inputs = old_staged_review_inputs
+    install_hooks_mod._staged_coordination_records = old_staged_coordination_records
+    install_hooks_mod._precommit_coordination_gate = old_precommit_coordination_gate
+coord_no_conflict_advice = coord_advisor(files=["README.md"], session_id="smoke-advisor-clean", task="clean advisor")
+coord_off_policy = coord_policy_fn(profile="off")
+check("coordination advisor không chạy khi không conflict/profile off",
+      coord_no_conflict_advice.get("status") == "no_conflict"
+      and coord_off_policy.get("advisor_llm_allowed") is False,
+      f"advice={coord_no_conflict_advice} policy={coord_off_policy}")
+coord_status_symbols = coord_status_fn(limit=10)
+check("coordination_status expose symbol_leases field",
+      "symbol_leases" in coord_status_symbols,
+      str(coord_status_symbols)[:1000])
+coord_branch_a = SMOKE_DIR / "coord_branch_a"
+coord_branch_b = SMOKE_DIR / "coord_branch_b"
+for branch_root, branch in ((coord_branch_a, "main"), (coord_branch_b, "feature")):
+    (branch_root / ".git").mkdir(parents=True, exist_ok=True)
+    (branch_root / ".git" / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
+    (branch_root / "same.py").write_text("x = 1\n", encoding="utf-8")
+coord_branch_a_claim = coord_claim_files(["same.py"], session_id="smoke-branch-a", agent_kind="smoke", root=coord_branch_a)
+coord_branch_b_claim = coord_claim_files(["same.py"], session_id="smoke-branch-b", agent_kind="smoke", root=coord_branch_b)
+coord_release_files(["same.py"], session_id="smoke-branch-a", root=coord_branch_a)
+coord_release_files(["same.py"], session_id="smoke-branch-b", root=coord_branch_b)
+check("coordination khác branch/worktree không false conflict",
+      coord_branch_a_claim.get("status") == "completed"
+      and coord_branch_b_claim.get("status") == "completed",
+      f"a={coord_branch_a_claim} b={coord_branch_b_claim}")
+coord_race_root = SMOKE_DIR / "coord_race"
+coord_race_root.mkdir(parents=True, exist_ok=True)
+(coord_race_root / "race.py").write_text("x = 1\n", encoding="utf-8")
+race_code = (
+    "import json,sys;"
+    "from tools.coordination import claim_files;"
+    "print(json.dumps(claim_files(['race.py'], session_id=sys.argv[1], agent_kind='smoke', task='race', root=sys.argv[2])))"
+)
+race_p1 = subprocess.Popen([sys.executable, "-c", race_code, "smoke-race-a", str(coord_race_root)], cwd=str(Path.cwd()), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+race_p2 = subprocess.Popen([sys.executable, "-c", race_code, "smoke-race-b", str(coord_race_root)], cwd=str(Path.cwd()), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+race_out = []
+for proc in (race_p1, race_p2):
+    out, err = proc.communicate(timeout=30)
+    race_out.append(json.loads(out.strip().splitlines()[-1]) if out.strip() else {"status": "error", "stderr": err})
+coord_release_files(["race.py"], session_id="smoke-race-a", root=coord_race_root)
+coord_release_files(["race.py"], session_id="smoke-race-b", root=coord_race_root)
+check("coordination SQLite multi-process claim race chỉ một owner thắng",
+      sorted(item.get("status") for item in race_out) == ["blocked_conflict", "completed"],
+      str(race_out))
 preflight_res = asyncio.run(mcp_server.call_tool("preflight_trigger", {
     "task": "thiết kế UI dashboard mới có auth API và nhiều file",
     "changed_files": ["src/app.tsx", "src/api.ts"],
@@ -894,11 +1247,12 @@ check("scope_creep_detector flag CI ngoài intent",
       and any(item.get("path") == ".github/workflows/ci.yml" for item in scope_json.get("likely_creep", [])),
       str(scope_json))
 
-auto_res = asyncio.run(mcp_server.call_tool("auto_trigger", {
-    "changed_files": ["README.md"],
-    "stage": "post_edit",
-    "mode": "safe",
-}))
+with temporary_no_goal_state():
+    auto_res = asyncio.run(mcp_server.call_tool("auto_trigger", {
+        "changed_files": ["README.md"],
+        "stage": "post_edit",
+        "mode": "safe",
+    }))
 check("auto_trigger docs-only safe skip", json.loads(auto_res[0].text).get("status") == "skipped")
 auto_docs_secret_res = asyncio.run(mcp_server.call_tool("auto_trigger", {
     "changed_files": ["README.md"],
@@ -1303,17 +1657,19 @@ old_auto_max_tools = os.environ.get("HARNESS_AUTO_MAX_TOOLS")
 try:
     auto_bad_mode = asyncio.run(mcp_server.call_tool("auto_trigger", {"mode": "wild"}))
     check("auto_trigger mode invalid → error", "error" in json.loads(auto_bad_mode[0].text))
-    auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {
-        "changed_files": ["README.md"],
-        "stage": " FINAL ",
-        "mode": " SAFE ",
-    }))
+    with temporary_no_goal_state():
+        auto_upper = asyncio.run(mcp_server.call_tool("auto_trigger", {
+            "changed_files": ["README.md"],
+            "stage": " FINAL ",
+            "mode": " SAFE ",
+        }))
     check("auto_trigger stage/mode normalize hoa thường", json.loads(auto_upper[0].text).get("status") == "skipped")
-    auto_docs_max = asyncio.run(mcp_server.call_tool("auto_trigger", {
-        "changed_files": ["README.md"],
-        "stage": "final",
-        "mode": "max",
-    }))
+    with temporary_no_goal_state():
+        auto_docs_max = asyncio.run(mcp_server.call_tool("auto_trigger", {
+            "changed_files": ["README.md"],
+            "stage": "final",
+            "mode": "max",
+        }))
     check("auto_trigger docs-only max skip nếu không phải release",
           json.loads(auto_docs_max[0].text).get("status") == "skipped")
     auto_env_case = asyncio.run(mcp_server.call_tool("auto_trigger", {
@@ -1705,21 +2061,25 @@ watched_nested_harness_file = watch_root / "src" / ".harness_utils" / "config.py
 watched_root_harness_dir_file = watch_root / ".harness_docs" / "policy.md"
 ignored_file = watch_root / ".git" / "config"
 ignored_harness_file = watch_root / ".harness_run_ledger.jsonl"
+ignored_harness_case_file = watch_root / ".Harness_Auto_Watch.pid"
 ignored_harness_dir_file = watch_root / ".harness_cache" / "state.json"
 ignored_harness_sandbox_file = watch_root / ".harness_sandbox_tmp123" / "scratch.py"
 ignored_report_file = watch_root / "REVIEW_REPORT.md"
 ignored_audit_file = watch_root / ".claude" / "audit" / "2026-07-14.jsonl"
+ignored_audit_case_file = watch_root / ".Claude" / "Audit" / "upper.jsonl"
 ignored_bootstrap_file = watch_root / "llmwiki" / "raw" / ".bootstrapped"
 watched_file.write_text("print(1)\n", encoding="utf-8")
 watched_nested_harness_file.write_text("ENABLED = True\n", encoding="utf-8")
 watched_root_harness_dir_file.write_text("watch me\n", encoding="utf-8")
 ignored_file.write_text("ignore\n", encoding="utf-8")
 ignored_harness_file.write_text("{}\n", encoding="utf-8")
+ignored_harness_case_file.write_text("123\n", encoding="utf-8")
 ignored_harness_dir_file.parent.mkdir(parents=True, exist_ok=True)
 ignored_harness_dir_file.write_text("{}\n", encoding="utf-8")
 ignored_harness_sandbox_file.write_text("print('ignore')\n", encoding="utf-8")
 ignored_report_file.write_text("report\n", encoding="utf-8")
 ignored_audit_file.write_text("{}\n", encoding="utf-8")
+ignored_audit_case_file.write_text("{}\n", encoding="utf-8")
 ignored_bootstrap_file.write_text("1\n", encoding="utf-8")
 snap1 = auto_watch.snapshot(watch_root)
 watched_file.write_text("print(2)\n", encoding="utf-8")
@@ -1734,10 +2094,12 @@ check("auto_watch ignore .git và detect file đổi",
       str(watch_changed))
 check("auto_watch ignore harness runtime artifacts",
       ".harness_run_ledger.jsonl" not in snap1
+      and ".Harness_Auto_Watch.pid" not in snap1
       and ".harness_cache/state.json" not in snap1
       and ".harness_sandbox_tmp123/scratch.py" not in snap1
       and "REVIEW_REPORT.md" not in snap1
       and ".claude/audit/2026-07-14.jsonl" not in snap1
+      and ".Claude/Audit/upper.jsonl" not in snap1
       and "llmwiki/raw/.bootstrapped" not in snap1
       and ".harness_run_ledger.jsonl" not in watch_changed,
       f"snap={sorted(snap1)[:20]} changed={watch_changed}")
@@ -1752,6 +2114,9 @@ old_auto_pilot_for_watch = os.environ.get("HARNESS_AUTO_PILOT")
 old_static_llm_for_watch = os.environ.get("HARNESS_STATIC_LLM")
 old_features_file = os.environ.get("HARNESS_FEATURES_FILE")
 old_features_override = os.environ.get("HARNESS_ALLOW_FEATURE_FILE_OVERRIDE")
+old_harness_watch_root = os.environ.get("HARNESS_WATCH_ROOT")
+old_claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+old_workspace_root_env = os.environ.get("WORKSPACE_ROOT")
 features_file = watch_root / "harness.features.json"
 try:
     os.environ["HARNESS_ALLOW_FEATURE_FILE_OVERRIDE"] = "1"
@@ -1771,7 +2136,7 @@ try:
 
     async def _fake_watch_auto_trigger(**kwargs):
         watch_seen.update(kwargs)
-        watch_seen["auto_llm"] = os.environ.get("HARNESS_AUTO_LLM")
+        watch_seen["ambient_auto_llm"] = os.environ.get("HARNESS_AUTO_LLM")
         return {"status": "fake"}
 
     try:
@@ -1788,7 +2153,8 @@ try:
         check("auto_watch default safe/static không ăn theo auto_trigger max",
               watch_trigger_result.get("status") == "fake"
               and watch_seen.get("mode") == "safe"
-              and watch_seen.get("auto_llm") == "0"
+              and watch_seen.get("auto_llm") is False
+              and watch_seen.get("ambient_auto_llm") == "1"
               and os.environ.get("HARNESS_AUTO_LLM") == "1",
               f"seen={watch_seen} env={os.environ.get('HARNESS_AUTO_LLM')}")
         os.environ["HARNESS_AUTO_WATCH_MODE"] = "max"
@@ -1800,10 +2166,32 @@ try:
             stage="post_edit",
         ))
         check("auto_watch explicit max/llm opt-in hoạt động",
-              watch_seen.get("mode") == "max" and watch_seen.get("auto_llm") == "1",
+              watch_seen.get("mode") == "max" and watch_seen.get("auto_llm") is True,
+              str(watch_seen))
+        repo_a = SMOKE_DIR / "watch_repo_a"
+        repo_b = SMOKE_DIR / "watch_repo_b"
+        repo_a.mkdir(parents=True, exist_ok=True)
+        repo_b.mkdir(parents=True, exist_ok=True)
+        os.environ["CLAUDE_PROJECT_DIR"] = str(repo_a)
+        os.environ["WORKSPACE_ROOT"] = str(repo_a)
+        os.environ["HARNESS_AUTO_WATCH_MODE"] = "safe"
+        os.environ["HARNESS_AUTO_WATCH_LLM"] = "0"
+        watch_seen.clear()
+        asyncio.run(auto_watch._auto_trigger_from_watch(
+            changed_files=["src/repo_b.py"],
+            task="repo scoped watch",
+            stage="post_edit",
+            root=repo_b,
+        ))
+        check("auto_watch explicit root wins over stale process env",
+              watch_seen.get("root") == repo_b.resolve()
+              and watch_seen.get("mode") == "safe"
+              and watch_seen.get("auto_llm") is False,
               str(watch_seen))
 
         features_file.write_text(json.dumps({
+            "llm": {"enabled": False, "static": False},
+            "finops": {"enabled": False},
             "auto_watch": {
                 "enabled": False,
                 "mode": "safe",
@@ -1818,11 +2206,20 @@ try:
         os.environ["HARNESS_AUTO_WATCH"] = "1"
         os.environ["HARNESS_AUTO_WATCH_MODE"] = "max"
         os.environ["HARNESS_AUTO_WATCH_LLM"] = "1"
+        os.environ["HARNESS_LLM_ENABLED"] = "1"
+        os.environ["HARNESS_AUTO_LLM"] = "1"
+        os.environ["HARNESS_FINOPS_ENABLED"] = "1"
         check("runtime feature file disables auto_watch despite env",
               auto_watch._enabled() is False
               and auto_watch._watch_mode() == "safe"
               and auto_watch._watch_auto_llm() == "0"
               and auto_watch._safe_float_env("HARNESS_AUTO_WATCH_INTERVAL", 3.0, 0.5, 300.0) == 9.0)
+        from runtime_flags import bool_flag
+        check("runtime nested false wins over legacy env true",
+              bool_flag("HARNESS_LLM_ENABLED", True, root=watch_root) is False
+              and bool_flag("HARNESS_AUTO_WATCH", True, root=watch_root) is False
+              and bool_flag("HARNESS_AUTO_LLM", True, root=watch_root) is False
+              and bool_flag("HARNESS_FINOPS_ENABLED", True, root=watch_root) is False)
 
         features_file.write_text(json.dumps({
             "llm": {"enabled": True, "static": True},
@@ -1836,7 +2233,7 @@ try:
         os.environ["HARNESS_AUTO_WATCH"] = "0"
         os.environ["HARNESS_AUTO_PILOT"] = "1"
         os.environ["HARNESS_STATIC_LLM"] = "0"
-        from runtime_flags import CONTROL_FILE, bool_flag, choice_flag, control_file_paths
+        from runtime_flags import CONTROL_FILE, active_workspace_root, bool_flag, choice_flag, control_file_paths
         check("runtime feature file overrides background flags",
               auto_watch._enabled() is True
               and auto_watch._watch_mode() == "max"
@@ -1855,6 +2252,25 @@ try:
               and global_candidates[0].name == CONTROL_FILE
               and global_candidates[0].parent == (Path.home() / ".agent-harness"),
               [str(p) for p in global_candidates])
+        workspace_a = watch_root / "workspace_a"
+        workspace_b = watch_root / "workspace_b"
+        workspace_c = watch_root / "workspace_c"
+        workspace_a.mkdir(exist_ok=True)
+        workspace_b.mkdir(exist_ok=True)
+        workspace_c.mkdir(exist_ok=True)
+        os.environ["HARNESS_WATCH_ROOT"] = str(workspace_a)
+        os.environ["CLAUDE_PROJECT_DIR"] = str(workspace_b)
+        os.environ.pop("WORKSPACE_ROOT", None)
+        check("runtime workspace resolver ignores stale HARNESS_WATCH_ROOT outside watcher",
+              active_workspace_root() == workspace_b.resolve(),
+              str(active_workspace_root()))
+        check("runtime workspace resolver treats default as fallback only",
+              active_workspace_root(default=workspace_c) == workspace_b.resolve(),
+              str(active_workspace_root(default=workspace_c)))
+        os.environ["WORKSPACE_ROOT"] = str(workspace_c)
+        check("runtime workspace resolver explicit WORKSPACE_ROOT wins",
+              active_workspace_root(default=workspace_b) == workspace_c.resolve(),
+              str(active_workspace_root(default=workspace_b)))
         os.environ["HARNESS_FEATURES_FILE"] = str(features_file)
 
         features_file.write_text("{not json", encoding="utf-8")
@@ -1889,6 +2305,9 @@ finally:
         ("HARNESS_AUTO_LLM", old_auto_llm_for_watch),
         ("HARNESS_AUTO_PILOT", old_auto_pilot_for_watch),
         ("HARNESS_STATIC_LLM", old_static_llm_for_watch),
+        ("HARNESS_WATCH_ROOT", old_harness_watch_root),
+        ("CLAUDE_PROJECT_DIR", old_claude_project_dir),
+        ("WORKSPACE_ROOT", old_workspace_root_env),
     ):
         if value is None:
             os.environ.pop(key, None)
@@ -1912,6 +2331,110 @@ try:
     check("auto_watch lock path directory không crash", auto_watch._acquire_lock(lock_path) is None)
 finally:
     lock_path.rmdir()
+pid_reuse_root = watch_root / "pid_reuse_root"
+pid_reuse_root.mkdir(exist_ok=True)
+pid_reuse_path = pid_reuse_root / auto_watch.PID_FILE
+pid_reuse_path.write_text(json.dumps({
+    "pid": os.getpid(),
+    "ts": time.time(),
+    "script": str(Path(auto_watch.__file__).resolve()),
+    "root": str((watch_root / "other_root").resolve()),
+    "token": "old-owner",
+}), encoding="utf-8")
+pid_reuse_fd = auto_watch._claim_pid_file(pid_reuse_path)
+try:
+    check("auto_watch pid file mismatched root takeover",
+          pid_reuse_fd is not None
+          and json.loads(pid_reuse_path.read_text(encoding="utf-8")).get("root") == str(pid_reuse_root.resolve()),
+          pid_reuse_path.read_text(encoding="utf-8"))
+finally:
+    if pid_reuse_fd is not None:
+        os.close(pid_reuse_fd)
+    pid_reuse_path.unlink(missing_ok=True)
+global_pid_race_dir = (watch_root / "global_pid_race").resolve()
+global_pid_race_dir.mkdir(exist_ok=True)
+global_pid_race_script = r"""
+import json
+import sys
+import time
+from pathlib import Path
+import tools.watch_registry as wr
+
+root = Path(sys.argv[1])
+token = sys.argv[2]
+wr.REGISTRY_DIR = root
+wr.REGISTRY_FILE = root / "watch.repos.json"
+wr.GLOBAL_PID_FILE = root / "auto_watch.global.pid"
+wr.REGISTRY_LOCK_FILE = root / "watch.repos.lock"
+wr.GLOBAL_PID_LOCK_FILE = root / "auto_watch.global.lock"
+ok = wr.claim_global_pid(token)
+print(json.dumps({"ok": ok, "token": token}), flush=True)
+if ok:
+    time.sleep(1.5)
+"""
+global_procs = [
+    subprocess.Popen(
+        [sys.executable, "-c", global_pid_race_script, str(global_pid_race_dir), f"token-{idx}"],
+        cwd=str(Path.cwd()),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    for idx in range(2)
+]
+global_results = []
+for proc in global_procs:
+    out, err = proc.communicate(timeout=10)
+    try:
+        global_results.append(json.loads(out.strip().splitlines()[-1]))
+    except Exception:
+        global_results.append({"ok": False, "error": err or out})
+check("watch_registry global pid race single owner",
+      sum(1 for item in global_results if item.get("ok") is True) == 1,
+      str(global_results))
+recover_race_root = (watch_root / "recover_race").resolve()
+recover_race_root.mkdir(exist_ok=True)
+recover_race_lock = recover_race_root / auto_watch.LOCK_FILE
+recover_race_lock.write_text(json.dumps({
+    "pid": 99999999,
+    "ts": time.time() - 120,
+    "root": str(recover_race_root),
+    "token": "stale",
+}), encoding="utf-8")
+recover_race_script = r"""
+import json
+import sys
+import time
+from pathlib import Path
+import auto_watch
+
+lock = Path(sys.argv[1])
+token = auto_watch._acquire_lock(lock, ttl=0.01)
+print(json.dumps({"ok": bool(token), "token": token}), flush=True)
+if token:
+    time.sleep(1.0)
+    auto_watch._release_lock(lock, token)
+"""
+recover_procs = [
+    subprocess.Popen(
+        [sys.executable, "-c", recover_race_script, str(recover_race_lock)],
+        cwd=str(Path.cwd()),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    for _ in range(2)
+]
+recover_results = []
+for proc in recover_procs:
+    out, err = proc.communicate(timeout=10)
+    try:
+        recover_results.append(json.loads(out.strip().splitlines()[-1]))
+    except Exception:
+        recover_results.append({"ok": False, "error": err or out})
+check("auto_watch stale lock recovery race single owner",
+      sum(1 for item in recover_results if item.get("ok") is True) == 1,
+      str(recover_results))
 auto_watch._append_log(watch_root, {
     "changed_files": ["src/app.py"],
     "api_key": "super-secret",

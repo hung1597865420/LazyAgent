@@ -24,7 +24,18 @@ LIFECYCLE_PHASES: dict[str, dict[str, Any]] = {
             "policy_profile", "harness_doctor", "adapter_parity_doctor",
             "mcp_inventory", "context_budget", "agent_adapters",
             "install_manifest", "list_agents", "router_quota_status",
-            "tool_lifecycle",
+            "tool_lifecycle", "session_heartbeat", "coordination_status",
+            "active_sessions", "coordination_policy",
+        ],
+    },
+    "cross_session_coordination": {
+        "when": "Before edit/final/commit or when multiple agent sessions may touch the same workspace.",
+        "purpose": "Static cross-session lease, heartbeat, snapshot, conflict, and takeover coordination.",
+        "tools": [
+            "session_heartbeat", "coordination_status", "active_sessions",
+            "claim_files", "release_files", "conflict_check",
+            "takeover_stale_claim", "coordination_policy",
+            "coordination_events", "coordination_advisor",
         ],
     },
     "orchestration_loop": {
@@ -79,7 +90,8 @@ LIFECYCLE_PHASES: dict[str, dict[str, Any]] = {
         "tools": [
             "auto_trigger", "scope_creep_detector", "review_context_graph",
             "secret_scanner", "env_parity_checker", "config_security_audit",
-            "complexity_analyzer", "harness_trace_viewer",
+            "complexity_analyzer", "harness_trace_viewer", "conflict_check",
+            "coordination_events",
         ],
     },
     "final_review": {
@@ -87,7 +99,7 @@ LIFECYCLE_PHASES: dict[str, dict[str, Any]] = {
         "purpose": "One final batch review, then fix/verify blockers.",
         "tools": [
             "auto_trigger", "panel_review", "security_autofix",
-            "auto_tester", "pr_generator", "doc_sync",
+            "auto_tester", "pr_generator", "doc_sync", "conflict_check",
         ],
     },
     "release_gate": {
@@ -98,7 +110,7 @@ LIFECYCLE_PHASES: dict[str, dict[str, Any]] = {
             "provenance_checker", "sbom_generator", "changelog_generator",
             "breaking_change_detector", "dependency_upgrader",
             "flaky_test_detector", "mutation_tester", "load_tester",
-            "chaos_tester", "feature_flag_auditor",
+            "chaos_tester", "feature_flag_auditor", "conflict_check",
         ],
     },
     "memory_docs_ops": {
@@ -126,7 +138,8 @@ POST_CODE_ONLY = {
 WATCHER_ALLOWED_TOOLS = {
     "auto_trigger", "scope_creep_detector", "review_context_graph",
     "secret_scanner", "env_parity_checker", "config_security_audit",
-    "complexity_analyzer", "harness_trace_viewer",
+    "complexity_analyzer", "harness_trace_viewer", "conflict_check",
+    "coordination_events",
 }
 
 WATCHER_BLOCKED_TOOLS = {

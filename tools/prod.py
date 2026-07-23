@@ -197,6 +197,32 @@ async def prod_readiness_gate(
     since_commit = str(since_commit or "").strip()
 
     files = _norm_files(changed_files)
+    coordination_gate: dict[str, Any] = {"status": "skipped"}
+    if files:
+        try:
+            from .coordination import conflict_check
+            coordination_gate = conflict_check(files=files, task=task, stage="prod_readiness_gate")
+            if coordination_gate.get("status") == "blocked_conflict":
+                return {
+                    "status": "completed",
+                    "verdict": "blocked_needs_user",
+                    "mode": mode,
+                    "files": files,
+                    "selected_tools": [],
+                    "blockers": ["cross-session conflict must be resolved before release/final gate"],
+                    "blockers_count": 1,
+                    "needs_user_decision": ["Resolve coordination conflict, refresh diff, then rerun prod_readiness_gate."],
+                    "needs_user_count": 1,
+                    "next_actions": ["Resolve coordination conflict, refresh diff, then rerun prod_readiness_gate."],
+                    "results": [],
+                    "warnings": [],
+                    "staged": bool(staged),
+                    "since_commit": since_commit or "",
+                    "coordination": coordination_gate,
+                    "orchestrator": {"status": "skipped", "reason": "blocked_conflict"},
+                }
+        except Exception as e:
+            coordination_gate = {"status": "degraded", "error": f"{type(e).__name__}: {e}"}
     text = "\n".join([task or "", context or "", diff or "", "\n".join(files)])
     code_files = [f for f in files if _ext(f) in CODE_EXTS]
     ui_files = [f for f in files if _ext(f) in {".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue"}]
@@ -306,6 +332,8 @@ async def prod_readiness_gate(
         warnings.append(f"Sensitive files excluded from LLM review: {removed_panel_files[:10]}; local secret scanner still scans redacted snippets")
     if sensitive_only:
         warnings.append("sensitive-only change: LLM content review skipped; rely on secret/env/config checks and inspect metadata manually")
+    if coordination_gate.get("status") == "warning":
+        warnings.append("coordination conflict_check returned warnings; inspect coordination field")
 
     if critical:
         verdict = "rollback_required"
@@ -343,6 +371,7 @@ async def prod_readiness_gate(
         "next_actions": _next_actions(verdict),
         "results": [c["summary"] for c in checks],
         "warnings": sorted(set(warnings)),
+        "coordination": coordination_gate,
         "staged": bool(staged),
         "since_commit": since_commit or "",
         "orchestrator": orchestrator,

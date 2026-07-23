@@ -34,6 +34,7 @@ _PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
     "HARNESS_STATIC_LLM": (("static_llm",), ("llm", "static")),
     "HARNESS_WIKI_ENABLED": (("wiki", "enabled"), ("manual_features", "llmwiki", "enabled"), ("wiki_enabled",)),
     "HARNESS_CODE_INDEX_ENABLED": (("code_index", "enabled"), ("manual_features", "code_index", "enabled"), ("code_index_enabled",)),
+    "HARNESS_COORDINATION_ENABLED": (("coordination", "enabled"), ("manual_features", "coordination", "enabled"), ("coordination_enabled",)),
     "HARNESS_DASHBOARD_ENABLED": (("dashboard", "enabled"), ("manual_features", "dashboard", "enabled"), ("dashboard_enabled",)),
 }
 
@@ -49,13 +50,10 @@ def _metadata_workspace() -> str:
 
 
 def active_workspace_root(default: str | os.PathLike[str] | None = None) -> Path:
-    if default is not None:
-        return Path(str(default)).expanduser().resolve()
     root = (
-        os.getenv("HARNESS_WATCH_ROOT")
+        os.getenv("WORKSPACE_ROOT")
         or os.getenv("CLAUDE_PROJECT_DIR")
         or _metadata_workspace()
-        or os.getenv("WORKSPACE_ROOT")
         or str(default or HARNESS_ROOT)
     )
     return Path(str(root)).expanduser().resolve()

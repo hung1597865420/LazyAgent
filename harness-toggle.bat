@@ -74,7 +74,7 @@ function Ensure-Defaults($J) {
     Ensure-Prop $watch 'debounce' 2 | Out-Null
     Ensure-Prop $J 'static_llm' $false | Out-Null
     $manual = Ensure-Prop $J 'manual_features' (New-Obj)
-    foreach ($manualName in @('hooks','lessons','llmwiki','code_index','finops','dashboard')) {
+    foreach ($manualName in @('hooks','lessons','llmwiki','code_index','finops','coordination','dashboard')) {
         $item = Ensure-Prop $manual $manualName (New-Obj)
         Ensure-Prop $item 'enabled' ($manualName -ne 'dashboard') | Out-Null
         Ensure-Prop $item 'status' 'manual' | Out-Null
@@ -90,23 +90,20 @@ function Ensure-Defaults($J) {
     $manual.code_index.note = 'Preference only; code index tools run when explicitly called.'
     $manual.finops.status = 'soft-toggle'
     $manual.finops.note = 'Disables new FinOps DB writes when finops.enabled=false.'
+    $manual.coordination.status = 'static'
+    $manual.coordination.note = 'Cross-session SQLite coordinator: heartbeat, file leases, conflict gates. Static/no LLM by default.'
     $manual.dashboard.status = 'manual'
     $manual.dashboard.note = 'Only runs when dashboard start is requested.'
     return $J
 }
 
-function Save-Features($J) {
-    $J = Ensure-Defaults $J
-    $json = ConvertTo-Json -InputObject $J -Depth 20
+function Save-FeaturesUnlocked($J) {
+    $json = ConvertTo-Json -InputObject (Ensure-Defaults $J) -Depth 20
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     New-Item -ItemType Directory -Force $FeatureDir | Out-Null
-    $mutex = New-Object System.Threading.Mutex($false, 'Global\AgentHarnessFeatures')
-    $locked = $false
     $tmp = Join-Path $FeatureDir ("harness.features.{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
     $backup = Join-Path $FeatureDir ("harness.features.{0}.bak" -f ([guid]::NewGuid().ToString('N')))
     try {
-        $locked = $mutex.WaitOne(30000)
-        if (-not $locked) { throw 'Timed out waiting for global feature profile lock.' }
         [IO.File]::WriteAllText($tmp, $json + [Environment]::NewLine, $utf8)
         if (Test-Path $FeatureFile) {
             [IO.File]::Replace($tmp, $FeatureFile, $backup, $true)
@@ -116,8 +113,31 @@ function Save-Features($J) {
     } finally {
         if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
         if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Invoke-FeatureFileLock([scriptblock]$Body) {
+    $mutex = New-Object System.Threading.Mutex($false, 'Global\AgentHarnessFeatures')
+    $locked = $false
+    try {
+        $locked = $mutex.WaitOne(30000)
+        if (-not $locked) { throw 'Timed out waiting for global feature profile lock.' }
+        & $Body
+    } finally {
         if ($locked) { $mutex.ReleaseMutex() | Out-Null }
         $mutex.Dispose()
+    }
+}
+
+function Save-Features($J) {
+    Invoke-FeatureFileLock { Save-FeaturesUnlocked $J }
+}
+
+function Update-Features([scriptblock]$Mutation, [bool]$Fresh = $false) {
+    Invoke-FeatureFileLock {
+        $j = if ($Fresh) { Ensure-Defaults (New-Obj) } else { Ensure-Defaults (Load-Features $true) }
+        & $Mutation $j | Out-Null
+        Save-FeaturesUnlocked $j
     }
 }
 
@@ -151,6 +171,7 @@ function Get-Feature($J, [string]$Name) {
         'static-llm' { return [bool]$J.static_llm }
         'wiki' { return [bool]$J.manual_features.llmwiki.enabled }
         'code-index' { return [bool]$J.manual_features.code_index.enabled }
+        'coordination' { return [bool]$J.manual_features.coordination.enabled }
         'dashboard' { return [bool]$J.manual_features.dashboard.enabled }
         default { throw "Unknown feature '$Name'. Run: harness-toggle.bat list" }
     }
@@ -169,6 +190,7 @@ function Feature-Note([string]$Name) {
         'static-llm' { return 'Optional LLM enrichment for static-first analyzers/gap tools.' }
         'wiki' { return 'On-demand llmwiki preference marker; no daemon by itself.' }
         'code-index' { return 'On-demand semantic/code index preference marker; builds when requested.' }
+        'coordination' { return 'Static cross-session coordinator: sessions, leases, conflict checks; no token use.' }
         'dashboard' { return 'Manual web dashboard marker; action dashboard start launches server.py.' }
         'mcp-bridges' { return 'Read-only/static MCP tools: install manifest, graph review, adapter parity, MCP inventory, context budget, workflow/UI routers, bug repro guard, Hallmark/Spec Kit, Office bridge, scope guard. No profile toggle needed.' }
         'auto-pilot-mode' { return 'safe = conservative checks, max = aggressive fan-out.' }
@@ -194,24 +216,27 @@ function Stop-Watch {
 
 function Set-Feature([string]$Name, [bool]$Value) {
     Require-ProfileWriteConsent "set $Name"
-    $j = Ensure-Defaults (Load-Features $true)
-    $j.profile = 'custom'
-    switch ($Name) {
-        'llm' { $j.llm.enabled = $Value }
-        'finops' { $j.finops.enabled = $Value; Set-Manual $j 'finops' $Value }
-        'hooks' { $j.hooks.enabled = $Value; Set-Manual $j 'hooks' $Value }
-        'lessons' { $j.lessons.enabled = $Value; Set-Manual $j 'lessons' $Value }
-        'auto-pilot' { $j.auto_pilot.enabled = $Value }
-        'auto-pilot-llm' { $j.auto_pilot.llm = $Value }
-        'auto-watch' { $j.auto_watch.enabled = $Value; if (-not $Value) { Stop-Watch } }
-        'auto-watch-llm' { $j.auto_watch.llm = $Value }
-        'static-llm' { $j.static_llm = $Value; $j.llm.static = $Value }
-        'wiki' { Set-Manual $j 'llmwiki' $Value }
-        'code-index' { Set-Manual $j 'code_index' $Value }
-        'dashboard' { Set-Manual $j 'dashboard' $Value }
-        default { throw "Unknown feature '$Name'. Run: harness-toggle.bat list" }
+    Update-Features {
+        param($j)
+        $j.profile = 'custom'
+        switch ($Name) {
+            'llm' { $j.llm.enabled = $Value }
+            'finops' { $j.finops.enabled = $Value; Set-Manual $j 'finops' $Value }
+            'hooks' { $j.hooks.enabled = $Value; Set-Manual $j 'hooks' $Value }
+            'lessons' { $j.lessons.enabled = $Value; Set-Manual $j 'lessons' $Value }
+            'auto-pilot' { $j.auto_pilot.enabled = $Value }
+            'auto-pilot-llm' { $j.auto_pilot.llm = $Value }
+            'auto-watch' { $j.auto_watch.enabled = $Value }
+            'auto-watch-llm' { $j.auto_watch.llm = $Value }
+            'static-llm' { $j.static_llm = $Value; $j.llm.static = $Value }
+            'wiki' { Set-Manual $j 'llmwiki' $Value }
+            'code-index' { Set-Manual $j 'code_index' $Value }
+            'coordination' { Set-Manual $j 'coordination' $Value }
+            'dashboard' { Set-Manual $j 'dashboard' $Value }
+            default { throw "Unknown feature '$Name'. Run: harness-toggle.bat list" }
+        }
     }
-    Save-Features $j
+    if ($Name -eq 'auto-watch' -and -not $Value) { Stop-Watch }
     Write-Host "$Name = $Value"
 }
 
@@ -219,14 +244,15 @@ function Set-Mode([string]$Name, [string]$Mode) {
     Require-ProfileWriteConsent "mode $Name"
     $mode = $Mode.ToLowerInvariant()
     if ($mode -notin @('safe','max')) { throw "Mode must be safe or max." }
-    $j = Ensure-Defaults (Load-Features $true)
-    $j.profile = 'custom'
-    switch ($Name) {
-        'auto-pilot' { $j.auto_pilot.mode = $mode }
-        'auto-watch' { $j.auto_watch.mode = $mode }
-        default { throw "Mode is supported for auto-pilot or auto-watch only." }
+    Update-Features {
+        param($j)
+        $j.profile = 'custom'
+        switch ($Name) {
+            'auto-pilot' { $j.auto_pilot.mode = $mode }
+            'auto-watch' { $j.auto_watch.mode = $mode }
+            default { throw "Mode is supported for auto-pilot or auto-watch only." }
+        }
     }
-    Save-Features $j
     Write-Host "$Name mode = $mode"
 }
 
@@ -234,11 +260,12 @@ function Set-Timing([double]$Interval, [double]$Debounce) {
     Require-ProfileWriteConsent 'timing'
     if ($Interval -lt 0.5 -or $Interval -gt 300) { throw 'Interval must be between 0.5 and 300 seconds.' }
     if ($Debounce -lt 0.5 -or $Debounce -gt 300) { throw 'Debounce must be between 0.5 and 300 seconds.' }
-    $j = Ensure-Defaults (Load-Features $true)
-    $j.profile = 'custom'
-    $j.auto_watch.interval = $Interval
-    $j.auto_watch.debounce = $Debounce
-    Save-Features $j
+    Update-Features {
+        param($j)
+        $j.profile = 'custom'
+        $j.auto_watch.interval = $Interval
+        $j.auto_watch.debounce = $Debounce
+    }
     Write-Host "auto-watch timing interval=$Interval debounce=$Debounce"
 }
 
@@ -251,11 +278,12 @@ function Set-Profile([string]$Name) {
         '7' { 'heavy' }
         default { $requested }
     }
-    $j = Ensure-Defaults (New-Obj)
-    $j.profile = $profile
-    $j.description = "Profile '$profile' written by harness-toggle.bat."
-    switch ($profile) {
-        'off' {
+    Update-Features {
+        param($j)
+        $j.profile = $profile
+        $j.description = "Profile '$profile' written by harness-toggle.bat."
+        switch ($profile) {
+            'off' {
             $j.auto_pilot.enabled = $false
             $j.auto_pilot.llm = $false
             $j.auto_watch.enabled = $false
@@ -269,8 +297,8 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'finops' $false
             Set-Manual $j 'hooks' $false
             Set-Manual $j 'lessons' $false
+            Set-Manual $j 'coordination' $false
             Set-Manual $j 'dashboard' $false
-            Stop-Watch
         }
         'light' {
             $j.auto_pilot.enabled = $true
@@ -292,8 +320,8 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'lessons' $true
             Set-Manual $j 'llmwiki' $true
             Set-Manual $j 'code_index' $true
+            Set-Manual $j 'coordination' $true
             Set-Manual $j 'dashboard' $false
-            Stop-Watch
         }
         'standard' {
             $j.auto_pilot.enabled = $true
@@ -315,6 +343,7 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'lessons' $true
             Set-Manual $j 'llmwiki' $true
             Set-Manual $j 'code_index' $true
+            Set-Manual $j 'coordination' $true
         }
         'balanced' {
             $j.auto_pilot.enabled = $true
@@ -336,7 +365,7 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'lessons' $true
             Set-Manual $j 'llmwiki' $true
             Set-Manual $j 'code_index' $true
-            Stop-Watch
+            Set-Manual $j 'coordination' $true
         }
         'review' {
             $j.auto_pilot.enabled = $true
@@ -358,6 +387,7 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'lessons' $true
             Set-Manual $j 'llmwiki' $true
             Set-Manual $j 'code_index' $true
+            Set-Manual $j 'coordination' $true
         }
         'heavy' {
             $j.auto_pilot.enabled = $true
@@ -379,7 +409,7 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'lessons' $true
             Set-Manual $j 'llmwiki' $true
             Set-Manual $j 'code_index' $true
-            Stop-Watch
+            Set-Manual $j 'coordination' $true
         }
         'max' {
             $j.auto_pilot.enabled = $true
@@ -399,10 +429,15 @@ function Set-Profile([string]$Name) {
             Set-Manual $j 'finops' $true
             Set-Manual $j 'hooks' $true
             Set-Manual $j 'lessons' $true
+            Set-Manual $j 'llmwiki' $true
+            Set-Manual $j 'code_index' $true
+            Set-Manual $j 'coordination' $true
+            Set-Manual $j 'dashboard' $false
         }
-        default { throw "Unknown profile '$Name'. Use off, light, standard, balanced/4, review/5, heavy/7, or max." }
+            default { throw "Unknown profile '$Name'. Use off, light, standard, balanced/4, review/5, heavy/7, or max." }
+        }
     }
-    Save-Features $j
+    if ($profile -in @('off','light','balanced','heavy')) { Stop-Watch }
     Write-Host "profile = $profile"
 }
 
@@ -443,7 +478,7 @@ function Show-Status {
     Write-Host ''
     Write-Host ("{0,-16} {1,-7} {2}" -f 'feature', 'value', 'note')
     Write-Host ("{0,-16} {1,-7} {2}" -f '-------', '-----', '----')
-    foreach ($featureName in @('llm','finops','hooks','lessons','auto-pilot','auto-pilot-llm','auto-watch','auto-watch-llm','static-llm','wiki','code-index','dashboard')) {
+    foreach ($featureName in @('llm','finops','hooks','lessons','auto-pilot','auto-pilot-llm','auto-watch','auto-watch-llm','static-llm','wiki','code-index','coordination','dashboard')) {
         Write-Host ("{0,-16} {1,-7} {2}" -f $featureName, (Get-Feature $j $featureName), (Feature-Note $featureName))
     }
     Write-Host ("{0,-16} {1,-7} {2}" -f 'auto-pilot-mode', $j.auto_pilot.mode, (Feature-Note 'auto-pilot-mode'))
@@ -485,6 +520,7 @@ Features you can toggle:
   static-llm       Optional LLM enrichment for static-first analyzers/gap tools.
   wiki             On-demand llmwiki preference marker; no daemon by itself.
   code-index       On-demand semantic/code index preference marker.
+  coordination     Static cross-session coordinator: heartbeat, leases, conflict gates.
   dashboard        Manual web dashboard marker + dashboard start action.
 
 MCP-only/read-only tools, installed by full setup and not toggled here:

@@ -13,6 +13,7 @@
         "runtime-rules",
         "mcp-config",
         "graph-review",
+        "coordination",
         "hooks",
         "lessons",
         "llmwiki"
@@ -30,6 +31,7 @@
         "runtime-rules",
         "mcp-config",
         "graph-review",
+        "coordination",
         "hooks",
         "lessons"
       ]
@@ -44,6 +46,7 @@
         "runtime-rules",
         "mcp-config",
         "graph-review",
+        "coordination",
         "lessons"
       ]
     },
@@ -57,6 +60,7 @@
         "runtime-rules",
         "mcp-config",
         "graph-review",
+        "coordination",
         "lessons"
       ]
     }
@@ -73,6 +77,10 @@
     "graph-review": {
       "description": "CRG-lite static graph review tools: minimal context, changed-symbol blast radius, risk/test gaps, graph health.",
       "cost": "static"
+    },
+    "coordination": {
+      "description": "Static cross-session coordinator: global SQLite heartbeat, repo-scoped file leases, snapshots, conflict gates.",
+      "cost": "static-plus-db"
     },
     "hooks": {
       "description": "Client hook bridge for profile injection, edit events, and lesson capture where the client supports hooks.",
@@ -101,7 +109,8 @@
       "modules": [
         "runtime-rules",
         "mcp-config",
-        "graph-review"
+        "graph-review",
+        "coordination"
       ]
     },
     "standard": {
@@ -110,6 +119,7 @@
         "runtime-rules",
         "mcp-config",
         "graph-review",
+        "coordination",
         "hooks",
         "lessons",
         "llmwiki"
@@ -121,6 +131,7 @@
         "runtime-rules",
         "mcp-config",
         "graph-review",
+        "coordination",
         "hooks",
         "lessons",
         "llmwiki",

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .auto import auto_trigger
+from .coordination import conflict_check, release_files, session_heartbeat
 from .core import _get_active_workspace, _git_diff, _run_cmd_safe, load_relevant_lessons_context, record_procedure_lesson
 from .goal import goal_autopilot, goal_supervisor, load_goal_state
 from .integrations import agent_guidance_for_task
@@ -662,6 +663,23 @@ async def _goal_runner_locked(
     root: Path,
 ) -> dict[str, Any]:
     events: list[dict[str, Any]] = []
+    coordination_session_id: str | None = None
+
+    def _finish(result: dict[str, Any]) -> dict[str, Any]:
+        if coordination_session_id:
+            try:
+                release = release_files(session_id=coordination_session_id, root=root)
+                events.append({"step": "coordination_release", "status": release.get("status")})
+            except Exception as exc:
+                events.append({"step": "coordination_release", "status": "degraded", "error": str(exc)})
+        return result
+
+    try:
+        coordination_session = session_heartbeat(task=prompt, status="goal_runner", root=root)
+        coordination_session_id = str(coordination_session.get("session_id") or "") or None
+        events.append({"step": "coordination_heartbeat", "session_id": coordination_session.get("session_id")})
+    except Exception as exc:
+        events.append({"step": "coordination_heartbeat", "status": "degraded", "error": str(exc)})
     try:
         from .ops import harness_doctor
 
@@ -676,7 +694,7 @@ async def _goal_runner_locked(
         init = await goal_autopilot(mode="init", goal=prompt, context="direct goal_runner")
     events.append({"step": "init", "status": init.get("status"), "goal_id": init.get("goal_id")})
     if init.get("error"):
-        return {"status": "failed", "events": events, "init": init}
+        return _finish({"status": "failed", "events": events, "init": init})
 
     last_checks: dict[str, Any] | None = None
     changed: list[str] = []
@@ -687,28 +705,38 @@ async def _goal_runner_locked(
         events.append({"step": "supervisor", "iteration": iteration, "next_action": action, "summary": supervisor.get("summary")})
 
         if action == "complete":
-            return {"status": "completed", "events": events, "supervisor": supervisor}
+            return _finish({"status": "completed", "events": events, "supervisor": supervisor})
         if action == "blocked_ask_user":
-            return {"status": "blocked_needs_user", "events": events, "supervisor": supervisor, "last_checks": last_checks}
+            return _finish({"status": "blocked_needs_user", "events": events, "supervisor": supervisor, "last_checks": last_checks})
         if action == "run_final":
+            if changed:
+                gate = conflict_check(files=changed, task=prompt, stage="goal_runner:final", root=root)
+                events.append({"step": "coordination", "stage": "final", "status": gate.get("status")})
+                if gate.get("status") == "blocked_conflict":
+                    return _finish({"status": "blocked_conflict", "events": events, "coordination": gate, "last_checks": last_checks})
             with _pinned_workspace(root):
                 final = await prod_readiness_gate(changed_files=changed, diff=diff, task=prompt, mode=mode) if final_prod_gate else await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="final", mode=mode)
             finish_mode = "complete" if _prod_gate_ok(final) else "block"
             finish = await goal_autopilot(mode=finish_mode, context=json.dumps(final, ensure_ascii=False)[:4000], changed_files=changed, diff=diff, task=prompt)
             events.append({"step": "final", "verdict": final.get("verdict"), "finish_status": finish.get("status")})
-            return {"status": finish.get("status"), "events": events, "final": final, "finish": finish}
+            return _finish({"status": finish.get("status"), "events": events, "final": final, "finish": finish})
         if action == "run_check":
             changed = _changed_files(root)
             diff, _ = _git_diff(cwd=str(root))
+            if changed:
+                gate = conflict_check(files=changed, task=prompt, stage="goal_runner:check", root=root)
+                events.append({"step": "coordination", "stage": "check", "status": gate.get("status")})
+                if gate.get("status") == "blocked_conflict":
+                    return _finish({"status": "blocked_conflict", "events": events, "coordination": gate, "last_checks": last_checks})
             with _pinned_workspace(root):
                 last_checks = await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="post_edit", mode=mode)
             events.append({"step": "check", "changed_files": changed, "status": last_checks.get("status"), "selected_tools": last_checks.get("selected_tools")})
             continue
 
         if action != "continue_part":
-            return {"status": "blocked_unknown_action", "events": events, "supervisor": supervisor}
+            return _finish({"status": "blocked_unknown_action", "events": events, "supervisor": supervisor})
         if dry_run:
-            return {"status": "blocked_needs_agent", "events": events, "supervisor": supervisor, "agent": {"status": "dry_run"}}
+            return _finish({"status": "blocked_needs_agent", "events": events, "supervisor": supervisor, "agent": {"status": "dry_run"}})
         agent = await _run_agent(_agent_prompt(prompt, supervisor, root), agent_command, agent_timeout, root)
         learned = _record_agent_lessons(prompt, agent)
         changed = _changed_files(root)
@@ -719,19 +747,23 @@ async def _goal_runner_locked(
         events.append(event)
         agent_status = str(agent.get("status") or "")
         if agent_status == "missing_agent_command":
-            return {"status": "blocked_needs_agent", "events": events, "agent": agent}
+            return _finish({"status": "blocked_needs_agent", "events": events, "agent": agent})
         if agent_status in {"failed", "timeout", "error"}:
-            return {"status": "blocked_agent_failed", "events": events, "agent": agent}
+            return _finish({"status": "blocked_agent_failed", "events": events, "agent": agent})
         if not changed:
-            return {"status": "blocked_no_changes", "events": events, "agent": agent}
+            return _finish({"status": "blocked_no_changes", "events": events, "agent": agent})
+        gate = conflict_check(files=changed, task=prompt, stage=f"goal_runner:agent:{iteration}", root=root)
+        events.append({"step": "coordination", "stage": "agent", "status": gate.get("status")})
+        if gate.get("status") == "blocked_conflict":
+            return _finish({"status": "blocked_conflict", "events": events, "coordination": gate, "agent": agent})
         with _pinned_workspace(root):
             last_checks = await auto_trigger(changed_files=changed, diff=diff, task=prompt, stage="post_edit", mode=mode)
         events.append({"step": "check", "changed_files": changed, "status": last_checks.get("status"), "selected_tools": last_checks.get("selected_tools")})
 
-    return {
+    return _finish({
         "status": "blocked_needs_agent",
         "reason": "max_iterations_reached",
         "max_iterations": max_iterations,
         "events": events,
         "last_checks": last_checks,
-    }
+    })
